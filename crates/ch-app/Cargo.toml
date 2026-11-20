@@ -1,0 +1,19 @@
+[package]
+name = "ch-app"
+description = "C-Harness desktop window."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "c-harness"
+path = "src/main.rs"
+
+[dependencies]
+ch-ui = { path = "../ch-ui" }
+gpui-kit = { workspace = true }
+
+[lints]
+workspace = true

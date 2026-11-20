@@ -1,0 +1,35 @@
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+# Unmaintained transitive crates under gpui are outside our control; flag only direct deps.
+unmaintained = "workspace"
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+# MPL-2.0 is file-level copyleft (cbindgen, dwrote, option-ext). Linking it is fine;
+# patching those files would oblige us to publish the patched files.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "NCSA",
+    "Unicode-3.0",
+    "Zlib",
+]
+private = { ignore = true }
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

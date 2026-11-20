@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/cloudh07/c-harness"
+publish = false
+
+[workspace.dependencies]
+base64 = "0.22"
+# Pins the gpui-pre crate family. Never add gpui or gpui-pre next to it. Default features
+# pull the component library and an icon bundle, which nothing renders yet.
+gpui-kit = { version = "0.10.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+# Colors are written 0xRRGGBB; separators would split the channels wrong.
+unreadable_literal = "allow"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
