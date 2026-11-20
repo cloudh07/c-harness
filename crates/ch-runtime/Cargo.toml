@@ -1,0 +1,22 @@
+[package]
+name = "ch-runtime"
+description = "Starts ch-runner on this machine or over SSH and hands back its stdio."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ch-protocol = { path = "../ch-protocol" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+# The test binary doubles as a stand-in ch-runner, so it needs its own main.
+[[test]]
+name = "local_runner"
+harness = false

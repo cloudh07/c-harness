@@ -1,0 +1,55 @@
+name: Bug report
+description: Something did not work the way the docs say it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a session over SSH on ...
+        2. Send the prompt ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: C-Harness version
+      description: Shown in the window title, or run `c-harness --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Desktop OS
+      options: [Windows, macOS, Linux]
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where the session ran
+      options: [SSH machine, This computer (local), Not started]
+    validations:
+      required: true
+  - type: input
+    id: omp
+    attributes:
+      label: omp version
+      description: Run `omp --version` where the session runs.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Session log
+      description: >
+        Use Export logs in the app and paste the relevant lines. Secrets are removed by pattern,
+        and patterns miss things, so read it before you post.
+      render: text

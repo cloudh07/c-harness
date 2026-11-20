@@ -5,6 +5,8 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 
 crates/ch-protocol is derived from the zus-ompwire crate of ZUS
 (https://zus.8syncdev.com) and is used under the MIT License below.
+crates/ch-core/src/redact.rs is derived from the redaction module of ZUS's
+zus-agent crate and is used under the same MIT License.
 
 MIT License
 

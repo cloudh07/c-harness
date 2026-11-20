@@ -9,6 +9,7 @@
 
 mod frames;
 mod probe;
+pub mod runner;
 
 pub use frames::{
     ChunkAssembler, FrameOutcome, FramingError, HOST_ERROR_FRAME_TYPE, LineSplitter,

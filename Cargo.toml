@@ -14,8 +14,12 @@ base64 = "0.22"
 # Pins the gpui-pre crate family. Never add gpui or gpui-pre next to it. Default features
 # pull the component library and an icon bundle, which nothing renders yet.
 gpui-kit = { version = "0.10.0", default-features = false }
+# Default features: macOS Keychain, Windows Credential Manager, and the Secret Service over
+# zbus (pure Rust, no libdbus) on Linux.
+keyring = "4.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

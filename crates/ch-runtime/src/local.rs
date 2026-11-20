@@ -1,0 +1,409 @@
+use std::ffi::OsString;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use crate::process::{command, runner_info, stderr_tail};
+use crate::{RunnerInfo, RunnerProcess, RuntimeError, SandboxProvider};
+
+const LOCATION: &str = "this machine";
+const MAX_SESSION_LEN: usize = 64;
+
+/// Runs sessions on this machine, each in its own detached git worktree.
+///
+/// Local sessions are not sandboxed; the agent runs with your user's permissions. It can read
+/// and change anything you can, and the worktree only keeps it out of your own checkout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalProvider {
+    /// The repository the session works on.
+    pub repo: PathBuf,
+    /// The `ch-runner` program: a path, or a bare name looked up on PATH.
+    pub runner: PathBuf,
+    /// Where session worktrees go, one directory per session. Keep it outside `repo`.
+    pub worktrees_dir: PathBuf,
+}
+
+impl LocalProvider {
+    /// The absolute path of `session`'s worktree.
+    pub fn worktree_path(&self, session: &str) -> Result<PathBuf, RuntimeError> {
+        validate_session(session)?;
+        // `git -C <repo>` would resolve a relative path against the repository, not against us.
+        let dir = std::path::absolute(&self.worktrees_dir).map_err(|source| RuntimeError::Io {
+            action: "resolve the worktrees directory",
+            source,
+        })?;
+        Ok(dir.join(session))
+    }
+
+    /// Creates a detached worktree of `repo` at `HEAD` for `session` and returns its path.
+    pub fn create_worktree(&self, session: &str) -> Result<PathBuf, RuntimeError> {
+        let path = self.worktree_path(session)?;
+        if path.exists() {
+            return Err(RuntimeError::WorktreeExists(path));
+        }
+        fs::create_dir_all(&self.worktrees_dir).map_err(|source| RuntimeError::Io {
+            action: "create the worktrees directory",
+            source,
+        })?;
+        run_git("create a worktree", worktree_add_args(&self.repo, &path))?;
+        Ok(path)
+    }
+
+    /// Deletes `session`'s worktree, including changes nobody committed. Stop its runner first:
+    /// Windows refuses to delete a directory a running process is using.
+    pub fn remove_worktree(&self, session: &str) -> Result<(), RuntimeError> {
+        let path = self.worktree_path(session)?;
+        if path.exists() {
+            run_git(
+                "remove the worktree",
+                worktree_remove_args(&self.repo, &path),
+            )
+        } else {
+            // The directory was deleted by hand; pruning drops git's record of it.
+            run_git("prune worktrees", worktree_prune_args(&self.repo))
+        }
+    }
+
+    fn runner_program(&self) -> Result<PathBuf, RuntimeError> {
+        let bare_name = self
+            .runner
+            .parent()
+            .is_none_or(|p| p.as_os_str().is_empty());
+        if bare_name {
+            return Ok(self.runner.clone());
+        }
+        // The runner starts inside the worktree, and a relative program path would be resolved
+        // against that directory on some platforms.
+        std::path::absolute(&self.runner).map_err(|source| RuntimeError::Io {
+            action: "resolve the ch-runner path",
+            source,
+        })
+    }
+
+    fn runner_spawn_error(&self, source: io::Error) -> RuntimeError {
+        if source.kind() == io::ErrorKind::NotFound {
+            RuntimeError::RunnerNotFound {
+                location: LOCATION.to_owned(),
+            }
+        } else {
+            RuntimeError::Spawn {
+                program: self.runner.display().to_string(),
+                source,
+            }
+        }
+    }
+}
+
+impl SandboxProvider for LocalProvider {
+    fn label(&self) -> String {
+        "This machine (not sandboxed)".to_owned()
+    }
+
+    fn check(&self) -> Result<RunnerInfo, RuntimeError> {
+        let output = command(self.runner_program()?)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| self.runner_spawn_error(e))?;
+        runner_info(LOCATION, &output)
+    }
+
+    fn start(&self, session: &str) -> Result<RunnerProcess, RuntimeError> {
+        let program = self.runner_program()?;
+        let workdir = self.create_worktree(session)?;
+        let mut runner = command(program);
+        clear_git_location(&mut runner);
+        let spawned = runner
+            .args(serve_args(&workdir))
+            .current_dir(&workdir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        match spawned {
+            Ok(child) => Ok(RunnerProcess::new(child)),
+            Err(source) => {
+                // So that a retry with the same session id can create the worktree again. The
+                // spawn error is the one worth reporting, so a cleanup failure is dropped.
+                let _ = self.remove_worktree(session);
+                Err(self.runner_spawn_error(source))
+            }
+        }
+    }
+}
+
+/// Checks that `session` can name a worktree directory on every platform.
+pub fn validate_session(session: &str) -> Result<(), RuntimeError> {
+    let allowed = (1..=MAX_SESSION_LEN).contains(&session.len())
+        && session
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if allowed && !is_windows_device_name(session) {
+        Ok(())
+    } else {
+        Err(RuntimeError::InvalidSession)
+    }
+}
+
+// Windows will not create a file or directory with one of these names, in any letter case.
+fn is_windows_device_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    match upper.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => {
+            upper.len() == 4
+                && (upper.starts_with("COM") || upper.starts_with("LPT"))
+                && upper.as_bytes()[3].is_ascii_digit()
+        }
+    }
+}
+
+// A git hook or wrapper may export these, and they would point git at another repository.
+fn clear_git_location(command: &mut Command) {
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_COMMON_DIR",
+    ] {
+        command.env_remove(var);
+    }
+}
+
+fn run_git(action: &'static str, args: Vec<OsString>) -> Result<(), RuntimeError> {
+    let mut git = command("git");
+    clear_git_location(&mut git);
+    let output = git
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                RuntimeError::ToolNotFound { tool: "git" }
+            } else {
+                RuntimeError::Spawn {
+                    program: "git".to_owned(),
+                    source,
+                }
+            }
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(RuntimeError::Git {
+            action,
+            stderr: stderr_tail(&output.stderr),
+        })
+    }
+}
+
+fn os_args<const N: usize>(args: [&dyn AsRef<std::ffi::OsStr>; N]) -> Vec<OsString> {
+    args.iter().map(|arg| arg.as_ref().to_owned()).collect()
+}
+
+fn worktree_add_args(repo: &Path, path: &Path) -> Vec<OsString> {
+    os_args([
+        &"-C",
+        &repo,
+        &"worktree",
+        &"add",
+        &"--detach",
+        &"--",
+        &path,
+        &"HEAD",
+    ])
+}
+
+fn worktree_remove_args(repo: &Path, path: &Path) -> Vec<OsString> {
+    os_args([
+        &"-C",
+        &repo,
+        &"worktree",
+        &"remove",
+        &"--force",
+        &"--",
+        &path,
+    ])
+}
+
+fn worktree_prune_args(repo: &Path) -> Vec<OsString> {
+    os_args([&"-C", &repo, &"worktree", &"prune"])
+}
+
+fn serve_args(workdir: &Path) -> Vec<OsString> {
+    os_args([&"serve", &"--workdir", &workdir])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let mut git = Command::new("git");
+        clear_git_location(&mut git);
+        let output = git
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    fn repo_with_commit(root: &Path) -> PathBuf {
+        let repo = root.join("repo");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        fs::write(repo.join("README"), "hello\n").unwrap();
+        git(&repo, &["add", "README"]);
+        git(&repo, &["commit", "-q", "--no-verify", "-m", "init"]);
+        repo
+    }
+
+    fn worktree_count(repo: &Path) -> usize {
+        git(repo, &["worktree", "list", "--porcelain"])
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count()
+    }
+
+    fn provider(root: &Path, repo: PathBuf) -> LocalProvider {
+        LocalProvider {
+            repo,
+            runner: root.join("no-such-ch-runner"),
+            worktrees_dir: root.join("worktrees"),
+        }
+    }
+
+    #[test]
+    fn session_ids_are_portable_directory_names() {
+        for ok in ["s1", "a-b_C", "COM10", &"x".repeat(64)] {
+            assert!(validate_session(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            &"x".repeat(65),
+            "a/b",
+            "a\\b",
+            "..",
+            "a b",
+            "é",
+            "con",
+            "Nul",
+            "COM1",
+            "lpt9",
+        ] {
+            assert!(validate_session(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn git_and_runner_arguments() {
+        let repo = Path::new("repo dir");
+        let path = Path::new("wt/-s1");
+        assert_eq!(
+            worktree_add_args(repo, path),
+            [
+                "-C", "repo dir", "worktree", "add", "--detach", "--", "wt/-s1", "HEAD"
+            ]
+        );
+        assert_eq!(
+            worktree_remove_args(repo, path),
+            [
+                "-C", "repo dir", "worktree", "remove", "--force", "--", "wt/-s1"
+            ]
+        );
+        assert_eq!(serve_args(path), ["serve", "--workdir", "wt/-s1"]);
+    }
+
+    #[test]
+    fn worktree_path_is_absolute_even_for_a_relative_dir() {
+        let provider = LocalProvider {
+            repo: "repo".into(),
+            runner: "ch-runner".into(),
+            worktrees_dir: "worktrees".into(),
+        };
+        let path = provider.worktree_path("s1").unwrap();
+        assert!(path.is_absolute());
+        assert!(path.ends_with(Path::new("worktrees").join("s1")));
+        assert!(provider.worktree_path("../x").is_err());
+    }
+
+    #[test]
+    fn creates_and_removes_a_detached_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = repo_with_commit(root.path());
+        let provider = provider(root.path(), repo.clone());
+
+        let path = provider.create_worktree("s1").unwrap();
+        assert!(path.join(".git").is_file());
+        // core.autocrlf may turn the line ending into CRLF on checkout.
+        assert_eq!(
+            fs::read_to_string(path.join("README")).unwrap().trim_end(),
+            "hello"
+        );
+        assert_eq!(
+            git(&path, &["rev-parse", "HEAD"]),
+            git(&repo, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(git(&path, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+        assert!(matches!(
+            provider.create_worktree("s1"),
+            Err(RuntimeError::WorktreeExists(_))
+        ));
+
+        fs::write(path.join("scratch.txt"), "uncommitted").unwrap();
+        provider.remove_worktree("s1").unwrap();
+        assert!(!path.exists());
+        assert_eq!(worktree_count(&repo), 1);
+        assert_eq!(git(&repo, &["status", "--porcelain"]), "");
+    }
+
+    #[test]
+    fn removing_a_worktree_deleted_by_hand_prunes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = repo_with_commit(root.path());
+        let provider = provider(root.path(), repo.clone());
+        let path = provider.create_worktree("s1").unwrap();
+        fs::remove_dir_all(&path).unwrap();
+
+        provider.remove_worktree("s1").unwrap();
+        assert_eq!(worktree_count(&repo), 1);
+    }
+
+    #[test]
+    fn a_repository_without_commits_is_a_git_error() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("empty");
+        fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        let err = provider(root.path(), repo)
+            .create_worktree("s1")
+            .unwrap_err();
+        assert!(matches!(err, RuntimeError::Git { .. }), "{err}");
+    }
+
+    #[test]
+    fn missing_runner_leaves_no_worktree_behind() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = repo_with_commit(root.path());
+        let provider = provider(root.path(), repo);
+
+        let err = provider.start("s1").unwrap_err();
+        assert!(matches!(err, RuntimeError::RunnerNotFound { .. }), "{err}");
+        assert!(!provider.worktree_path("s1").unwrap().exists());
+        assert!(matches!(
+            provider.check(),
+            Err(RuntimeError::RunnerNotFound { .. })
+        ));
+    }
+}

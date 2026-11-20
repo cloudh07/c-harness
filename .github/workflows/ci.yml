@@ -50,7 +50,7 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Release build
-        run: cargo build --release --locked -p ch-app
+        run: cargo build --release --locked -p ch-app -p ch-runner
 
   deny:
     name: cargo-deny (${{ matrix.checks }})

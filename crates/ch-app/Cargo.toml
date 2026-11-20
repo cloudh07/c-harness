@@ -12,8 +12,19 @@ name = "c-harness"
 path = "src/main.rs"
 
 [dependencies]
+ch-core = { path = "../ch-core" }
+ch-protocol = { path = "../ch-protocol" }
+ch-runtime = { path = "../ch-runtime" }
 ch-ui = { path = "../ch-ui" }
+ch-vault = { path = "../ch-vault" }
+dirs = "5"
 gpui-kit = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

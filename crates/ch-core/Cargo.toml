@@ -1,0 +1,16 @@
+[package]
+name = "ch-core"
+description = "Session state, approval parsing, risk classification, transcripts and redaction. Pure: no I/O, no GPUI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ch-protocol = { path = "../ch-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
