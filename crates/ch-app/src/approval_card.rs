@@ -1,4 +1,4 @@
-//! One tool call that omp is holding until the person answers.
+//! One tool call that the agent is holding until the person answers.
 
 use ch_core::{ApprovalDecision, ApprovalRequest, Risk, classify};
 use ch_ui::{Palette, Status};
@@ -7,22 +7,24 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, div, px, rgb,
 };
 
+use crate::assets::{Icon, icon};
 use crate::session_view::SessionView;
 use crate::widgets::{MONO, Tone, button, muted};
 
 const DETAILS_HEIGHT: f32 = 160.0;
+const RISK_ICON: f32 = 16.0;
 
-fn risk_label(risk: Risk) -> (&'static str, Status) {
+fn risk_label(risk: Risk) -> (&'static str, Status, Icon) {
     match risk {
-        Risk::High => ("High risk", Status::Error),
-        Risk::Medium => ("Medium risk", Status::NeedsYou),
-        Risk::Low => ("Low risk", Status::Done),
+        Risk::High => ("High risk", Status::Error, Icon::ShieldAlert),
+        Risk::Medium => ("Medium risk", Status::NeedsYou, Icon::ShieldAlert),
+        Risk::Low => ("Low risk", Status::Done, Icon::ShieldCheck),
     }
 }
 
 pub fn approval_card(p: Palette, request: &ApprovalRequest, cx: &Context<SessionView>) -> Div {
     let assessment = classify(request);
-    let (label, status) = risk_label(assessment.risk);
+    let (label, status, shield) = risk_label(assessment.risk);
     let id = request.id().to_string();
 
     let choices = [
@@ -65,18 +67,19 @@ pub fn approval_card(p: Palette, request: &ApprovalRequest, cx: &Context<Session
         .rounded_md()
         .border_1()
         .border_l_4()
-        .border_color(rgb(status.color()))
+        .border_color(rgb(p.status(status)))
         .bg(rgb(p.surface))
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
+                .child(icon(shield, px(RISK_ICON), p.status(status)))
                 .child(
                     div()
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(format!("omp wants to use {}", request.tool())),
+                        .child(format!("The agent wants to use {}", request.tool())),
                 )
                 .child(
                     div()
@@ -84,7 +87,7 @@ pub fn approval_card(p: Palette, request: &ApprovalRequest, cx: &Context<Session
                         .px_2()
                         .rounded_md()
                         .border_1()
-                        .border_color(rgb(status.color()))
+                        .border_color(rgb(p.status(status)))
                         .child(label),
                 ),
         )
@@ -97,7 +100,7 @@ pub fn approval_card(p: Palette, request: &ApprovalRequest, cx: &Context<Session
         .children(request.from_mcp().then(|| {
             muted(
                 p,
-                "This tool comes from an MCP server, not from omp itself.",
+                "This tool comes from an MCP server, not from the agent itself.",
             )
         }))
         .children((!details.is_empty()).then(|| {
@@ -115,7 +118,7 @@ pub fn approval_card(p: Palette, request: &ApprovalRequest, cx: &Context<Session
         .children((!request.can_approve()).then(|| {
             muted(
                 p,
-                "omp offered no way to approve this call, so it can only be denied.",
+                "The agent offered no way to approve this call, so it can only be denied.",
             )
         }))
         .child(actions)
@@ -127,8 +130,10 @@ mod tests {
 
     #[test]
     fn higher_risk_never_shares_a_color_with_low() {
-        let (_, high) = risk_label(Risk::High);
-        let (_, low) = risk_label(Risk::Low);
-        assert_ne!(high.color(), low.color());
+        let (_, high, _) = risk_label(Risk::High);
+        let (_, low, _) = risk_label(Risk::Low);
+        for p in [ch_ui::DARK, ch_ui::LIGHT] {
+            assert_ne!(p.status(high), p.status(low));
+        }
     }
 }

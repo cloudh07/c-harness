@@ -1,5 +1,10 @@
-//! The session screen: the prompt, the run as it streams in, the approvals omp is holding, and
-//! the review steps that end in a pull request.
+//! The session screen: the prompt, the run as it streams in, the approvals the agent is holding,
+//! and the review panel that ends in a pull request.
+
+mod composer;
+mod header;
+mod review;
+mod thread;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -9,24 +14,21 @@ use ch_core::{ApprovalDecision, SessionState};
 use ch_ui::{Palette, Status};
 use ch_vault::{SecretName, Vault};
 use gpui_kit::base::input::{InputEvent, TextareaState};
-use gpui_kit::base::{SelectableText, Textarea};
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Div, Entity, EventEmitter, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, Render, ScrollHandle, Stateful, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, div, px, rgb,
+    AppContext, ClickEvent, Context, Div, Entity, EventEmitter, InteractiveElement, IntoElement,
+    ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Task,
+    Window, div, px,
 };
 
-use crate::approval_card::approval_card;
+use crate::assets::Icon;
 use crate::driver::{self, Driver};
 use crate::launch::{self, Launched, Runner};
-use crate::panels;
 use crate::settings::{self, Problem, Settings};
-use crate::view_model::{land_request, last_chars, session_id, state_label, transcript_file_name};
-use crate::widgets::{Tone, banner, button, card, muted};
+use crate::view_model::{land_request, session_id, transcript_file_name};
+use crate::widgets::{Tone, banner, icon_button};
 
 const TICK: Duration = Duration::from_millis(50);
-const APPROVALS_HEIGHT: f32 = 360.0;
-const CONTENT_WIDTH: f32 = 860.0;
+const CONTENT_WIDTH: f32 = 760.0;
 
 /// Asks the shell to show the settings screen.
 pub struct OpenSettings;
@@ -63,6 +65,7 @@ pub struct SessionView {
     phase: Phase,
     prompt: Entity<TextareaState>,
     message: Option<Result<String, String>>,
+    review_open: bool,
     scroll: ScrollHandle,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -87,6 +90,19 @@ fn status_for(state: SessionState) -> Status {
         SessionState::Landed => Status::Done,
         SessionState::Failed => Status::Error,
     }
+}
+
+fn is_working(state: SessionState) -> bool {
+    matches!(
+        state,
+        SessionState::Starting | SessionState::Running | SessionState::NeedsYou
+    )
+}
+
+/// Whether a live session can be put away for a new one. A land in flight cannot be dropped,
+/// and a working agent has to be stopped first, unless its runner is already gone.
+fn may_start_new(closed: bool, landing: bool, stopping: bool, state: SessionState) -> bool {
+    closed || (!landing && (stopping || !is_working(state)))
 }
 
 impl SessionView {
@@ -117,6 +133,7 @@ impl SessionView {
             phase: Phase::Empty,
             prompt,
             message: None,
+            review_open: true,
             scroll: ScrollHandle::new(),
             _ticker: ticker,
             _subscriptions: subscriptions,
@@ -142,6 +159,48 @@ impl SessionView {
             Phase::Live(live) => Some(live.driver.session().state()),
             Phase::LaunchFailed { .. } => Some(SessionState::Failed),
         }
+    }
+
+    /// Whether Settings still has something to fill in before a session can start.
+    pub fn needs_setup(&self) -> bool {
+        !self.settings.problems().is_empty()
+    }
+
+    /// Whether "New session" may put the current one away right now.
+    pub fn can_start_new(&self) -> bool {
+        match &self.phase {
+            Phase::Empty | Phase::LaunchFailed { .. } => true,
+            Phase::Launching { .. } => false,
+            Phase::Live(live) => {
+                let d = &live.driver;
+                may_start_new(d.closed(), d.landing(), d.stopping(), d.session().state())
+            }
+        }
+    }
+
+    pub fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_start_new() {
+            return;
+        }
+        self.close_session(cx);
+        self.prompt.update(cx, |state, cx| state.focus(window, cx));
+    }
+
+    fn toggle_review(&mut self, cx: &mut Context<Self>) {
+        self.review_open = !self.review_open;
+        cx.notify();
+    }
+
+    /// The runner's output ended while the session was still open.
+    fn disconnected(&self) -> bool {
+        let Phase::Live(live) = &self.phase else {
+            return false;
+        };
+        live.driver.closed()
+            && !matches!(
+                live.driver.session().state(),
+                SessionState::Landed | SessionState::Failed
+            )
     }
 
     fn tick(&mut self, cx: &mut Context<Self>) {
@@ -371,6 +430,28 @@ impl SessionView {
         self.message = None;
         cx.notify();
     }
+
+    /// The result of the last action, with a button to put it away.
+    fn message_banner(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let p = self.palette;
+        let shown = match self.message.clone()? {
+            Ok(text) => banner(p, p.status(Status::Done), "Done", text),
+            Err(text) => banner(p, p.status(Status::Error), "Something needs fixing", text),
+        };
+        Some(
+            div()
+                .relative()
+                .child(shown.pr_10())
+                .child(div().absolute().top_2().right_2().child(
+                    icon_button(p, "dismiss", Icon::X, "Dismiss", Tone::Ghost, true).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.message = None;
+                            cx.notify();
+                        }),
+                    ),
+                )),
+        )
+    }
 }
 
 fn write_transcript(session: &str, text: &str) -> Result<String, String> {
@@ -383,320 +464,13 @@ fn write_transcript(session: &str, text: &str) -> Result<String, String> {
     Ok(format!("Transcript saved to {}", path.display()))
 }
 
-impl SessionView {
-    fn header(&self, cx: &mut Context<Self>) -> Div {
-        let p = self.palette;
-        let state = self.state();
-        let (label, status) = state.map_or(("No session", Status::Idle), |s| {
-            (state_label(s), status_for(s))
-        });
-        let detail = match &self.phase {
-            Phase::Live(live) => {
-                let mut parts = vec![live.session.clone(), live.version.clone()];
-                if let Some(path) = &live.worktree {
-                    parts.push(path.display().to_string());
-                }
-                parts.join("  ·  ")
-            }
-            Phase::Launching { session, .. } => format!("{session}  ·  checking the runner"),
-            Phase::Empty | Phase::LaunchFailed { .. } => String::new(),
-        };
-        let live = matches!(self.phase, Phase::Live(_));
-        let closable = matches!(self.phase, Phase::Live(_) | Phase::LaunchFailed { .. });
-        div()
-            .flex()
-            .items_center()
-            .gap_3()
-            .px_4()
-            .py_3()
-            .border_b_1()
-            .border_color(rgb(p.border))
-            .child(div().size_2().rounded_full().bg(rgb(status.color())))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(label))
-                    .children((!detail.is_empty()).then(|| muted(p, detail))),
-            )
-            .child(
-                button(p, "export", "Export transcript", Tone::Plain, live)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.export(cx))),
-            )
-            .child(
-                button(p, "new-session", "New session", Tone::Plain, closable)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_session(cx))),
-            )
-    }
-
-    fn review_bar(&self, live: &Live, cx: &mut Context<Self>) -> Div {
-        let p = self.palette;
-        let driver = &live.driver;
-        let state = driver.session().state();
-        let review = driver.can_review();
-        let has_check = !self.settings.verify.trim().is_empty();
-        let running = matches!(
-            state,
-            SessionState::Starting | SessionState::Running | SessionState::NeedsYou
-        );
-        let can_stop = running && !driver.stopping() && !driver.closed();
-        let busy = if driver.landing() {
-            Some("Landing. omp is stopped first, then the runner commits and pushes.")
-        } else if driver.stopping() {
-            Some("Stopping omp.")
-        } else {
-            None
-        };
-        div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .child(
-                button(p, "verify", "Run checks", Tone::Plain, review && has_check)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.verify(cx))),
-            )
-            .child(
-                button(p, "diff", "Show diff", Tone::Plain, review)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.diff(cx))),
-            )
-            .child(
-                button(
-                    p,
-                    "land",
-                    "Land and open PR",
-                    Tone::Primary,
-                    driver.can_land(),
-                )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.land(cx))),
-            )
-            .child(
-                button(p, "stop", "Stop", Tone::Danger, can_stop)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop(cx))),
-            )
-            .children(
-                (!has_check).then(|| muted(p, "Set a check command in Settings to run checks.")),
-            )
-            .children(busy.map(|text| muted(p, text)))
-    }
-
-    fn turn(&self, id: String, prompt: &str, reply: &str, waiting: bool) -> Div {
-        let p = self.palette;
-        let (shown, clipped) = last_chars(reply, panels::SHOWN_CHARS);
-        let body = if shown.is_empty() {
-            muted(
-                p,
-                if waiting {
-                    "Waiting for omp."
-                } else {
-                    "No reply."
-                },
-            )
-        } else {
-            div()
-                .text_sm()
-                .child(SelectableText::new(id, shown.to_string()))
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .self_end()
-                    .max_w(px(CONTENT_WIDTH * 0.8))
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(rgb(p.elevated))
-                    .text_sm()
-                    .child(prompt.to_string()),
-            )
-            .children(clipped.then(|| muted(p, "Only the end of this reply is shown.")))
-            .child(body)
-    }
-
-    fn live_body(&self, live: &Live, cx: &mut Context<Self>) -> Div {
-        let p = self.palette;
-        let session = live.driver.session();
-        let waiting = matches!(
-            session.state(),
-            SessionState::Starting | SessionState::Running
-        );
-        div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .children(
-                live.turns.iter().enumerate().map(|(i, (prompt, reply))| {
-                    self.turn(format!("turn-{i}"), prompt, reply, false)
-                }),
-            )
-            .child(self.turn(
-                "turn-now".to_string(),
-                &live.prompt,
-                session.reply(),
-                waiting,
-            ))
-            .children(panels::failure(p, session.failure()))
-            .children(panels::warnings(p, session.warnings()))
-            .children(panels::notices(p, session.notices()))
-            .children(panels::tool_calls(p, session.tool_calls()))
-            .child(card(p).child(self.review_bar(live, cx)))
-            .children(panels::evidence(p, session.evidence()))
-            .children(panels::diff(p, session.last_diff()))
-            .children(panels::landing(
-                p,
-                session.landing(),
-                &self.settings.github_repo,
-            ))
-            .children(panels::log(p, live.driver.log()))
-    }
-
-    fn empty_body(&self, cx: &mut Context<Self>) -> Div {
-        let p = self.palette;
-        let problems = self.settings.problems();
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .pt_8()
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Start a session"),
-            )
-            .child(muted(
-                p,
-                "Describe one change below. omp works on it in a fresh git worktree, asks before \
-                 risky tool calls, and you review the diff and checks before anything is pushed.",
-            ))
-            .children((!problems.is_empty()).then(|| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(banner(
-                        p,
-                        Status::NeedsYou.color(),
-                        "Finish Settings first",
-                        list(&problems),
-                    ))
-                    .child(
-                        button(p, "open-settings", "Open Settings", Tone::Primary, true).on_click(
-                            cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(OpenSettings)),
-                        ),
-                    )
-            }))
-    }
-
-    fn body(&self, cx: &mut Context<Self>) -> Div {
-        let p = self.palette;
-        match &self.phase {
-            Phase::Empty => self.empty_body(cx),
-            Phase::Launching { prompt, .. } => div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(self.turn("turn-now".to_string(), prompt, "", true))
-                .child(muted(p, "Checking the runner and creating the worktree.")),
-            Phase::LaunchFailed { prompt, message } => div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(self.turn("turn-now".to_string(), prompt, "", false))
-                .child(banner(
-                    p,
-                    Status::Error.color(),
-                    "The session could not start",
-                    message.clone(),
-                ))
-                .child(
-                    div().flex().gap_2().child(
-                        button(p, "retry", "Try again", Tone::Primary, true)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.retry(cx))),
-                    ),
-                ),
-            Phase::Live(live) => self.live_body(live, cx),
-        }
-    }
-
-    fn approvals(&self, cx: &Context<Self>) -> Option<Stateful<Div>> {
-        let Phase::Live(live) = &self.phase else {
-            return None;
-        };
-        let pending = live.driver.session().pending_approvals();
-        if pending.is_empty() {
-            return None;
-        }
-        let p = self.palette;
-        let cards: Vec<_> = pending.iter().map(|r| approval_card(p, r, cx)).collect();
-        Some(
-            div()
-                .id("approvals")
-                .flex()
-                .flex_col()
-                .gap_2()
-                .max_h(px(APPROVALS_HEIGHT))
-                .overflow_y_scroll()
-                .children(cards),
-        )
-    }
-
-    fn composer(&self, cx: &mut Context<Self>) -> Div {
-        let p = self.palette;
-        let can_send = match &self.phase {
-            Phase::Live(live) => live.driver.can_prompt(),
-            Phase::Launching { .. } => false,
-            Phase::Empty | Phase::LaunchFailed { .. } => true,
-        };
-        let hint = match &self.phase {
-            Phase::Live(live) if !live.driver.can_prompt() => {
-                "omp is busy or the session has ended. A new prompt can go out once it is ready \
-                 for review."
-            }
-            _ => "Enter sends. Shift+Enter adds a line.",
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .px_2()
-                            .py(px(6.0))
-                            .rounded_md()
-                            .border_1()
-                            .border_color(rgb(p.border))
-                            .bg(rgb(p.elevated))
-                            .text_sm()
-                            .child(Textarea::new(&self.prompt)),
-                    )
-                    .child(button(p, "send", "Send", Tone::Primary, can_send).on_click(
-                        cx.listener(|this, _: &ClickEvent, window, cx| this.submit(window, cx)),
-                    )),
-            )
-            .child(muted(p, hint))
-    }
-}
-
 impl Render for SessionView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = self.palette;
-        let message = self.message.clone().map(|m| match m {
-            Ok(text) => banner(p, Status::Done.color(), "Done", text),
-            Err(text) => banner(p, Status::Error.color(), "Something needs fixing", text),
-        });
-        div()
+        let panel = match &self.phase {
+            Phase::Live(live) if self.review_open => Some(self.review_panel(live, cx)),
+            _ => None,
+        };
+        let main = div()
             .flex()
             .flex_col()
             .flex_1()
@@ -714,7 +488,8 @@ impl Render for SessionView {
                             .mx_auto()
                             .w_full()
                             .max_w(px(CONTENT_WIDTH))
-                            .p_4()
+                            .px_6()
+                            .py_6()
                             .child(self.body(cx)),
                     ),
             )
@@ -726,11 +501,20 @@ impl Render for SessionView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .p_4()
-                    .children(message)
+                    .px_6()
+                    .pt_2()
+                    .pb_4()
+                    .children(self.message_banner(cx))
                     .children(self.approvals(cx))
                     .child(self.composer(cx)),
-            )
+            );
+        div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(main)
+            .children(panel)
     }
 }
 
@@ -752,5 +536,31 @@ mod tests {
         assert!(!problems.is_empty(), "{problems:?}");
         let text = list(&problems);
         assert!(text.contains("repository"), "{text}");
+    }
+
+    #[test]
+    fn a_working_agent_has_to_stop_before_a_new_session() {
+        assert!(!may_start_new(false, false, false, SessionState::Running));
+        assert!(!may_start_new(false, false, false, SessionState::NeedsYou));
+        assert!(may_start_new(false, false, true, SessionState::Running));
+        assert!(may_start_new(
+            false,
+            false,
+            false,
+            SessionState::NeedsReview
+        ));
+        assert!(may_start_new(false, false, false, SessionState::Landed));
+    }
+
+    #[test]
+    fn a_land_in_flight_keeps_the_session_unless_the_runner_is_gone() {
+        assert!(!may_start_new(
+            false,
+            true,
+            false,
+            SessionState::NeedsReview
+        ));
+        assert!(may_start_new(true, true, false, SessionState::NeedsReview));
+        assert!(may_start_new(true, false, false, SessionState::Running));
     }
 }

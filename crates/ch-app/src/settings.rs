@@ -33,6 +33,16 @@ fn default_remote_runner() -> String {
     ch_runtime::DEFAULT_REMOTE_RUNNER.to_string()
 }
 
+/// Which palette the window uses. `System` follows the OS setting as it changes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePref {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -54,6 +64,7 @@ pub struct Settings {
     /// `owner/name` on GitHub.
     pub github_repo: String,
     pub base_branch: String,
+    pub theme: ThemePref,
 }
 
 impl Default for Settings {
@@ -70,6 +81,7 @@ impl Default for Settings {
             author_email: String::new(),
             github_repo: String::new(),
             base_branch: "main".to_string(),
+            theme: ThemePref::System,
         }
     }
 }
@@ -470,6 +482,21 @@ mod tests {
         assert_eq!(
             key_env_after_provider_change("nope", "OPENAI_API_KEY"),
             None
+        );
+    }
+    #[test]
+    fn a_file_from_before_themes_follows_the_system() {
+        let old: Settings = serde_json::from_str(r#"{"repo": "/work/app"}"#).expect("parses");
+        assert_eq!(old.theme, ThemePref::System);
+        let dark = Settings {
+            theme: ThemePref::Dark,
+            ..Settings::default()
+        };
+        let text = serde_json::to_string(&dark).expect("serializes");
+        assert!(text.contains(r#""theme":"dark""#), "{text}");
+        assert_eq!(
+            serde_json::from_str::<Settings>(&text).expect("parses"),
+            dark
         );
     }
 }

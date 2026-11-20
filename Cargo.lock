@@ -789,6 +789,7 @@ dependencies = [
  "ch-ui",
  "ch-vault",
  "dirs",
+ "embed-resource",
  "gpui-kit",
  "serde",
  "serde_json",

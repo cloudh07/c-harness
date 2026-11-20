@@ -5,10 +5,12 @@ use std::fmt::Write as _;
 use ch_core::SessionState;
 use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
 
-use crate::settings::Settings;
+use crate::settings::{Location, Settings};
 
 /// Git's own advice for a commit subject line.
 const SUBJECT_LIMIT: usize = 72;
+/// About what fits in the session header next to its buttons.
+const TITLE_LIMIT: usize = 80;
 
 pub fn session_id(epoch_ms: u64) -> String {
     format!("s{epoch_ms}")
@@ -181,6 +183,85 @@ pub fn pr_link_allowed(url: &str, github_repo: &str) -> bool {
         && number.bytes().all(|b| b.is_ascii_digit())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffTotals {
+    pub files: u32,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+/// The totals from the line `git diff --stat` ends with, such as
+/// ` 3 files changed, 10 insertions(+), 2 deletions(-)`. `None` when the stat is empty or was
+/// cut before git finished it: git ends the stat with a newline and a cut stat has none.
+pub fn diff_totals(stat: &str) -> Option<DiffTotals> {
+    let body = stat.strip_suffix('\n')?;
+    let line = body.rsplit('\n').next()?.trim();
+    let mut parts = line.split(", ");
+    let (count, rest) = parts.next()?.split_once(' ')?;
+    if !matches!(rest, "file changed" | "files changed") {
+        return None;
+    }
+    let mut totals = DiffTotals {
+        files: count.parse().ok()?,
+        insertions: 0,
+        deletions: 0,
+    };
+    for part in parts {
+        let (count, rest) = part.split_once(' ')?;
+        let n: u32 = count.parse().ok()?;
+        match rest {
+            "insertion(+)" | "insertions(+)" => totals.insertions = n,
+            "deletion(-)" | "deletions(-)" => totals.deletions = n,
+            _ => return None,
+        }
+    }
+    Some(totals)
+}
+
+/// Each whole file line of `git diff --stat`: the path and the count git printed (`12`, `Bin`).
+/// A line cut off at the end of a truncated stat is skipped rather than shown with a wrong count.
+pub fn diff_files(stat: &str) -> Vec<(&str, &str)> {
+    stat.split_inclusive('\n')
+        .filter(|line| line.ends_with('\n'))
+        .filter_map(|line| line.rsplit_once(" | "))
+        .map(|(path, change)| {
+            (
+                path.trim(),
+                change.split_whitespace().next().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// A one-line name for a session: the first written line of its prompt, cut to fit a header.
+/// Empty when the prompt has no text yet.
+pub fn session_title(prompt: &str) -> String {
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    match first_chars(line, TITLE_LIMIT) {
+        (shown, true) => format!("{}…", shown.trim_end()),
+        (shown, false) => shown.to_string(),
+    }
+}
+
+/// What the header calls the repository: its folder name, or the SSH host it runs on.
+pub fn repo_label(settings: &Settings) -> String {
+    match &settings.location {
+        Location::Ssh { host, .. } => host.trim().to_string(),
+        Location::Local => settings
+            .repo
+            .trim()
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +413,88 @@ mod tests {
             "https://github.com/example/demo/issues/1",
             repo
         ));
+    }
+
+    const STAT: &str = " src/main.rs  | 12 ++++++++----\n README.md    |  3 +++\n logo.png     | Bin 0 -> 1234 bytes\n 3 files changed, 11 insertions(+), 4 deletions(-)\n";
+
+    fn totals(files: u32, insertions: u32, deletions: u32) -> DiffTotals {
+        DiffTotals {
+            files,
+            insertions,
+            deletions,
+        }
+    }
+
+    #[test]
+    fn diff_totals_reads_the_summary_line() {
+        assert_eq!(diff_totals(STAT), Some(totals(3, 11, 4)));
+        let one = " a.rs | 1 +\n 1 file changed, 1 insertion(+)\n";
+        assert_eq!(diff_totals(one), Some(totals(1, 1, 0)));
+        let gone = " a.rs | 2 --\n 1 file changed, 2 deletions(-)\n";
+        assert_eq!(diff_totals(gone), Some(totals(1, 0, 2)));
+        let crlf = " a.rs | 1 +\r\n 1 file changed, 1 insertion(+)\r\n";
+        assert_eq!(diff_totals(crlf), Some(totals(1, 1, 0)));
+    }
+
+    #[test]
+    fn diff_totals_refuses_what_git_did_not_finish() {
+        assert_eq!(diff_totals(""), None);
+        assert_eq!(diff_totals(STAT.trim_end_matches('\n')), None);
+        assert_eq!(diff_totals(" src/main.rs | 12 ++++++++----\n src/li"), None);
+        assert_eq!(diff_totals("warning: something odd\n"), None);
+        assert_eq!(diff_totals(" 2 files changed, 3 carrots(+)\n"), None);
+    }
+
+    #[test]
+    fn diff_files_lists_whole_lines_only() {
+        assert_eq!(
+            diff_files(STAT),
+            vec![
+                ("src/main.rs", "12"),
+                ("README.md", "3"),
+                ("logo.png", "Bin")
+            ]
+        );
+        assert_eq!(
+            diff_files(" src/main.rs | 12 ++++\n src/lib.rs | 1"),
+            vec![("src/main.rs", "12")]
+        );
+        assert_eq!(diff_files(""), Vec::<(&str, &str)>::new());
+    }
+
+    #[test]
+    fn session_title_is_the_first_written_line() {
+        assert_eq!(
+            session_title("\n   Fix the login bug  \nthen tidy up"),
+            "Fix the login bug"
+        );
+        assert_eq!(session_title("  \n "), "");
+        let title = session_title(&"word ".repeat(40));
+        assert!(title.ends_with('…'), "{title}");
+        assert!(title.chars().count() <= TITLE_LIMIT + 1, "{title}");
+    }
+
+    #[test]
+    fn repo_label_names_the_folder_or_the_host() {
+        let windows = Settings {
+            repo: "D:\\code\\c-harness\\".to_string(),
+            ..Settings::default()
+        };
+        assert_eq!(repo_label(&windows), "c-harness");
+        let unix = Settings {
+            repo: "/home/dev/work/app/".to_string(),
+            ..Settings::default()
+        };
+        assert_eq!(repo_label(&unix), "app");
+        let remote = Settings {
+            location: Location::Ssh {
+                host: " devbox ".to_string(),
+                port: None,
+                remote_workdir: "/srv/app".to_string(),
+                remote_runner: "ch-runner".to_string(),
+            },
+            ..Settings::default()
+        };
+        assert_eq!(repo_label(&remote), "devbox");
     }
 }

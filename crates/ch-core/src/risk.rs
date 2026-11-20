@@ -95,7 +95,7 @@ pub fn classify(request: &ApprovalRequest) -> Assessment {
 
 fn classify_parts(tool: &str, details: &str, from_mcp: bool) -> Assessment {
     if has_elision(details) {
-        return high("omp cut the details short, so part of the call is not shown");
+        return high("the agent cut the details short, so part of the call is not shown");
     }
     if touches_sensitive_path(details) {
         return high("touches SSH keys, git hooks or git configuration");

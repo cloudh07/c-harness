@@ -31,3 +31,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+crates/ch-app/assets/icons holds icons from Lucide (https://lucide.dev), used under the
+ISC License. The full text is in crates/ch-app/assets/icons/LICENSE.
+
+crates/ch-app/assets/providers holds provider logos from lobe-icons
+(https://github.com/lobehub/lobe-icons), Copyright (c) 2023 LobeHub, used under the MIT
+License. The full text is in crates/ch-app/assets/providers/LICENSE. The logos are
+trademarks of their owners; C-Harness is not affiliated with or endorsed by any of them.

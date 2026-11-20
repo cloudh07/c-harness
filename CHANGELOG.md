@@ -38,6 +38,28 @@ Notable changes to C-Harness. The format follows
   one, so a build or an unpacked release runs without editing `PATH` on macOS and Linux.
 - `ch-runner`: when omp is not installed, the error says to put `omp` on the `PATH` that
   `ch-runner` sees.
+- The C-Harness mark: in the sidebar, on the empty session screen, and as the Windows app
+  icon embedded in `c-harness.exe`. `assets/brand` holds the source files and the rules for
+  using them.
+- `ch-app`: a theme switch in the sidebar with Match system, Light and Dark. The choice is
+  saved with the other settings.
+- `ch-ui`: a full light palette next to the dark one, with tool group colors and tint chips.
+  Tests check text, status and tool contrast in both themes.
+- `ch-app`: Lucide icons, and provider logos from lobe-icons in the model chip and Settings.
+  Each tool call in the thread shows the icon and color of its group: read, edit, shell, web,
+  MCP or agent.
+- `ch-app`: the session screen is a thread with the prompt box at the bottom and a review
+  panel on the right. The panel holds the changed files, the checks, the land step and the
+  session details. When the panel is closed and the agent finishes, the thread asks you to
+  review.
+- `ch-app`: approval cards carry a shield in the color of their risk.
+
+### Changed
+
+- `ch-app`: New session moved to the sidebar. It waits until the agent is stopped, and a land
+  in flight keeps the session open unless the runner is gone.
+- The session screen calls the coding agent "the agent". Settings, install help and error
+  messages still name omp, because that is the program you install and configure.
 
 ### Security
 

@@ -3,9 +3,12 @@
 use ch_ui::{Palette, Status};
 use gpui_kit::base::{Button, ColorTokens, Theme, ThemeAppearance};
 use gpui_kit::{
-    App, Div, ElementId, FontWeight, Hsla, InteractiveElement, IntoElement, ParentElement,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, div, px, rgb,
+    AnyView, App, AppContext, Context, Div, ElementId, FontWeight, Hsla, InteractiveElement,
+    IntoElement, ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled,
+    Window, div, px, rgb,
 };
+
+use crate::assets::{Icon, icon};
 
 #[cfg(target_os = "windows")]
 pub const MONO: &str = "Consolas";
@@ -15,6 +18,9 @@ pub const MONO: &str = "Menlo";
 pub const MONO: &str = "DejaVu Sans Mono";
 
 const SELECTION_ALPHA: f32 = 0.35;
+const DISABLED_OPACITY: f32 = 0.45;
+const ICON_BUTTON: f32 = 28.0;
+const ICON_SIZE: f32 = 16.0;
 
 fn hsla(hex: u32) -> Hsla {
     rgb(hex).into()
@@ -31,12 +37,15 @@ pub fn sync_theme(p: Palette, dark: bool, cx: &mut App) {
     colors.foreground = hsla(p.text);
     colors.surface = hsla(p.elevated);
     colors.surface_foreground = hsla(p.text);
+    colors.muted = hsla(p.hover);
     colors.muted_foreground = hsla(p.text_muted);
+    colors.destructive = hsla(p.status(Status::Error));
     colors.border = hsla(p.border);
     colors.input = hsla(p.border);
     colors.accent = hsla(p.accent);
     colors.ring = hsla(p.accent);
-    colors.primary = hsla(p.accent);
+    colors.primary = hsla(p.primary);
+    colors.primary_foreground = hsla(p.on_primary);
     colors.selection = Hsla {
         a: SELECTION_ALPHA,
         ..hsla(p.accent)
@@ -50,14 +59,91 @@ pub fn sync_theme(p: Palette, dark: bool, cx: &mut App) {
     theme.tokens.colors = colors;
 }
 
+/// One short line that names what a control does.
+pub struct Tip {
+    text: SharedString,
+    palette: Palette,
+}
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let p = self.palette;
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(rgb(p.border_strong))
+            .bg(rgb(p.elevated))
+            .text_xs()
+            .text_color(rgb(p.text))
+            .child(self.text.clone())
+    }
+}
+
+/// A builder for `.tooltip()`.
+pub fn tip(
+    p: Palette,
+    text: impl Into<SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let text = text.into();
+    move |_, cx| {
+        let text = text.clone();
+        cx.new(|_| Tip { text, palette: p }).into()
+    }
+}
+
+/// How loud a button is. Each screen has at most one `Primary`, picked by what the session
+/// needs next.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Primary,
     Plain,
     Danger,
+    /// No fill or border until hovered. For icon buttons in toolbars.
+    Ghost,
 }
 
-/// A button in the app style. The caller adds `on_click`; a disabled button drops it.
+impl Tone {
+    fn foreground(self, p: Palette) -> u32 {
+        match self {
+            Tone::Primary => p.on_primary,
+            Tone::Plain => p.text,
+            Tone::Danger => p.status(Status::Error),
+            Tone::Ghost => p.text_muted,
+        }
+    }
+}
+
+fn paint(p: Palette, base: Button, tone: Tone, enabled: bool) -> Button {
+    let fg = rgb(tone.foreground(p));
+    let base = match tone {
+        Tone::Primary => base
+            .border_1()
+            .border_color(rgb(p.primary))
+            .bg(rgb(p.primary)),
+        Tone::Plain => base
+            .border_1()
+            .border_color(rgb(p.border))
+            .bg(rgb(p.elevated)),
+        Tone::Danger => base
+            .border_1()
+            .border_color(rgb(p.status(Status::Error)))
+            .bg(rgb(p.elevated)),
+        Tone::Ghost => base,
+    }
+    .text_color(fg);
+    if !enabled {
+        return base.opacity(DISABLED_OPACITY);
+    }
+    let base = base.cursor_pointer();
+    match tone {
+        Tone::Primary => base.hover(|s| s.opacity(0.9)),
+        Tone::Plain | Tone::Danger | Tone::Ghost => base.hover(move |s| s.bg(rgb(p.hover))),
+    }
+}
+
+/// A text button in the app style. The caller adds `on_click`; a disabled button drops it.
 pub fn button(
     p: Palette,
     id: impl Into<ElementId>,
@@ -65,28 +151,63 @@ pub fn button(
     tone: Tone,
     enabled: bool,
 ) -> Button {
-    let (bg, fg, border) = match tone {
-        Tone::Primary => (p.accent, 0xFF_FF_FF, p.accent),
-        Tone::Plain => (p.elevated, p.text, p.border),
-        Tone::Danger => (p.elevated, Status::Error.color(), Status::Error.color()),
-    };
     let base = Button::new(id)
         .disabled(!enabled)
-        .px_3()
+        .gap(px(6.0))
+        .px(px(14.0))
         .py(px(6.0))
-        .rounded_md()
-        .border_1()
-        .border_color(rgb(border))
-        .bg(rgb(bg))
-        .text_color(rgb(fg))
+        .rounded_full()
         .text_sm()
         .font_weight(FontWeight::MEDIUM)
         .child(label.into());
-    if enabled {
-        base.cursor_pointer().hover(|s| s.opacity(0.85))
+    paint(p, base, tone, enabled)
+}
+
+/// A text button with a leading icon.
+pub fn icon_text_button(
+    p: Palette,
+    id: impl Into<ElementId>,
+    glyph: Icon,
+    label: impl Into<SharedString>,
+    tone: Tone,
+    enabled: bool,
+) -> Button {
+    let base = Button::new(id)
+        .disabled(!enabled)
+        .gap(px(6.0))
+        .px(px(12.0))
+        .py(px(6.0))
+        .rounded_full()
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .child(icon(glyph, px(ICON_SIZE - 2.0), tone.foreground(p)))
+        .child(label.into());
+    paint(p, base, tone, enabled)
+}
+
+/// A square button that shows only an icon. `label` is read by screen readers and shown as
+/// the tooltip, so the icon never has to explain itself.
+pub fn icon_button(
+    p: Palette,
+    id: impl Into<ElementId>,
+    glyph: Icon,
+    label: &'static str,
+    tone: Tone,
+    enabled: bool,
+) -> Button {
+    let shape = Button::new(id)
+        .disabled(!enabled)
+        .flex_none()
+        .size(px(ICON_BUTTON))
+        .accessibility_label(label)
+        .tooltip(tip(p, label))
+        .child(icon(glyph, px(ICON_SIZE), tone.foreground(p)));
+    let shape = if tone == Tone::Ghost {
+        shape.rounded_md()
     } else {
-        base.opacity(0.45)
-    }
+        shape.rounded_full()
+    };
+    paint(p, shape, tone, enabled)
 }
 
 /// A labelled input. The input draws its own text; this draws the box around it.
@@ -124,6 +245,15 @@ pub fn section(title: impl Into<SharedString>) -> Div {
         .child(title.into())
 }
 
+/// A small label above a group of rows, as in a sidebar or side panel.
+pub fn eyebrow(p: Palette, text: impl Into<SharedString>) -> Div {
+    div()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(p.text_muted))
+        .child(text.into())
+}
+
 pub fn muted(p: Palette, text: impl Into<SharedString>) -> Div {
     div()
         .text_xs()
@@ -143,7 +273,7 @@ pub fn banner(
         .flex_col()
         .gap_1()
         .p_3()
-        .rounded_md()
+        .rounded_lg()
         .border_1()
         .border_l_4()
         .border_color(rgb(color))
@@ -164,7 +294,7 @@ pub fn card(p: Palette) -> Div {
         .flex_col()
         .gap_2()
         .p_3()
-        .rounded_md()
+        .rounded_lg()
         .border_1()
         .border_color(rgb(p.border))
         .bg(rgb(p.surface))

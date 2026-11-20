@@ -19,8 +19,8 @@ ch-runner ──> ch-protocol        (separate binary, runs next to omp)
 
 | Crate | Owns | I/O |
 |---|---|---|
-| `ch-app` | Window, screens, wiring a session's lines into state | GPUI |
-| `ch-ui` | Color tokens, status colors, contrast math | none |
+| `ch-app` | Window, screens, icons and the brand mark, wiring a session's lines into state | GPUI |
+| `ch-ui` | Light and dark color tokens, status and tool group colors, contrast math | none |
 | `ch-protocol` | omp RPC framing, `rpc_chunk` reassembly, provider probe, the `ch_*` runner frames and line routing | none |
 | `ch-core` | Session state machine, approval parsing that fails closed, risk hints, transcript records, secret redaction | none |
 | `ch-runtime` | `SandboxProvider`: a local detached worktree, or a host over the system `ssh` | processes |

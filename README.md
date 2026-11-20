@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/mark-on-dark.svg">
+    <img src="assets/brand/mark-on-light.svg" alt="The C-Harness mark: three arcs closing on a core" width="96">
+  </picture>
+</p>
+
 # C-Harness
 
 A native desktop client for coding agents that run in sandboxes you own. Written in Rust on

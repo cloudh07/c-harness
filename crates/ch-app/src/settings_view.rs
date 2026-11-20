@@ -12,9 +12,12 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, Subscription, Window, div, px, rgb,
 };
 
-use crate::settings::{self, Location, Settings};
+use crate::assets::provider_logo;
+use crate::settings::{self, Location, Settings, ThemePref};
 use crate::view_model::parse_port;
 use crate::widgets::{Tone, banner, button, field, muted, section};
+
+const PROVIDER_LOGO: f32 = 16.0;
 
 /// Emitted after the settings file and any new secrets are written.
 pub struct SettingsSaved(pub Settings);
@@ -185,6 +188,26 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// Saves the theme on its own, so picking one never saves half-edited fields with it. A
+    /// file that failed to load is left alone; the theme then lasts until the app closes.
+    pub fn set_theme(&mut self, theme: ThemePref, cx: &mut Context<Self>) {
+        self.saved.theme = theme;
+        if self.load_error.is_some() {
+            return;
+        }
+        let Some(path) = settings::default_path() else {
+            return;
+        };
+        if let Err(e) = settings::save(&path, &self.saved) {
+            self.status = Some(Err(format!("Could not save the theme: {e}")));
+            cx.notify();
+        }
+    }
+
+    pub fn theme(&self) -> ThemePref {
+        self.saved.theme
+    }
+
     fn refresh_stored(&mut self) {
         self.key_stored = stored(model_secret(&self.saved.provider));
         self.token_stored = stored(Ok(SecretName::github()));
@@ -242,6 +265,7 @@ impl SettingsView {
             author_email: value(&f.author_email, cx),
             github_repo: value(&f.github_repo, cx),
             base_branch: value(&f.base_branch, cx),
+            theme: self.saved.theme,
         })
     }
 
@@ -343,7 +367,12 @@ impl SettingsView {
         let row = div().flex().items_center().gap_2();
         match state {
             Ok(true) => row
-                .child(div().size_2().rounded_full().bg(rgb(Status::Done.color())))
+                .child(
+                    div()
+                        .size_2()
+                        .rounded_full()
+                        .bg(rgb(p.status(Status::Done))),
+                )
                 .child(div().flex_1().text_xs().child(what))
                 .child(
                     button(p, id, "Remove", Tone::Danger, true)
@@ -353,7 +382,7 @@ impl SettingsView {
             Err(message) => row.child(
                 div()
                     .text_xs()
-                    .text_color(rgb(Status::Error.color()))
+                    .text_color(rgb(p.status(Status::Error)))
                     .child(message.clone()),
             ),
         }
@@ -375,7 +404,7 @@ impl SettingsView {
             .when(!start.is_empty(), |d| {
                 d.child(banner(
                     p,
-                    Status::NeedsYou.color(),
+                    p.status(Status::NeedsYou),
                     "Before a session can start",
                     start.join("\n"),
                 ))
@@ -383,7 +412,7 @@ impl SettingsView {
             .when(!land.is_empty(), |d| {
                 d.child(banner(
                     p,
-                    Status::Idle.color(),
+                    p.status(Status::Idle),
                     "Before a session can land",
                     land.join("\n"),
                 ))
@@ -398,8 +427,8 @@ impl SettingsView {
         };
         let status = self.status.clone().map(|status| {
             let (color, text) = match status {
-                Ok(text) => (Status::Done.color(), text),
-                Err(text) => (Status::Error.color(), text),
+                Ok(text) => (p.status(Status::Done), text),
+                Err(text) => (p.status(Status::Error), text),
             };
             div().text_sm().text_color(rgb(color)).child(text)
         });
@@ -464,6 +493,7 @@ impl Render for SettingsView {
         let p = self.palette;
         let draft = self.draft(cx);
         let f = &self.fields;
+        let provider = f.provider.read(cx).value().to_string();
         let path = settings::default_path().map_or_else(
             || "No config folder on this system.".to_string(),
             |path| format!("Saved to {}", path.display()),
@@ -485,7 +515,7 @@ impl Render for SettingsView {
             .children(self.load_error.as_ref().map(|err| {
                 banner(
                     p,
-                    Status::Error.color(),
+                    p.status(Status::Error),
                     "Your settings file could not be read",
                     format!("{err}. Saving will replace it."),
                 )
@@ -504,7 +534,12 @@ impl Render for SettingsView {
                 p,
                 "Provider",
                 Some("omp's provider id, such as openai, anthropic or openrouter."),
-                Input::new(&f.provider),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .children(provider_logo(&provider, px(PROVIDER_LOGO), p.text))
+                    .child(div().flex_1().min_w_0().child(Input::new(&f.provider))),
             ))
             .child(field(
                 p,

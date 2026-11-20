@@ -2,9 +2,10 @@
 
 use ch_core::{Diff, Failure, Landing, Notice, ToolCall, ToolStatus};
 use ch_protocol::runner::Evidence;
-use ch_ui::{Palette, Status};
-use gpui_kit::{App, ClickEvent, Div, FontWeight, ParentElement, Styled, Window, div, rgb};
+use ch_ui::{Palette, Status, ToolGroup};
+use gpui_kit::{App, ClickEvent, Div, FontWeight, ParentElement, Styled, Window, div, px, rgb};
 
+use crate::assets::{icon, tool_icon};
 use crate::view_model::{check_outcome, check_passed, first_chars, last_chars, pr_link_allowed};
 use crate::widgets::{MONO, Tone, banner, button, card, mono_block, muted};
 
@@ -13,6 +14,7 @@ pub const SHOWN_CHARS: usize = 20_000;
 const SHOWN_TOOL_CALLS: usize = 30;
 const SHOWN_LOG_LINES: usize = 50;
 const SHORT_COMMIT: usize = 12;
+const TOOL_ICON: f32 = 14.0;
 
 fn title(text: impl Into<gpui_kit::SharedString>) -> Div {
     div()
@@ -25,7 +27,7 @@ pub fn failure(p: Palette, failure: Option<&Failure>) -> Option<Div> {
     let failure = failure?;
     Some(banner(
         p,
-        Status::Error.color(),
+        p.status(Status::Error),
         format!("Failed during {}", failure.stage),
         failure.message.clone(),
     ))
@@ -43,7 +45,7 @@ pub fn warnings(p: Palette, warnings: &[Failure]) -> Option<Div> {
             .children(warnings.iter().map(|w| {
                 banner(
                     p,
-                    Status::NearCap.color(),
+                    p.status(Status::NearCap),
                     format!("Could not {}", w.stage),
                     w.message.clone(),
                 )
@@ -70,19 +72,27 @@ pub fn tool_calls(p: Palette, calls: &[ToolCall]) -> Option<Div> {
     }
     let skipped = calls.len().saturating_sub(SHOWN_TOOL_CALLS);
     let rows = calls[skipped..].iter().map(|call| {
-        let (label, status) = match call.status {
-            ToolStatus::Running => ("running", Status::Running),
-            ToolStatus::Succeeded => ("done", Status::Done),
-            ToolStatus::Failed => ("failed", Status::Error),
+        let group = ToolGroup::of(&call.name);
+        let (label, label_color) = match call.status {
+            ToolStatus::Running => ("running", p.status(Status::Running)),
+            ToolStatus::Succeeded => ("done", p.text_muted),
+            ToolStatus::Failed => ("failed", p.status(Status::Error)),
         };
         div()
             .flex()
             .items_center()
             .gap_2()
             .text_sm()
-            .child(div().size_2().rounded_full().bg(rgb(status.color())))
-            .child(div().flex_1().font_family(MONO).child(call.name.clone()))
-            .child(div().text_xs().text_color(rgb(p.text_muted)).child(label))
+            .child(icon(tool_icon(group), px(TOOL_ICON), p.tool(group)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(MONO)
+                    .child(call.name.clone()),
+            )
+            .child(div().text_xs().text_color(rgb(label_color)).child(label))
     });
     Some(
         card(p)
@@ -100,9 +110,9 @@ pub fn evidence(p: Palette, runs: &[Evidence]) -> Option<Div> {
     }
     let items = runs.iter().enumerate().map(|(i, run)| {
         let color = if check_passed(run) {
-            Status::Done.color()
+            p.status(Status::Done)
         } else {
-            Status::Error.color()
+            p.status(Status::Error)
         };
         let at = run
             .head
