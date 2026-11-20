@@ -52,6 +52,10 @@ a new omp event costs the transport nothing.
 | `ch_land` branch, message, author, remote, token, pull request | `ch_landed` branch, commit, pull request URL |
 | any omp command | any omp event, `ch_notice`, `ch_omp_exited`, `ch_error` |
 
+Verify, diff, stop and land carry an id that the reply repeats, and `ch_error` repeats it when a
+request fails. The app keeps the ids it is still waiting on and drops a reply that names none of
+them, or names one of another kind.
+
 ## A session, end to end
 
 1. The app reads the model key from the keychain and asks `ch-runtime` for a sandbox: a

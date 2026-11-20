@@ -50,3 +50,6 @@ Notable changes to C-Harness. The format follows
   which omp treats as a refusal.
 - A runner frame that arrives inside omp's `rpc_chunk` sequence is dropped, so omp cannot forge
   verify evidence, a diff, a stop or a landed branch.
+- `ch-app` drops a runner reply that names no open request of its kind: evidence must answer a
+  verify the app sent, a diff a diff, a stop a stop and a landed branch a land, each only once.
+  Dropped replies are logged and kept out of the session.

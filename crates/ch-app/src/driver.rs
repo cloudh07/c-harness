@@ -4,7 +4,7 @@
 //! through a method here, which sends it, adds it to the transcript and reports it to the
 //! reducer, in that order and only once the link took it.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ch_core::{
@@ -22,6 +22,8 @@ const LOG_LIMIT: usize = 200;
 const RECORD_LIMIT: usize = 50_000;
 /// omp dialogs that wait for an answer the app has no screen for. omp reads a cancel as no.
 const UNANSWERABLE_DIALOGS: &[&str] = &["confirm", "input", "editor", "ask"];
+/// How much of an unknown request id a log line repeats.
+const SHOWN_ID_CHARS: usize = 40;
 
 pub fn epoch_ms() -> u64 {
     SystemTime::now()
@@ -37,6 +39,26 @@ enum OmpState {
     Ended,
 }
 
+/// A request sent to the runner that its reply must name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Request {
+    Verify,
+    Diff,
+    Stop,
+    Land,
+}
+
+impl Request {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Verify => "verify",
+            Self::Diff => "diff",
+            Self::Stop => "stop",
+            Self::Land => "land",
+        }
+    }
+}
+
 pub struct Driver {
     link: Link,
     session: Session,
@@ -46,6 +68,8 @@ pub struct Driver {
     log: VecDeque<String>,
     clock: fn() -> u64,
     next_id: u64,
+    /// Requests the runner has not answered yet, by id.
+    open: HashMap<String, Request>,
     queued_prompt: Option<String>,
     queued_land: Option<LandRequest>,
     land_in_flight: bool,
@@ -64,6 +88,7 @@ impl Driver {
             log: VecDeque::new(),
             clock,
             next_id: 0,
+            open: HashMap::new(),
             queued_prompt: None,
             queued_land: None,
             land_in_flight: false,
@@ -186,16 +211,17 @@ impl Driver {
     pub fn verify(&mut self, command: &str) -> bool {
         let id = self.next_id();
         let frame = ClientFrame::Verify {
-            id,
+            id: id.clone(),
             command: command.to_string(),
             timeout_secs: None,
         };
-        self.send_client(&frame, None)
+        self.send_request(id, Request::Verify, &frame, None)
     }
 
     pub fn diff(&mut self) -> bool {
         let id = self.next_id();
-        self.send_client(&ClientFrame::Diff { id }, None)
+        let frame = ClientFrame::Diff { id: id.clone() };
+        self.send_request(id, Request::Diff, &frame, None)
     }
 
     pub fn stop(&mut self) -> bool {
@@ -203,7 +229,8 @@ impl Driver {
             return true;
         }
         let id = self.next_id();
-        let sent = self.send_client(&ClientFrame::Stop { id }, Some(ClientAction::StopSent));
+        let frame = ClientFrame::Stop { id: id.clone() };
+        let sent = self.send_request(id, Request::Stop, &frame, Some(ClientAction::StopSent));
         if sent {
             self.omp = OmpState::StopSent;
         }
@@ -211,9 +238,9 @@ impl Driver {
     }
 
     /// Lands the work. The runner refuses a land while omp runs, so omp is stopped first and the
-    /// land goes out once the runner says it ended.
-    pub fn land(&mut self, mut request: LandRequest) -> bool {
-        request.id = self.next_id();
+    /// land goes out once the runner says it ended. The request's `id` is replaced when it is
+    /// sent.
+    pub fn land(&mut self, request: LandRequest) -> bool {
         if self.omp == OmpState::Ended {
             return self.send_land(request);
         }
@@ -262,6 +289,16 @@ impl Driver {
     }
 
     fn on_line(&mut self, line: &RunnerLine) {
+        let answered = match line {
+            RunnerLine::Runner(frame) => match self.take_request(frame) {
+                Ok(answered) => answered,
+                Err(problem) => {
+                    self.note(&problem);
+                    return;
+                }
+            },
+            RunnerLine::Omp(_) => None,
+        };
         let record = self.transcript.incoming((self.clock)(), line);
         self.keep(record);
         self.session.apply_line(line);
@@ -270,12 +307,39 @@ impl Driver {
                 self.omp = OmpState::Ended;
                 self.queued_prompt = None;
             }
-            RunnerLine::Runner(RunnerFrame::Landed { .. }) => self.land_in_flight = false,
-            RunnerLine::Runner(RunnerFrame::Error { stage, .. }) if stage == "land" => {
-                self.land_in_flight = false;
-            }
             RunnerLine::Omp(frame) => self.cancel_unanswerable(frame),
             RunnerLine::Runner(_) => {}
+        }
+        if answered == Some(Request::Land) {
+            self.land_in_flight = false;
+        }
+    }
+
+    /// Takes the request a runner reply answers off the open list. A reply that names no open
+    /// request of its kind is refused, and the request it names stays open for the real answer.
+    /// An error answers whatever request it names, since a malformed request comes back as a
+    /// protocol error.
+    fn take_request(&mut self, frame: &RunnerFrame) -> Result<Option<Request>, String> {
+        let (id, expected) = match frame {
+            RunnerFrame::Evidence(evidence) => (&evidence.id, Some(Request::Verify)),
+            RunnerFrame::DiffResult { id, .. } => (id, Some(Request::Diff)),
+            RunnerFrame::Stopped { id, .. } => (id, Some(Request::Stop)),
+            RunnerFrame::Landed { id, .. } => (id, Some(Request::Land)),
+            RunnerFrame::Error { id: Some(id), .. } => (id, None),
+            RunnerFrame::Hello { .. }
+            | RunnerFrame::Notice { .. }
+            | RunnerFrame::OmpExited { .. }
+            | RunnerFrame::Error { id: None, .. } => return Ok(None),
+        };
+        match self.open.get(id) {
+            Some(open) if expected.is_none_or(|kind| kind == *open) => Ok(self.open.remove(id)),
+            _ => {
+                let kind = expected.map_or("error", Request::label);
+                let shown: String = id.chars().take(SHOWN_ID_CHARS).collect();
+                Err(format!(
+                    "Dropped a {kind} reply for request {shown:?}, which is not an open {kind} request."
+                ))
+            }
         }
     }
 
@@ -323,9 +387,27 @@ impl Driver {
         }
     }
 
-    fn send_land(&mut self, request: LandRequest) -> bool {
-        let sent = self.send_client(&ClientFrame::Land(request), Some(ClientAction::LandSent));
+    fn send_land(&mut self, mut request: LandRequest) -> bool {
+        let id = self.next_id();
+        request.id.clone_from(&id);
+        let frame = ClientFrame::Land(request);
+        let sent = self.send_request(id, Request::Land, &frame, Some(ClientAction::LandSent));
         self.land_in_flight |= sent;
+        sent
+    }
+
+    /// Sends a request whose reply must carry `id`, and opens it once the link took it.
+    fn send_request(
+        &mut self,
+        id: String,
+        kind: Request,
+        frame: &ClientFrame,
+        action: Option<ClientAction>,
+    ) -> bool {
+        let sent = self.send_client(frame, action);
+        if sent {
+            self.open.insert(id, kind);
+        }
         sent
     }
 
@@ -702,12 +784,14 @@ mod tests {
         assert!(rig.driver.land(land_request()));
         assert!(!rig.driver.can_land());
         rig.pump_until("the stop", |_, sent| !of_type(sent, "ch_stop").is_empty());
-        rig.say(&json!({"type":"ch_stopped","id":"req_3","exit_code":0}));
+        let stop_id = of_type(&rig.sent(), "ch_stop")[0]["id"].clone();
+        rig.say(&json!({"type":"ch_stopped","id":stop_id,"exit_code":0}));
         rig.pump_until("the land", |_, sent| !of_type(sent, "ch_land").is_empty());
         assert!(!rig.driver.can_land(), "a land is already out");
         assert!(!rig.driver.can_review());
 
-        rig.say(&json!({"type":"ch_error","id":"req_4","stage":"land","message":"push rejected"}));
+        let land_id = of_type(&rig.sent(), "ch_land")[0]["id"].clone();
+        rig.say(&json!({"type":"ch_error","id":land_id,"stage":"land","message":"push rejected"}));
         rig.pump_until("the failure", |d, _| {
             d.session().state() == SessionState::Failed
         });
@@ -724,6 +808,81 @@ mod tests {
             "omp was already stopped"
         );
         assert_ne!(rig.driver.session().state(), SessionState::Failed);
+    }
+
+    fn drops(driver: &Driver) -> usize {
+        driver.log().filter(|l| l.starts_with("Dropped a ")).count()
+    }
+
+    fn diff_result(id: &Value, stat: &str) -> Value {
+        json!({"type":"ch_diff_result","id":id,"base":"abc","stat":stat,"patch":"+x",
+            "truncated":false})
+    }
+
+    #[test]
+    fn replies_that_answer_no_open_request_are_dropped() {
+        let mut rig = Rig::new();
+        settle(&mut rig);
+        assert!(rig.driver.diff());
+        rig.pump_until("the diff request", |_, sent| {
+            !of_type(sent, "ch_diff").is_empty()
+        });
+        let diff_id = of_type(&rig.sent(), "ch_diff")[0]["id"].clone();
+
+        rig.say(&json!({"type":"ch_landed","id":diff_id,"branch":"ch/s1","commit":"def"}));
+        rig.say(
+            &json!({"type":"ch_evidence","id":"req_99","command":"cargo test","exit_code":0,
+            "duration_ms":1,"output_tail":"","truncated":false,"timed_out":false}),
+        );
+        rig.say(&json!({"type":"ch_stopped","id":"req_99","exit_code":0}));
+        rig.say(&diff_result(&diff_id, "first"));
+        rig.pump_until("the real diff", |d, _| d.session().last_diff().is_some());
+        assert_eq!(
+            drops(&rig.driver),
+            3,
+            "{:?}",
+            rig.driver.log().collect::<Vec<_>>()
+        );
+        assert_ne!(rig.driver.session().state(), SessionState::Landed);
+        assert!(
+            rig.driver.session().evidence().is_empty(),
+            "evidence for a verify never sent was kept"
+        );
+        assert!(rig.driver.can_prompt(), "a forged ch_stopped ended omp");
+
+        rig.say(&diff_result(&diff_id, "replayed"));
+        rig.pump_until("the replay to be dropped", |d, _| drops(d) == 4);
+        assert_eq!(
+            rig.driver.session().last_diff().map(|d| d.stat.as_str()),
+            Some("first"),
+            "a replayed diff replaced the answered one"
+        );
+        assert!(
+            !rig.driver.transcript().contains("replayed"),
+            "a dropped reply reached the transcript"
+        );
+    }
+
+    #[test]
+    fn an_error_answers_an_open_request_of_any_kind() {
+        let mut rig = Rig::new();
+        settle(&mut rig);
+        assert!(rig.driver.verify("cargo test"));
+        rig.pump_until("the verify request", |_, sent| {
+            !of_type(sent, "ch_verify").is_empty()
+        });
+        let verify_id = of_type(&rig.sent(), "ch_verify")[0]["id"].clone();
+        rig.say(&json!({"type":"ch_error","id":verify_id,"stage":"protocol","message":"bad"}));
+        rig.say(&json!({"type":"ch_error","id":verify_id,"stage":"protocol","message":"again"}));
+        rig.pump_until("the second error to be dropped", |d, _| drops(d) == 1);
+        assert!(
+            rig.driver.transcript().contains(r#""message":"bad""#),
+            "the first error answers the open verify"
+        );
+        assert!(
+            !rig.driver.transcript().contains(r#""message":"again""#),
+            "a second answer to the same request was kept"
+        );
     }
 
     #[test]
