@@ -72,6 +72,7 @@ impl SessionView {
                 )
             }
             Phase::Launching { .. } => (false, "Starting the session.", false),
+            Phase::Resuming { .. } => (false, "Resuming the session.", false),
             Phase::Empty | Phase::LaunchFailed { .. } if needs_setup => {
                 (false, "Finish Settings to start a session.", false)
             }

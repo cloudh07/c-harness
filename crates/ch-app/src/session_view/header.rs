@@ -35,6 +35,9 @@ impl SessionView {
             Phase::Launching {
                 session, prompt, ..
             } => (session_title(prompt), Some(branch_for(session))),
+            Phase::Resuming { session, .. } => {
+                ("Resuming a session".to_string(), Some(branch_for(session)))
+            }
             Phase::LaunchFailed { prompt, .. } => (session_title(prompt), None),
             Phase::Live(live) => (
                 session_title(&live.first_prompt),

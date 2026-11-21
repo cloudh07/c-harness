@@ -1,7 +1,7 @@
 //! The usage file of one session: a JSON line per model turn, appended as turns end.
 
 use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use ch_core::UsageRow;
@@ -10,6 +10,8 @@ pub struct Ledger {
     /// `None` when there is nowhere to write, or after a write failed.
     path: Option<PathBuf>,
     written: usize,
+    /// A problem found before the first sync, reported by it.
+    pending: Option<String>,
 }
 
 impl Ledger {
@@ -22,7 +24,34 @@ impl Ledger {
                 .filter(|_| named)
                 .map(|dir| dir.join(format!("{session}.jsonl"))),
             written: 0,
+            pending: None,
         }
+    }
+
+    /// The ledger of a resumed session, with the rows already in its file. Lines that do not
+    /// read as a row are skipped. A file that cannot be read is not written to either, so two
+    /// runs never number turns over each other.
+    pub fn resumed(dir: Option<&Path>, session: &str) -> (Self, Vec<UsageRow>) {
+        let mut ledger = Self::new(dir, session);
+        let Some(path) = ledger.path.as_deref() else {
+            return (ledger, Vec::new());
+        };
+        let rows = match fs::read_to_string(path) {
+            Ok(text) => text
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect::<Vec<UsageRow>>(),
+            Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                ledger.path = None;
+                ledger.pending = Some(format!(
+                    "Could not read the saved token usage, so it is not saved this time: {e}"
+                ));
+                Vec::new()
+            }
+        };
+        ledger.written = rows.len();
+        (ledger, rows)
     }
 
     #[cfg(test)]
@@ -33,6 +62,9 @@ impl Ledger {
     /// Appends the rows not written yet. The first failure is returned and writing stops, so a
     /// full disk is reported once, not on every tick.
     pub fn sync(&mut self, rows: &[UsageRow]) -> Option<String> {
+        if let Some(problem) = self.pending.take() {
+            return Some(problem);
+        }
         let fresh = rows.get(self.written..).filter(|fresh| !fresh.is_empty())?;
         let path = self.path.as_deref()?;
         match append(path, fresh) {
@@ -150,6 +182,62 @@ mod tests {
             assert_eq!(ledger.sync(&[row(1)]), None);
         }
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_resumed_ledger_reads_its_rows_back_and_appends_after_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s1.jsonl");
+        let first = serde_json::to_string(&row(1)).unwrap();
+        let second = serde_json::to_string(&row(2)).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{first}
+not json
+{{\"turn\":\"x\"}}
+{second}
+"
+            ),
+        )
+        .unwrap();
+
+        let (mut ledger, mut rows) = Ledger::resumed(Some(dir.path()), "s1");
+        assert_eq!(rows, vec![row(1), row(2)]);
+        assert_eq!(ledger.sync(&rows), None);
+        rows.push(row(3));
+        assert_eq!(ledger.sync(&rows), None);
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 5, "{text}");
+        assert!(text.ends_with(&format!(
+            "{}
+",
+            serde_json::to_string(&row(3)).unwrap()
+        )));
+    }
+
+    #[test]
+    fn a_resumed_ledger_without_a_file_starts_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ledger, rows) = Ledger::resumed(Some(dir.path()), "s1");
+        assert_eq!(rows, []);
+        assert_eq!(ledger.sync(&[row(1)]), None);
+        assert_eq!(lines(&dir.path().join("s1.jsonl")), vec![row(1)]);
+
+        let (_, rows) = Ledger::resumed(None, "s1");
+        assert_eq!(rows, []);
+    }
+
+    #[test]
+    fn a_resumed_ledger_it_cannot_read_reports_once_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("s1.jsonl")).unwrap();
+        let (mut ledger, rows) = Ledger::resumed(Some(dir.path()), "s1");
+        assert_eq!(rows, []);
+        let problem = ledger.sync(&[row(1)]).expect("the read problem");
+        assert!(problem.contains("saved token usage"), "{problem}");
+        assert_eq!(ledger.sync(&[row(1)]), None);
+        assert_eq!(ledger.path(), None);
     }
 
     #[test]

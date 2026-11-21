@@ -9,6 +9,7 @@ use ch_ui::{Palette, Status};
 use gpui_kit::{ClickEvent, Context, Div, FontWeight, ParentElement, Styled, div, rgb};
 
 use super::SessionView;
+use super::resume::can_resume;
 use crate::launch;
 use crate::widgets::{Tone, banner, button, card, eyebrow, muted};
 
@@ -140,8 +141,16 @@ impl Leftovers {
     }
 
     /// Hides `session` until the next start.
-    fn keep(&mut self, session: &str) {
+    pub(super) fn keep(&mut self, session: &str) {
         self.rows.retain(|row| row.leftover.session != session);
+    }
+
+    /// Shows why `session` could not start again.
+    pub(super) fn failed(&mut self, session: &str, message: String) {
+        if let Some(row) = self.row_mut(session) {
+            row.confirming = false;
+            row.error = Some(message);
+        }
     }
 
     /// The first press asks for a second; the second returns true, meaning delete now.
@@ -233,9 +242,13 @@ impl SessionView {
                 .child(eyebrow(p, "Left from earlier sessions"))
                 .child(muted(
                     p,
-                    "An earlier run did not clean these up. Keep hides one until the next start.",
+                    "An earlier run did not clean these up. Resume starts the agent again in \
+                     its worktree. Keep hides one until the next start.",
                 ))
-                .children(state.rows.iter().map(|row| leftover_row(p, row, cx)))
+                .children(state.rows.iter().map(|row| {
+                    let resumable = can_resume(row.leftover.kind, &self.settings.location);
+                    leftover_row(p, row, resumable, cx)
+                }))
         });
         if error.is_none() && kept.is_none() && list.is_none() {
             return None;
@@ -252,50 +265,15 @@ impl SessionView {
     }
 }
 
-fn leftover_row(p: Palette, row: &Row, cx: &mut Context<SessionView>) -> Div {
-    let session = row.leftover.session.clone();
-    let busy = row.discarding.is_some();
+fn leftover_row(p: Palette, row: &Row, resumable: bool, cx: &mut Context<SessionView>) -> Div {
+    let session = &row.leftover.session;
     let path = row
         .leftover
         .worktree()
         .map(|path| muted(p, path.display().to_string()));
-    let first = if row.confirming {
-        let id = session.clone();
-        button(
-            p,
-            format!("leftover-cancel-{session}"),
-            "Cancel",
-            Tone::Plain,
-            true,
-        )
-        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-            this.cancel_discard(&id, cx);
-        }))
-    } else {
-        let id = session.clone();
-        button(
-            p,
-            format!("leftover-keep-{session}"),
-            "Keep",
-            Tone::Plain,
-            !busy,
-        )
-        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.keep_leftover(&id, cx)))
-    };
-    let (label, tone) = match (busy, row.confirming) {
-        (true, _) => ("Discarding", Tone::Plain),
-        (false, true) => ("Discard for good", Tone::Danger),
-        (false, false) => ("Discard", Tone::Plain),
-    };
-    let id = session.clone();
-    let second = button(p, format!("leftover-discard-{session}"), label, tone, !busy).on_click(
-        cx.listener(move |this, _: &ClickEvent, _, cx| {
-            this.discard_leftover(&id, cx);
-        }),
-    );
     let note = row
         .confirming
-        .then(|| muted(p, warning(&session)))
+        .then(|| muted(p, warning(session)))
         .or_else(|| {
             row.error.as_ref().map(|e| {
                 div()
@@ -332,9 +310,69 @@ fn leftover_row(p: Palette, row: &Row, cx: &mut Context<SessionView>) -> Div {
                         .child(muted(p, describe(row.leftover.kind)))
                         .children(path),
                 )
-                .child(div().flex().flex_none().gap_2().child(first).child(second)),
+                .child(row_actions(p, row, resumable, cx)),
         )
         .children(note)
+}
+
+/// Resume when it can, then Keep (or Cancel while confirming) and Discard.
+fn row_actions(p: Palette, row: &Row, resumable: bool, cx: &mut Context<SessionView>) -> Div {
+    let session = row.leftover.session.clone();
+    let busy = row.discarding.is_some();
+    let resume = (resumable && !busy && !row.confirming).then(|| {
+        let id = session.clone();
+        button(
+            p,
+            format!("leftover-resume-{session}"),
+            "Resume",
+            Tone::Primary,
+            true,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.resume_leftover(&id, cx);
+        }))
+    });
+    let first = if row.confirming {
+        let id = session.clone();
+        button(
+            p,
+            format!("leftover-cancel-{session}"),
+            "Cancel",
+            Tone::Plain,
+            true,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.cancel_discard(&id, cx);
+        }))
+    } else {
+        let id = session.clone();
+        button(
+            p,
+            format!("leftover-keep-{session}"),
+            "Keep",
+            Tone::Plain,
+            !busy,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.keep_leftover(&id, cx)))
+    };
+    let (label, tone) = match (busy, row.confirming) {
+        (true, _) => ("Discarding", Tone::Plain),
+        (false, true) => ("Discard for good", Tone::Danger),
+        (false, false) => ("Discard", Tone::Plain),
+    };
+    let id = session.clone();
+    let second = button(p, format!("leftover-discard-{session}"), label, tone, !busy).on_click(
+        cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.discard_leftover(&id, cx);
+        }),
+    );
+    div()
+        .flex()
+        .flex_none()
+        .gap_2()
+        .children(resume)
+        .child(first)
+        .child(second)
 }
 
 #[cfg(test)]
@@ -405,6 +443,18 @@ mod tests {
         let mut state = found(&["s1", "s2"]);
         state.keep("s1");
         assert_eq!(sessions(&state), ["s2"]);
+    }
+
+    #[test]
+    fn a_failed_resume_shows_its_reason_on_the_row() {
+        let mut state = found(&["s1", "s2"]);
+        assert!(!state.press_discard("s1"));
+        state.failed("s1", "omp is missing".to_string());
+        state.failed("missing", "ignored".to_string());
+        assert_eq!(sessions(&state), ["s1", "s2"]);
+        assert_eq!(state.rows[0].error.as_deref(), Some("omp is missing"));
+        assert!(!state.rows[0].confirming);
+        assert!(state.rows[1].error.is_none());
     }
 
     #[test]

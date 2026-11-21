@@ -102,14 +102,32 @@ allow third-party apps to use subscription logins, and omp prefers a stored logi
 so `ch-runner` turns the `anthropic` provider off for the session while such a login exists,
 or when it cannot tell. `google-antigravity` is always off for the same reason.
 
+### If C-Harness closes during a session
+
+When the window closes, `ch-runner` sees its input end and stops the agent. A local session's
+worktree, record and usage file stay. The next start lists the session under "Left from earlier
+sessions" on the empty session screen:
+
+- **Resume** starts the runner again in that worktree and omp on the saved conversation: the
+  file the session record names, or, when it names none or the file is gone, the worktree's
+  most recent conversation (`--continue`), which may be a new, empty one. The earlier prompts
+  and replies show again, up to the last 200. Tool calls, approvals that were waiting, verify
+  results and the diff do not come back, so verify again before you land. After a compaction
+  omp may return only what it kept, so older turns can be missing or show without their
+  prompt. Resume is offered for a whole worktree only, and only while Settings runs sessions
+  on this computer. It uses the approval mode and model Settings has now.
+- **Keep** hides the session until the next start.
+- **Discard**, pressed twice, deletes the worktree with its uncommitted changes and keeps the
+  `ch/<session>` branch.
+
 ### Where things are kept
 
 | What | Where |
 |---|---|
 | Settings | `c-harness/settings.json` under your OS config folder |
 | Model key and GitHub token | The OS keychain. The model key is read when a session starts, the token when you land. |
-| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work. The empty session screen lists these under "Left from earlier sessions", where Discard deletes one with its uncommitted changes and keeps its `ch/<session>` branch. By hand, run `git worktree remove --force --force <path>` from your repository, then delete its session record. |
-| Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree. It is written before the worktree is created and deleted after it is removed. While a window has the session open it holds `<session>.lock` beside the record, so no other window starts or discards it. |
+| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work. The empty session screen lists these under "Left from earlier sessions", where Resume picks one up again and Discard deletes one with its uncommitted changes and keeps its `ch/<session>` branch. By hand, run `git worktree remove --force --force <path>` from your repository, then delete its session record. |
+| Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree, and, once omp names it, the path of the file omp keeps the conversation in (never its contents). It is written before the worktree is created and deleted after it is removed. While a window has the session open it holds `<session>.lock` beside the record, so no other window starts or discards it. |
 | Exported transcripts | `c-harness/transcripts` under the same data folder, with secrets removed by pattern |
 | Token usage | `c-harness/usage/<session>.jsonl` under the same data folder: one line per model turn with the provider, model, token counts and omp's cost estimate, never the prompt or the reply. A count omp did not report is `null`. Discard and closing a session keep this file. The cost is omp's estimate from its price table, not your provider's bill. |
 

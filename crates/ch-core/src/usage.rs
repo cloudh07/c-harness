@@ -107,6 +107,11 @@ pub struct Usage {
 }
 
 impl Usage {
+    /// Picks up where an earlier run of the same session left off: new turns number on.
+    pub fn with_rows(rows: Vec<UsageRow>) -> Self {
+        Self { rows }
+    }
+
     /// Adds a row for a `turn_end` frame and returns it; other frames add nothing.
     pub fn on_omp(&mut self, at_ms: u64, frame: &Value) -> Option<&UsageRow> {
         if frame.get("type").and_then(Value::as_str) != Some("turn_end") {
@@ -284,6 +289,14 @@ mod tests {
         assert_eq!((first.turn, first.at_ms), (1, 10));
         assert_eq!((second.turn, second.at_ms), (2, 20));
         assert_eq!(usage.rows().len(), 2);
+
+        let mut resumed = Usage::with_rows(usage.rows().to_vec());
+        let third = resumed
+            .on_omp(30, &turn_end("stop", &priced(1, 1, 0.0)))
+            .cloned()
+            .unwrap();
+        assert_eq!(third.turn, 3);
+        assert_eq!(resumed.totals().turns, 3);
     }
 
     #[test]

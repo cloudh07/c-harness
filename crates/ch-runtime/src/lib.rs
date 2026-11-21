@@ -9,6 +9,7 @@ mod local;
 mod lock;
 mod process;
 mod record;
+mod resume;
 mod ssh;
 mod sweep;
 #[cfg(test)]
@@ -19,6 +20,7 @@ pub use local::{LocalProvider, validate_session};
 pub use lock::SessionLock;
 pub use process::RunnerProcess;
 pub use record::SessionRecord;
+pub use resume::valid_omp_session_file;
 pub use ssh::{DEFAULT_REMOTE_RUNNER, SshProvider};
 pub use sweep::{Leftover, LeftoverKind, WorktreeEntry};
 

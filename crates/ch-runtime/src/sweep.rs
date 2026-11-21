@@ -114,7 +114,11 @@ impl LocalProvider {
         })
     }
 
-    fn scan(&self, only: Option<&str>, also: Option<&Path>) -> Result<Vec<Leftover>, RuntimeError> {
+    pub(crate) fn scan(
+        &self,
+        only: Option<&str>,
+        also: Option<&Path>,
+    ) -> Result<Vec<Leftover>, RuntimeError> {
         let records = self.read_records(only)?;
         let mut repos = Vec::new();
         if !self.repo.as_os_str().is_empty() {
@@ -300,7 +304,7 @@ fn session_of(listed: &Listed, worktrees_dir: &Path) -> Option<String> {
     Some(session.to_owned())
 }
 
-fn same_dir(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
     a == b
         || matches!(
             (fs::canonicalize(a), fs::canonicalize(b)),
@@ -434,6 +438,7 @@ mod tests {
             branch: "ch/s6".to_owned(),
             base_commit: "abc".to_owned(),
             created_unix_secs: 1,
+            omp_session_file: None,
         };
         record::write(&provider.sessions_dir, &moved).unwrap();
         // From before worktrees were locked.

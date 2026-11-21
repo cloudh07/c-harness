@@ -61,6 +61,10 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
+        Self::with_clock(|| 1)
+    }
+
+    fn with_clock(clock: fn() -> u64) -> Self {
         let stdin = Stdin::default();
         let (tx, rx) = mpsc::channel();
         let stdout = Stdout {
@@ -69,7 +73,7 @@ impl Rig {
         };
         let link = Link::new(stdin.clone(), stdout, None::<std::io::Empty>);
         Self {
-            driver: Driver::new(link, || 1),
+            driver: Driver::new(link, clock),
             stdin,
             runner: Some(tx),
         }
@@ -177,7 +181,7 @@ fn land_request() -> LandRequest {
 
 /// omp asks to run bash, which is approved once, then asks for text, which has no screen.
 fn approve_bash_then_cancel_input(rig: &mut Rig) {
-    rig.say(&json!({"id":"req_1","type":"response","command":"prompt","success":true}));
+    rig.say(&json!({"id":"req_2","type":"response","command":"prompt","success":true}));
     rig.say(&json!({"type":"agent_start"}));
     rig.say(&json!({
         "type":"extension_ui_request","id":"ui_1","method":"select",
@@ -190,17 +194,17 @@ fn approve_bash_then_cancel_input(rig: &mut Rig) {
     rig.driver
         .answer("ui_1", ApprovalDecision::ApproveOnce)
         .unwrap();
-    rig.pump_until("the answer", |_, sent| sent.len() == 3);
+    rig.pump_until("the answer", |_, sent| sent.len() == 4);
     assert_eq!(
-        rig.sent()[2],
+        rig.sent()[3],
         json!({"type":"extension_ui_response","id":"ui_1","value":"Approve"})
     );
     assert_eq!(rig.driver.session().state(), SessionState::Running);
 
     rig.say(&json!({"type":"extension_ui_request","id":"ui_2","method":"input","title":"Name?"}));
-    rig.pump_until("the cancel", |_, sent| sent.len() == 4);
+    rig.pump_until("the cancel", |_, sent| sent.len() == 5);
     assert_eq!(
-        rig.sent()[3],
+        rig.sent()[4],
         json!({"type":"extension_ui_response","id":"ui_2","cancelled":true})
     );
 }
@@ -218,7 +222,7 @@ fn runs_one_session_from_start_to_landed() {
 
     rig.say(&json!({"type":"ch_runner_hello","version":"0.1.0","protocol":1,"workdir":"/w"}));
     rig.say(&json!({"type":"ready","protocolVersion":1}));
-    rig.pump_until("the queued prompt", |_, sent| sent.len() == 2);
+    rig.pump_until("the queued prompt", |_, sent| sent.len() == 3);
     let sent = rig.sent();
     assert_eq!(sent[0]["type"], "ch_start");
     assert_eq!(
@@ -226,9 +230,10 @@ fn runs_one_session_from_start_to_landed() {
         json!(["--mode", "rpc", "--model", "m1"])
     );
     assert_eq!(sent[0]["env"]["OPENAI_API_KEY"], KEY);
+    assert_eq!(sent[1], json!({"id":"req_1","type":STATS_COMMAND}));
     assert_eq!(
-        sent[1],
-        json!({"id":"req_1","type":"prompt","message":"Fix the bug"})
+        sent[2],
+        json!({"id":"req_2","type":"prompt","message":"Fix the bug"})
     );
 
     approve_bash_then_cancel_input(&mut rig);
@@ -240,11 +245,11 @@ fn runs_one_session_from_start_to_landed() {
     assert!(rig.driver.verify("cargo test"));
     assert!(rig.driver.diff());
     rig.say(
-        &json!({"type":"ch_evidence","id":"req_2","command":"cargo test","exit_code":0,
+        &json!({"type":"ch_evidence","id":"req_3","command":"cargo test","exit_code":0,
         "duration_ms":10,"output_tail":"ok","truncated":false,"timed_out":false}),
     );
     rig.say(
-        &json!({"type":"ch_diff_result","id":"req_3","base":"abc","stat":" a | 1 +",
+        &json!({"type":"ch_diff_result","id":"req_4","base":"abc","stat":" a | 1 +",
         "patch":"+x","truncated":false}),
     );
     rig.pump_until("evidence and diff", |d, _| {
@@ -261,7 +266,7 @@ fn runs_one_session_from_start_to_landed() {
         "land must wait for omp to stop"
     );
 
-    rig.say(&json!({"type":"ch_stopped","id":"req_4","exit_code":0}));
+    rig.say(&json!({"type":"ch_stopped","id":"req_5","exit_code":0}));
     rig.pump_until("the land", |_, sent| !of_type(sent, "ch_land").is_empty());
     let sent = rig.sent();
     let land = of_type(&sent, "ch_land")[0];
@@ -269,7 +274,7 @@ fn runs_one_session_from_start_to_landed() {
     assert_eq!(land["branch"], "ch/s1");
 
     rig.say(
-        &json!({"type":"ch_landed","id":"req_5","branch":"ch/s1","commit":"def",
+        &json!({"type":"ch_landed","id":"req_6","branch":"ch/s1","commit":"def",
         "pull_request_url":"https://github.com/example/demo/pull/7"}),
     );
     rig.pump_until("landed", |d, _| d.session().state() == SessionState::Landed);
@@ -310,8 +315,13 @@ fn prompt_waits_until_omp_is_ready() {
         "nothing but ch_start before omp is ready"
     );
     rig.say(&json!({"type":"ready"}));
-    rig.pump_until("prompt", |_, sent| sent.len() == 2);
-    assert_eq!(rig.sent()[1]["message"], "hello");
+    rig.pump_until("prompt", |_, sent| sent.len() == 3);
+    assert_eq!(
+        rig.sent()[1]["type"],
+        STATS_COMMAND,
+        "the context is read first"
+    );
+    assert_eq!(rig.sent()[2]["message"], "hello");
 }
 
 #[test]
@@ -327,14 +337,18 @@ fn a_failed_start_drops_the_queued_prompt() {
     rig.runner = None;
     rig.pump_until("closed", |d, _| d.closed());
     assert!(!rig.driver.transcript().contains(r#""type":"prompt""#));
-    assert_eq!(rig.sent().len(), 1, "{:?}", rig.sent());
+    assert!(
+        of_type(&rig.sent(), "prompt").is_empty(),
+        "{:?}",
+        rig.sent()
+    );
 }
 
 fn settle(rig: &mut Rig) {
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
     rig.say(&json!({"type":"ready"}));
-    rig.pump_until("the prompt", |_, sent| sent.len() == 2);
+    rig.pump_until("the prompt", |_, sent| sent.len() == 3);
     rig.say(&json!({"type":"agent_start"}));
     rig.say(&json!({"type":"session_settled"}));
     rig.pump_until("review", |d, _| {
@@ -348,7 +362,7 @@ fn verify_waits_until_the_agent_is_done() {
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
     rig.say(&json!({"type":"ready"}));
-    rig.pump_until("the prompt", |_, sent| sent.len() == 2);
+    rig.pump_until("the prompt", |_, sent| sent.len() == 3);
     rig.say(&json!({"type":"agent_start"}));
     rig.pump_until("the agent to run", |d, _| {
         d.session().state() == SessionState::Running
@@ -372,14 +386,14 @@ fn a_select_that_is_not_an_approval_is_answered_no() {
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
     rig.say(&json!({"type":"ready"}));
-    rig.pump_until("the prompt", |_, sent| sent.len() == 2);
+    rig.pump_until("the prompt", |_, sent| sent.len() == 3);
     rig.say(
         &json!({"type":"extension_ui_request","id":"ui_7","method":"select",
         "title":"Pick a model","options":["a","b"]}),
     );
-    rig.pump_until("the cancel", |_, sent| sent.len() == 3);
+    rig.pump_until("the cancel", |_, sent| sent.len() == 4);
     assert_eq!(
-        rig.sent()[2],
+        rig.sent()[3],
         json!({"type":"extension_ui_response","id":"ui_7","cancelled":true})
     );
     let pending = rig.driver.session().pending_approvals();
@@ -389,9 +403,9 @@ fn a_select_that_is_not_an_approval_is_answered_no() {
         &json!({"type":"extension_ui_request","id":"ui_8","method":"ask",
         "questions":[{"id":"q1","question":"Which file?","options":[{"label":"a"}]}]}),
     );
-    rig.pump_until("the ask cancel", |_, sent| sent.len() == 4);
+    rig.pump_until("the ask cancel", |_, sent| sent.len() == 5);
     assert_eq!(
-        rig.sent()[3],
+        rig.sent()[4],
         json!({"type":"extension_ui_response","id":"ui_8","cancelled":true})
     );
 }
@@ -525,3 +539,5 @@ fn stderr_is_masked_before_display() {
     assert_eq!(log.len(), 1);
     assert!(!log[0].contains(KEY), "{log:?}");
 }
+
+mod resume;

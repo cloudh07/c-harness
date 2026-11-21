@@ -37,6 +37,8 @@ pub enum RuntimeError {
     WorktreeExists(PathBuf),
     /// Another C-Harness window has this session open.
     SessionInUse,
+    /// A leftover session cannot be picked up again, for `reason`.
+    NotResumable { reason: &'static str },
     /// A process could not be started for a reason other than "not found".
     Spawn { program: String, source: io::Error },
     /// A filesystem step failed.
@@ -111,6 +113,10 @@ impl fmt::Display for RuntimeError {
             Self::SessionInUse => f.write_str(
                 "this session is open in another C-Harness window. Close it there, or wait for \
                  that window to finish, then try again",
+            ),
+            Self::NotResumable { reason } => write!(
+                f,
+                "this session cannot be resumed: {reason}. Discard it, or start a new session"
             ),
             Self::Spawn { program, source } => write!(
                 f,

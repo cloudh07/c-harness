@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Child, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::git::{clear_git_location, git_output, os_args, run_git};
@@ -70,6 +70,7 @@ impl LocalProvider {
             created_unix_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs()),
+            omp_session_file: None,
         };
         record::create(&self.sessions_dir, &record)?;
         let add = worktree_add_args(&self.repo, &path, session, &record.base_commit);
@@ -103,7 +104,7 @@ impl LocalProvider {
         record::read(&self.sessions_dir, session)
     }
 
-    fn runner_program(&self) -> Result<PathBuf, RuntimeError> {
+    pub(crate) fn runner_program(&self) -> Result<PathBuf, RuntimeError> {
         let bare_name = self
             .runner
             .parent()
@@ -119,7 +120,7 @@ impl LocalProvider {
         })
     }
 
-    fn runner_spawn_error(&self, source: io::Error) -> RuntimeError {
+    pub(crate) fn runner_spawn_error(&self, source: io::Error) -> RuntimeError {
         if source.kind() == io::ErrorKind::NotFound {
             RuntimeError::RunnerNotFound {
                 location: LOCATION.to_owned(),
@@ -161,16 +162,7 @@ impl SandboxProvider for LocalProvider {
                 return Err(err);
             }
         };
-        let mut runner = command(program);
-        clear_git_location(&mut runner);
-        let spawned = runner
-            .args(serve_args(&workdir))
-            .current_dir(&workdir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
-        match spawned {
+        match spawn_runner(&program, &workdir) {
             Ok(child) => Ok(RunnerProcess::locked(child, lock)),
             Err(source) => {
                 // So that a retry with the same session id can create the worktree again. The
@@ -246,6 +238,19 @@ pub(crate) fn worktree_remove_args(repo: &Path, path: &Path) -> Vec<OsString> {
 
 fn serve_args(workdir: &Path) -> Vec<OsString> {
     os_args([&"serve", &"--workdir", &workdir])
+}
+
+/// Starts `ch-runner serve` in `workdir` with piped stdio.
+pub(crate) fn spawn_runner(program: &Path, workdir: &Path) -> io::Result<Child> {
+    let mut runner = command(program);
+    clear_git_location(&mut runner);
+    runner
+        .args(serve_args(workdir))
+        .current_dir(workdir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
 #[cfg(test)]

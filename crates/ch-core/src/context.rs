@@ -64,10 +64,10 @@ impl ContextMeter {
     }
 
     /// Folds in one omp frame. Returns `true` when the app should send `get_session_stats` now:
-    /// after each turn and after a compaction.
+    /// once omp is ready, after each turn and after a compaction.
     pub fn on_omp(&mut self, frame: &Value) -> bool {
         match frame.get("type").and_then(Value::as_str) {
-            Some("turn_end") => true,
+            Some("ready" | "turn_end") => true,
             Some("auto_compaction_start") => {
                 self.compacting = true;
                 false
@@ -77,7 +77,11 @@ impl ContextMeter {
                 true
             }
             Some("response") if is_stats(frame) => {
-                self.level = read(frame);
+                let level = read(frame);
+                // Before any count, an answer without one says nothing new.
+                if level != ContextState::Unknown || self.level != ContextState::NotRead {
+                    self.level = level;
+                }
                 false
             }
             _ => false,
@@ -88,6 +92,18 @@ impl ContextMeter {
 /// Whether `frame` answers `get_session_stats`.
 pub fn is_stats(frame: &Value) -> bool {
     frame.get("command").and_then(Value::as_str) == Some(STATS_COMMAND)
+}
+
+/// The file omp keeps the session in, from a successful `get_session_stats` answer.
+pub fn session_file(frame: &Value) -> Option<&str> {
+    if !is_stats(frame) || frame.get("success").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    frame
+        .get("data")
+        .and_then(|d| d.get("sessionFile"))
+        .and_then(Value::as_str)
+        .filter(|f| !f.is_empty())
 }
 
 fn read(response: &Value) -> ContextState {
@@ -154,7 +170,7 @@ pub(crate) fn note_compaction(notices: &mut Vec<Notice>, frame: &Value) {
     }
 }
 
-fn clip(text: &str) -> String {
+pub(crate) fn clip(text: &str) -> String {
     match text.char_indices().nth(MAX_DETAIL) {
         Some((end, _)) => format!("{}…", &text[..end]),
         None => text.to_string(),
@@ -176,11 +192,10 @@ mod tests {
     #[test]
     fn asks_for_stats_after_turns_and_after_compaction() {
         let mut meter = ContextMeter::default();
-        for kind in ["turn_end", "auto_compaction_end"] {
+        for kind in ["ready", "turn_end", "auto_compaction_end"] {
             assert!(meter.on_omp(&json!({ "type": kind })), "{kind}");
         }
         for kind in [
-            "ready",
             "agent_start",
             "message_update",
             "auto_compaction_start",
@@ -244,6 +259,34 @@ mod tests {
             meter.on_omp(&answer);
             assert_eq!(meter.state(), ContextState::Unknown, "{answer}");
         }
+    }
+
+    #[test]
+    fn a_first_answer_without_a_count_stays_not_read() {
+        for answer in [
+            stats(&Value::Null),
+            json!({ "type": "response", "command": STATS_COMMAND, "success": false }),
+        ] {
+            let mut meter = ContextMeter::default();
+            meter.on_omp(&answer);
+            assert_eq!(meter.state(), ContextState::NotRead, "{answer}");
+        }
+    }
+
+    #[test]
+    fn finds_the_session_file_in_a_stats_answer() {
+        let mut answer = stats(&json!({ "tokens": 1 }));
+        assert_eq!(session_file(&answer), None);
+        answer["data"]["sessionFile"] = json!("/home/a/.omp/s.jsonl");
+        assert_eq!(session_file(&answer), Some("/home/a/.omp/s.jsonl"));
+        answer["data"]["sessionFile"] = json!("");
+        assert_eq!(session_file(&answer), None);
+        answer["data"]["sessionFile"] = json!("/s.jsonl");
+        answer["success"] = json!(false);
+        assert_eq!(session_file(&answer), None);
+        answer["success"] = json!(true);
+        answer["command"] = json!("prompt");
+        assert_eq!(session_file(&answer), None);
     }
 
     #[test]

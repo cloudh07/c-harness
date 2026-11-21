@@ -21,6 +21,9 @@ pub struct SessionRecord {
     /// The commit the worktree was created at.
     pub base_commit: String,
     pub created_unix_secs: u64,
+    /// The file omp keeps the conversation in, once omp has named it. Resume passes it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omp_session_file: Option<PathBuf>,
 }
 
 fn path(dir: &Path, session: &str) -> PathBuf {
@@ -115,6 +118,7 @@ mod tests {
             branch: format!("ch/{session}"),
             base_commit: "0123abcd".to_owned(),
             created_unix_secs: 1_700_000_000,
+            omp_session_file: None,
         }
     }
 
@@ -153,6 +157,20 @@ mod tests {
                 "worktree"
             ]
         );
+    }
+
+    #[test]
+    fn the_omp_session_file_is_left_out_until_known_and_then_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = r#"{"session":"s1","repo":"/repo","worktree":"/worktrees/s1",
+            "branch":"ch/s1","base_commit":"0123abcd","created_unix_secs":1700000000}"#;
+        fs::write(dir.path().join("s1.json"), older).unwrap();
+        assert_eq!(read(dir.path(), "s1").unwrap(), Some(record("s1")));
+
+        let mut known = record("s1");
+        known.omp_session_file = Some(PathBuf::from("/home/me/.omp/sessions/a.jsonl"));
+        write(dir.path(), &known).unwrap();
+        assert_eq!(read(dir.path(), "s1").unwrap(), Some(known));
     }
 
     #[test]

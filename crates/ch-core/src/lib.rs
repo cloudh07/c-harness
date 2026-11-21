@@ -5,6 +5,7 @@
 
 mod approval;
 mod context;
+mod history;
 mod redact;
 mod risk;
 mod session;
@@ -14,7 +15,11 @@ mod usage;
 pub use approval::{ApprovalDecision, ApprovalRequest, ReplyError, withdrawn_approval};
 pub use context::{
     COMPACTION_NOTICE, ContextMeter, ContextReading, ContextState, STATS_COMMAND,
-    compaction_notice, is_stats,
+    compaction_notice, is_stats, session_file,
+};
+pub use history::{
+    HISTORY_COMMAND, HISTORY_PAGE_LIMIT, History, HistoryPage, MAX_HISTORY_TURNS, history_request,
+    read_page,
 };
 pub use redact::{MASK, holds_provider_secret, redact_secrets};
 pub use risk::{Assessment, Risk, classify};

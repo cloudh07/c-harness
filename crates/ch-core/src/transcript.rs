@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::context::STATS_COMMAND;
+use crate::history::HISTORY_COMMAND;
 use crate::redact::{MASK, is_secret_name, redact_secrets};
 
 enum Keep {
@@ -97,7 +98,7 @@ const OUTBOUND: &[(&str, Keep)] = &[
 
 /// Commands the app sends on its own to read state. Their answers repeat every turn and say
 /// nothing about the work, and `get_session_stats` names omp's own session file.
-const POLLED: &[&str] = &[STATS_COMMAND];
+const POLLED: &[&str] = &[STATS_COMMAND, HISTORY_COMMAND];
 
 #[derive(Serialize)]
 struct Record<'a> {
@@ -268,7 +269,11 @@ mod tests {
     fn a_start_keeps_only_its_type_and_session() {
         let start = ClientFrame::Start(StartSession {
             session: "s1".into(),
-            omp_args: vec!["--mode".into(), "rpc".into()],
+            omp_args: vec![
+                "--mode".into(),
+                "rpc".into(),
+                "--resume=/home/u/.omp/s.jsonl".into(),
+            ],
             config_overlay: Some("providers: {}\n".into()),
             env: BTreeMap::from([("ANTHROPIC_API_KEY".into(), FAKE_KEY.into())]),
         });
@@ -276,6 +281,7 @@ mod tests {
         let record = Transcript::new().outgoing(0, &frame).expect("recorded");
         assert_eq!(frame_of(&record), json!({"type":"ch_start","session":"s1"}));
         assert!(!record.contains("FAKE"));
+        assert!(!record.contains(".omp"));
     }
 
     #[test]
@@ -384,6 +390,20 @@ mod tests {
         assert_eq!(transcript.outgoing(0, &ask), None);
         let prompt = r#"{"id":"req_1","type":"response","command":"prompt","success":true}"#;
         let record = incoming(&mut transcript, prompt).expect("recorded");
+        assert!(record.contains(r#""seq":1"#), "{record}");
+    }
+
+    #[test]
+    fn history_pages_are_not_recorded() {
+        let mut transcript = Transcript::new();
+        let ask = json!({"id": "req_3", "type": HISTORY_COMMAND, "limit": 256});
+        assert_eq!(transcript.outgoing(0, &ask), None);
+        let page = r#"{"id":"req_3","type":"response","command":"get_messages_page","success":true,"data":{"messages":[{"role":"user","content":"old secret plan"}],"totalMessages":1}}"#;
+        assert_eq!(incoming(&mut transcript, page), None);
+        let busy = r#"{"id":"req_4","type":"response","command":"get_messages_page","success":false,"error":"Session is busy","code":"session_busy"}"#;
+        assert_eq!(incoming(&mut transcript, busy), None);
+        let ready = r#"{"type":"ready"}"#;
+        let record = incoming(&mut transcript, ready).expect("recorded");
         assert!(record.contains(r#""seq":1"#), "{record}");
     }
 

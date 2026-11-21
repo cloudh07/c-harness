@@ -83,6 +83,19 @@ Notable changes to C-Harness. The format follows
   the older one. The transcript keeps the compaction outcome but not omp's summary of the
   conversation, and keeps neither the context questions nor their answers, which name omp's
   session file.
+- `ch-app`: Resume on a leftover local session whose worktree is whole. It starts the runner
+  again in that worktree and omp on the saved conversation: `--resume=<file>` with the file the
+  session record names, or `--continue` when it names none or the file is gone, which may open
+  a new conversation. The earlier turns are read back with `get_messages_page` before the
+  first prompt is accepted, and the last 200 are shown with a count of the rest. Only prompt
+  and reply text comes back, at most 32,000 characters each: a longer prompt keeps its start
+  and a longer reply its end. Usage turns number on from the session's ledger. A failed resume
+  shows its reason on the row. Resume is offered only while Settings runs sessions on this
+  computer.
+- `ch-runtime`: the session record keeps the path of the file omp keeps the conversation in,
+  once omp names it in a `get_session_stats` answer. Only an absolute `.jsonl` path with no
+  `..` or control characters is kept or passed back, and on Windows only one on a drive
+  letter, never a network share. Records without it still load.
 
 ### Changed
 
@@ -98,6 +111,10 @@ Notable changes to C-Harness. The format follows
   messages still name omp, because that is the program you install and configure.
 - `ch-core`: once omp has ended, a line the runner could not pass to it is a warning, not a
   failure, so it no longer replaces why omp ended or fails a session that was stopped.
+- `ch-app`: the context window is also read when omp says it is ready, so a session learns
+  where omp keeps its conversation before the first turn. An answer without a count, before
+  any count, leaves the meter blank. The transcript keeps neither history page requests nor
+  their answers.
 
 ### Security
 

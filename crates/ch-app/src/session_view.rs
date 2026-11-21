@@ -4,6 +4,7 @@
 mod composer;
 mod header;
 mod leftovers;
+mod resume;
 mod review;
 mod thread;
 
@@ -23,7 +24,7 @@ use gpui_kit::{
 
 use crate::assets::Icon;
 use crate::driver::{self, Driver};
-use crate::launch::{self, Launched, Runner};
+use crate::launch::{self, Launched, Resumed, Runner};
 use crate::ledger::Ledger;
 use crate::settings::{self, Problem, Settings};
 use crate::view_model::{land_request, session_id, transcript_file_name};
@@ -43,6 +44,11 @@ enum Phase {
         prompt: String,
         rx: Receiver<Result<Launched, String>>,
     },
+    /// A leftover session is starting again in its worktree.
+    Resuming {
+        session: String,
+        rx: Receiver<Result<Resumed, String>>,
+    },
     Live(Box<Live>),
     LaunchFailed {
         prompt: String,
@@ -61,6 +67,10 @@ struct Live {
     turns: Vec<(String, String)>,
     prompt: String,
     ledger: Ledger,
+    /// Turns of a resumed conversation too old to show.
+    hidden: usize,
+    /// The omp session file last saved to the session record.
+    noted_file: Option<String>,
 }
 
 pub struct SessionView {
@@ -108,6 +118,12 @@ fn is_working(state: SessionState) -> bool {
 /// and a working agent has to be stopped first, unless its runner is already gone.
 fn may_start_new(closed: bool, landing: bool, stopping: bool, state: SessionState) -> bool {
     closed || (!landing && (stopping || !is_working(state)))
+}
+
+/// The turn a new prompt closes, unless it has nothing to show: the first prompt of a
+/// resumed session follows no turn of this run.
+fn finished_turn(prompt: String, reply: String) -> Option<(String, String)> {
+    (!prompt.is_empty() || !reply.is_empty()).then_some((prompt, reply))
 }
 
 impl SessionView {
@@ -166,7 +182,7 @@ impl SessionView {
     pub fn state(&self) -> Option<SessionState> {
         match &self.phase {
             Phase::Empty => None,
-            Phase::Launching { .. } => Some(SessionState::Starting),
+            Phase::Launching { .. } | Phase::Resuming { .. } => Some(SessionState::Starting),
             Phase::Live(live) => Some(live.driver.session().state()),
             Phase::LaunchFailed { .. } => Some(SessionState::Failed),
         }
@@ -181,7 +197,7 @@ impl SessionView {
     pub fn can_start_new(&self) -> bool {
         match &self.phase {
             Phase::Empty | Phase::LaunchFailed { .. } => true,
-            Phase::Launching { .. } => false,
+            Phase::Launching { .. } | Phase::Resuming { .. } => false,
             Phase::Live(live) => {
                 let d = &live.driver;
                 may_start_new(d.closed(), d.landing(), d.stopping(), d.session().state())
@@ -217,14 +233,22 @@ impl SessionView {
     fn tick(&mut self, cx: &mut Context<Self>) {
         let changed = match &mut self.phase {
             Phase::Launching { .. } => self.poll_launch(),
+            Phase::Resuming { .. } => self.poll_resume(),
             Phase::Live(live) => {
                 let pumped = live.driver.pump();
-                match live.ledger.sync(live.driver.usage().rows()) {
-                    Some(problem) => {
-                        self.message = Some(Err(problem));
-                        true
-                    }
-                    None => pumped,
+                let (caught_up, history_problem) = live.catch_up();
+                let problems: Vec<String> = [
+                    live.ledger.sync(live.driver.usage().rows()),
+                    history_problem,
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if problems.is_empty() {
+                    pumped || caught_up
+                } else {
+                    self.message = Some(Err(problems.join(" ")));
+                    true
                 }
             }
             Phase::Empty | Phase::LaunchFailed { .. } => false,
@@ -284,6 +308,8 @@ impl SessionView {
             first_prompt: prompt.clone(),
             turns: Vec::new(),
             prompt,
+            hidden: 0,
+            noted_file: None,
         }))
     }
 
@@ -308,8 +334,11 @@ impl SessionView {
             let previous = live.driver.session().reply().to_string();
             let sent = live.driver.prompt(&text);
             if sent {
+                if live.first_prompt.is_empty() {
+                    live.first_prompt.clone_from(&text);
+                }
                 let earlier = std::mem::replace(&mut live.prompt, text);
-                live.turns.push((earlier, previous));
+                live.turns.extend(finished_turn(earlier, previous));
             }
             sent
         } else {
@@ -323,7 +352,7 @@ impl SessionView {
     }
 
     fn launch(&mut self, prompt: String) -> bool {
-        if matches!(self.phase, Phase::Launching { .. } | Phase::Live(_)) {
+        if !matches!(self.phase, Phase::Empty | Phase::LaunchFailed { .. }) {
             return false;
         }
         let problems = self.settings.problems();
@@ -589,5 +618,18 @@ mod tests {
         ));
         assert!(may_start_new(true, true, false, SessionState::NeedsReview));
         assert!(may_start_new(true, false, false, SessionState::Running));
+    }
+
+    #[test]
+    fn a_turn_with_nothing_in_it_is_not_kept() {
+        assert_eq!(finished_turn(String::new(), String::new()), None);
+        assert_eq!(
+            finished_turn("Fix it".into(), String::new()),
+            Some(("Fix it".into(), String::new()))
+        );
+        assert_eq!(
+            finished_turn(String::new(), "Carrying on.".into()),
+            Some((String::new(), "Carrying on.".into()))
+        );
     }
 }

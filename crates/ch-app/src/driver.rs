@@ -16,6 +16,11 @@ use serde_json::{Value, json};
 
 use crate::link::{Link, LinkEvent};
 
+mod history;
+
+use history::Earlier;
+pub use history::EarlierTurns;
+
 const OMP_ARGS: [&str; 2] = ["--mode", "rpc"];
 const PUMP_LIMIT: usize = 256;
 const LOG_LIMIT: usize = 200;
@@ -77,6 +82,8 @@ pub struct Driver {
     closed: bool,
     usage: Usage,
     context: ContextMeter,
+    earlier: Earlier,
+    omp_session_file: Option<String>,
 }
 
 impl Driver {
@@ -98,6 +105,8 @@ impl Driver {
             closed: false,
             usage: Usage::default(),
             context: ContextMeter::default(),
+            earlier: Earlier::Off,
+            omp_session_file: None,
         }
     }
 
@@ -138,7 +147,7 @@ impl Driver {
 
     /// Whether a prompt sent now would start a run.
     pub fn can_prompt(&self) -> bool {
-        if self.closed || self.omp != OmpState::Running {
+        if self.closed || self.omp != OmpState::Running || self.loading_history() {
             return false;
         }
         match self.session.state() {
@@ -278,6 +287,7 @@ impl Driver {
             self.on_event(event);
         }
         self.flush_queued();
+        self.page_history();
         changed
     }
 
@@ -331,6 +341,7 @@ impl Driver {
                 if self.context.on_omp(frame) {
                     self.ask_context();
                 }
+                self.on_resume_frame(frame);
                 self.cancel_unanswerable(frame);
             }
             RunnerLine::Runner(_) => {}

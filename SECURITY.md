@@ -41,6 +41,11 @@ shell command runs with your full access, so approval limits what runs without a
 a command can do. The risk level on a card is a hint worked out from the request text, not a
 guarantee.
 
+**A resumed session uses today's Settings.** Resume starts omp again with the approval mode
+and model Settings has now, which may differ from the ones the session started with. omp opens
+the conversation file the session record names. The record sits in your local data folder, so
+anything that can write there as you can point a resume at another omp conversation.
+
 **A repository can change how omp behaves.** omp reads project config and extensions from
 `.omp`, `.claude`, `.codex` and `.gemini` in the working tree. They can loosen approval prompts
 and run code inside omp. `ch-runner` warns when it finds them.
