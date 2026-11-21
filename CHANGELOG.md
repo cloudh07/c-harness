@@ -88,4 +88,5 @@ Notable changes to C-Harness. The format follows
   (on a private index) when the command starts and when it ends, and sends both as
   `tree_before` and `tree_after`. Land is refused, with the reason, when the work changed while
   that check ran or after it, so a file edited after a passing check cannot land on its
-  evidence. `ch-app` refuses Verify while the agent is working.
+  evidence. `ch-app` refuses Verify while the agent is working. The pull request marks a check
+  that ran on earlier work as "(on earlier work)".
