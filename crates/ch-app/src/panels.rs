@@ -1,12 +1,14 @@
 //! Read-only parts of the session screen. Each returns `None` when it has nothing to show.
 
-use ch_core::{Diff, Failure, Landing, Notice, ToolCall, ToolStatus};
+use ch_core::{Diff, Failure, Landing, Notice, ToolCall, ToolStatus, TurnDiff};
 use ch_protocol::runner::Evidence;
 use ch_ui::{Palette, Status, ToolGroup};
 use gpui_kit::{App, ClickEvent, Div, FontWeight, ParentElement, Styled, Window, div, px, rgb};
 
 use crate::assets::{icon, tool_icon};
-use crate::view_model::{check_outcome, check_passed, first_chars, last_chars, pr_link_allowed};
+use crate::view_model::{
+    check_outcome, check_passed, first_chars, last_chars, pr_link_allowed, turn_diff_title,
+};
 use crate::widgets::{MONO, Tone, banner, button, card, mono_block, muted};
 
 /// Enough to read a diff or a long check log in the app; the full text stays in the worktree.
@@ -144,25 +146,37 @@ pub fn evidence(p: Palette, runs: &[Evidence]) -> Option<Div> {
 
 pub fn diff(p: Palette, diff: Option<&Diff>) -> Option<Div> {
     let diff = diff?;
+    let heading = format!("Diff against {}", diff.base);
+    Some(diff_card(p, heading, "diff", "No changes yet.", diff))
+}
+
+/// The changes between two checkpoints, or from one to the working tree.
+pub fn turn_diff(p: Palette, turn: Option<&TurnDiff>) -> Option<Div> {
+    let turn = turn?;
+    let heading = turn_diff_title(turn.from, turn.to);
+    Some(diff_card(
+        p,
+        heading,
+        "turn-diff",
+        "No changes.",
+        &turn.diff,
+    ))
+}
+
+/// `id` keeps the two diff cards' scroll blocks apart.
+fn diff_card(p: Palette, heading: String, id: &str, empty: &'static str, diff: &Diff) -> Div {
+    let card = card(p).child(title(heading));
     if diff.patch.is_empty() {
-        return Some(
-            card(p)
-                .child(title(format!("Diff against {}", diff.base)))
-                .child(muted(p, "No changes yet.")),
-        );
+        return card.child(muted(p, empty));
     }
     let (patch, clipped) = first_chars(&diff.patch, SHOWN_CHARS);
-    Some(
-        card(p)
-            .child(title(format!("Diff against {}", diff.base)))
-            .children(
-                (!diff.stat.is_empty()).then(|| mono_block(p, "diff-stat", diff.stat.clone())),
-            )
-            .child(mono_block(p, "diff-patch", patch.to_string()))
-            .children(
-                (diff.truncated || clipped)
-                    .then(|| muted(p, "The diff is cut short here. The worktree has all of it.")),
-            ),
+    card.children(
+        (!diff.stat.is_empty()).then(|| mono_block(p, format!("{id}-stat"), diff.stat.clone())),
+    )
+    .child(mono_block(p, format!("{id}-patch"), patch.to_string()))
+    .children(
+        (diff.truncated || clipped)
+            .then(|| muted(p, "The diff is cut short here. The worktree has all of it.")),
     )
 }
 

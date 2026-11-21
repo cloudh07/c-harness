@@ -355,6 +355,19 @@ pub fn context_label(state: ContextState) -> Option<String> {
     }
 }
 
+/// Names the two ends of a turn diff. Turn 0 is the session's start, `None` the working tree.
+pub fn turn_diff_title(from: u32, to: Option<u32>) -> String {
+    let end = |turn: u32| {
+        if turn == 0 {
+            "the session start".to_string()
+        } else {
+            format!("checkpoint {turn}")
+        }
+    };
+    let to = to.map_or_else(|| "the working tree".to_string(), end);
+    format!("Changes from {} to {to}", end(from))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,5 +702,21 @@ mod tests {
             ..used(0, 0, 0, None)
         };
         assert_eq!(usage_label(&none).as_deref(), Some("Usage not reported"));
+    }
+
+    #[test]
+    fn turn_diff_title_names_both_ends() {
+        assert_eq!(
+            turn_diff_title(0, Some(1)),
+            "Changes from the session start to checkpoint 1"
+        );
+        assert_eq!(
+            turn_diff_title(2, Some(3)),
+            "Changes from checkpoint 2 to checkpoint 3"
+        );
+        assert_eq!(
+            turn_diff_title(3, None),
+            "Changes from checkpoint 3 to the working tree"
+        );
     }
 }

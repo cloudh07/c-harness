@@ -1,5 +1,7 @@
 //! The review panel on the right: what changed, whether the checks pass, and the land.
 
+mod checkpoints;
+
 use ch_core::{Diff, Landing};
 use ch_ui::{Palette, Status};
 use gpui_kit::{
@@ -35,6 +37,7 @@ impl SessionView {
             .border_l_1()
             .border_color(rgb(p.border))
             .child(self.changes(live, cx))
+            .children(self.checkpoints_section(live, cx))
             .child(self.checks(live, cx))
             .child(self.land_section(live, cx))
             .child(session_details(p, live))

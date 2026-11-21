@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Bumped when a frame changes shape. The runner announces it in [`RunnerFrame::Hello`].
-pub const RUNNER_PROTOCOL_VERSION: u32 = 1;
+pub const RUNNER_PROTOCOL_VERSION: u32 = 2;
 
 /// Every frame the runner adds has a `type` with this prefix. omp never uses it.
 pub const RUNNER_FRAME_PREFIX: &str = "ch_";
@@ -21,6 +21,9 @@ pub const MAX_OUTPUT_TAIL_BYTES: usize = 64 * 1024;
 
 /// The runner sends at most this much of a diff. `ch_diff_result.truncated` says when it cut.
 pub const MAX_PATCH_BYTES: usize = 512 * 1024;
+
+/// The most checkpoints the runner lists in [`RunnerFrame::Checkpoints`].
+pub const MAX_CHECKPOINTS: usize = 1000;
 
 const MASKED: &str = "<hidden>";
 
@@ -39,9 +42,24 @@ pub enum ClientFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_secs: Option<u64>,
     },
-    /// Reports the working tree's changes against the commit the session started from.
+    /// Reports the changes from `from` to `to`. A number names a checkpoint and 0 the
+    /// session's base. Without `from` the diff starts at the base, and without `to` it ends
+    /// at the working tree. A runner older than protocol 2 ignores both.
     #[serde(rename = "ch_diff")]
-    Diff { id: String },
+    Diff {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<u32>,
+    },
+    /// Saves the working tree as the next checkpoint. Valid only after `ch_checkpoints`.
+    #[serde(rename = "ch_checkpoint")]
+    Checkpoint { id: String },
+    /// Saves the working tree as a checkpoint, then puts back checkpoint `turn` (0: the base).
+    /// Valid only after `ch_checkpoints`.
+    #[serde(rename = "ch_restore")]
+    Restore { id: String, turn: u32 },
     /// Ends the agent: closes omp's stdin, drains its output, then ends what it left running.
     #[serde(rename = "ch_stop")]
     Stop { id: String },
@@ -145,10 +163,23 @@ pub enum RunnerFrame {
     DiffResult {
         id: String,
         base: String,
+        /// The range the `ch_diff` asked for, echoed back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<u32>,
         stat: String,
         patch: String,
         truncated: bool,
     },
+    /// Sent after a start when this working tree keeps checkpoints, with the ones it has.
+    #[serde(rename = "ch_checkpoints")]
+    Checkpoints { checkpoints: Vec<Checkpoint> },
+    /// A checkpoint was saved, by the `ch_checkpoint` or the `ch_restore` named by `id`.
+    #[serde(rename = "ch_checkpointed")]
+    Checkpointed { id: String, checkpoint: Checkpoint },
+    #[serde(rename = "ch_restored")]
+    Restored { id: String, turn: u32 },
     #[serde(rename = "ch_stopped")]
     Stopped { id: String, exit_code: Option<i32> },
     #[serde(rename = "ch_landed")]
@@ -172,6 +203,26 @@ pub enum RunnerFrame {
         stage: String,
         message: String,
     },
+}
+
+/// A snapshot of the working tree, kept as `refs/c-harness/<session>/turn-<turn>`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checkpoint {
+    /// Counts from 1. Restores and diffs use 0 for the session's base.
+    pub turn: u32,
+    pub commit: String,
+    pub kind: CheckpointKind,
+    /// Seconds since the Unix epoch.
+    pub at: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointKind {
+    /// Saved when the agent finished a run.
+    Run,
+    /// Saved by a restore, so the restore can be undone.
+    BeforeRestore,
 }
 
 /// The result of a `ch_verify`, measured by the runner rather than reported by the agent.
@@ -329,6 +380,15 @@ mod tests {
         }
     }
 
+    fn checkpoint(turn: u32, kind: CheckpointKind) -> Checkpoint {
+        Checkpoint {
+            turn,
+            commit: "c0ffee".into(),
+            kind,
+            at: 1_700_000_000,
+        }
+    }
+
     #[test]
     fn client_frames_round_trip() {
         let frames = [
@@ -338,7 +398,21 @@ mod tests {
                 command: "cargo test".into(),
                 timeout_secs: Some(600),
             },
-            ClientFrame::Diff { id: "d1".into() },
+            ClientFrame::Diff {
+                id: "d1".into(),
+                from: None,
+                to: None,
+            },
+            ClientFrame::Diff {
+                id: "d2".into(),
+                from: Some(0),
+                to: Some(3),
+            },
+            ClientFrame::Checkpoint { id: "c1".into() },
+            ClientFrame::Restore {
+                id: "r1".into(),
+                turn: 2,
+            },
             ClientFrame::Stop { id: "x1".into() },
             ClientFrame::Land(land()),
         ];
@@ -368,6 +442,26 @@ mod tests {
                 truncated: false,
                 timed_out: false,
             }),
+            RunnerFrame::DiffResult {
+                id: "d2".into(),
+                base: "abc123".into(),
+                from: Some(2),
+                to: None,
+                stat: String::new(),
+                patch: String::new(),
+                truncated: false,
+            },
+            RunnerFrame::Checkpoints {
+                checkpoints: vec![checkpoint(1, CheckpointKind::Run)],
+            },
+            RunnerFrame::Checkpointed {
+                id: "r1".into(),
+                checkpoint: checkpoint(2, CheckpointKind::BeforeRestore),
+            },
+            RunnerFrame::Restored {
+                id: "r1".into(),
+                turn: 1,
+            },
             RunnerFrame::Landed {
                 id: "l1".into(),
                 branch: "ch/s1".into(),
@@ -447,6 +541,45 @@ mod tests {
             }
             other => panic!("expected evidence, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_diff_without_a_range_is_the_whole_session() {
+        let old = r#"{"type":"ch_diff","id":"d1"}"#;
+        let frame = ClientFrame::Diff {
+            id: "d1".into(),
+            from: None,
+            to: None,
+        };
+        assert_eq!(
+            route_client_line(old),
+            Ok(ClientLine::Runner(frame.clone()))
+        );
+        assert_eq!(frame.to_line(), old);
+
+        let result = r#"{"type":"ch_diff_result","id":"d1","base":"b","stat":"",
+            "patch":"","truncated":false}"#;
+        match route_runner_line(result) {
+            Ok(RunnerLine::Runner(RunnerFrame::DiffResult { from, to, .. })) => {
+                assert_eq!((from, to), (None, None));
+            }
+            other => panic!("expected a diff result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checkpoint_kinds_are_snake_case() {
+        let line = RunnerFrame::Checkpointed {
+            id: "c1".into(),
+            checkpoint: checkpoint(3, CheckpointKind::BeforeRestore),
+        }
+        .to_line();
+        assert!(line.contains(r#""kind":"before_restore""#), "{line}");
+        let bad = r#"{"type":"ch_restore","id":"r1","turn":-1}"#;
+        assert!(matches!(
+            route_client_line(bad),
+            Err(RouteError::BadRunnerFrame(_))
+        ));
     }
 
     #[test]

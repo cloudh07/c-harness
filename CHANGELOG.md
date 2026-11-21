@@ -96,6 +96,19 @@ Notable changes to C-Harness. The format follows
   once omp names it in a `get_session_stats` answer. Only an absolute `.jsonl` path with no
   `..` or control characters is kept or passed back, and on Windows only one on a drive
   letter, never a network share. Records without it still load.
+- `ch-runner`, `ch-app`: turn checkpoints for local sessions. Each time the agent finishes a run,
+  the runner saves the working tree, untracked files included and ignored ones left out, as a
+  commit under `refs/c-harness/<session>/turn-<n>`, up to 1000 per session. The review panel
+  lists the last eight. Each shows what changed since the one before it in a card in the
+  thread, and Restore puts the working tree back as it was then, or as the session started. A
+  restore first saves the tree it replaces as a checkpoint of its own, so it can be undone. It
+  is refused when it would write over or delete a file no checkpoint holds, such as an ignored
+  one. Files come back with the repository's line-ending settings. A prompt waits for a restore,
+  and up to 15 seconds for the save of the last run. Only a worktree C-Harness made and locked
+  for the session keeps checkpoints, so SSH sessions have none. A resumed session lists the
+  checkpoints it had.
+- `ch-protocol`: `ch_checkpoint`, `ch_restore`, and `from` and `to` on `ch_diff`, answered by
+  `ch_checkpoints`, `ch_checkpointed`, `ch_restored` and a `ch_diff_result` that names its range.
 
 ### Changed
 
@@ -122,7 +135,17 @@ Notable changes to C-Harness. The format follows
   directory nested inside another repository.
 - The GitHub token is only ever sent to `https://github.com/`: a land that carries a token is
   refused for any other remote. UNC paths are refused as remotes.
-- Land is refused while a verify or diff is still running.
+- Land is refused while a verify, diff or restore is still running. A restore is refused while
+  any of them runs.
+- Checkpoints are kept only in a worktree locked for the session, so a restore never rewrites a
+  checkout C-Harness did not make. The agent can rewrite these refs, so they are never used as
+  evidence. They are deleted with the worktree, and land pushes only the session branch. A
+  restore or a diff reads a checkpoint ref only when it points at a commit with C-Harness's
+  checkpoint subject, never a tag or another commit, and a restore that changes more paths than
+  it can check (16 MiB of names) is refused.
+- `ch-runtime` runs git with hooks and `fsmonitor` turned off, as `ch-runner` already did, so
+  creating or removing a worktree, or deleting its checkpoints, runs no program the repository
+  names.
 - Approval dialogs the app cannot answer (`confirm`, `input`, `editor`, `ask`) are cancelled,
   which omp treats as a refusal.
 - A runner frame that arrives inside omp's `rpc_chunk` sequence is dropped, so omp cannot forge

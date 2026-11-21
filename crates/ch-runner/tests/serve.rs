@@ -40,7 +40,10 @@ const PR_URL: &str = "https://example.invalid/octo/demo/pull/1";
 /// Generous, so a slow CI machine fails only on a real hang.
 const WAIT: Duration = Duration::from_secs(60);
 
-const SCENARIOS: [(&str, fn()); 7] = [
+#[path = "serve/checkpoints.rs"]
+mod checkpoints;
+
+const SCENARIOS: [(&str, fn()); 9] = [
     ("full_session", full_session),
     (
         "project_config_and_provider_notice",
@@ -54,6 +57,14 @@ const SCENARIOS: [(&str, fn()); 7] = [
     ),
     ("protocol_errors", protocol_errors),
     ("binary_cli", binary_cli),
+    (
+        "checkpoints_and_restore",
+        checkpoints::checkpoints_and_restore,
+    ),
+    (
+        "checkpoints_need_a_session_worktree",
+        checkpoints::checkpoints_need_a_session_worktree,
+    ),
 ];
 
 fn main() -> ExitCode {
@@ -256,7 +267,7 @@ fn full_session() {
 
     let hello = client.expect("ch_runner_hello");
     assert_eq!(hello["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(hello["protocol"], 1);
+    assert_eq!(hello["protocol"], 2);
     assert_eq!(hello["workdir"], dir.to_string_lossy().as_ref());
 
     client.send(&start_frame(&[]));
@@ -736,6 +747,11 @@ fn protocol_errors() {
             "verify",
         ),
         (json!({ "type": "ch_diff", "id": "d0" }), "diff"),
+        (json!({ "type": "ch_checkpoint", "id": "c0" }), "checkpoint"),
+        (
+            json!({ "type": "ch_restore", "id": "r0", "turn": 1 }),
+            "restore",
+        ),
         (json!({ "type": "ch_stop", "id": "s0" }), "stop"),
         (land_frame("l0", &remote.path, false), "land"),
     ];

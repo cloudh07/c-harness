@@ -421,3 +421,5 @@ fn a_land_refused_while_omp_runs_leaves_omp_usable() {
     session.apply_action(&ClientAction::PromptSent);
     assert_eq!(session.state(), SessionState::Failed, "omp is gone");
 }
+
+mod checkpoints;

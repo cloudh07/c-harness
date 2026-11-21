@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::link::{Link, LinkEvent};
 
+mod checkpoints;
 mod history;
 
 use history::Earlier;
@@ -48,7 +49,15 @@ enum OmpState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Request {
     Verify,
+    /// The full diff from the base to the working tree.
     Diff,
+    /// A diff between checkpoints, whose reply must echo the same range.
+    TurnDiff {
+        from: u32,
+        to: Option<u32>,
+    },
+    Checkpoint,
+    Restore,
     Stop,
     Land,
 }
@@ -57,9 +66,22 @@ impl Request {
     fn label(self) -> &'static str {
         match self {
             Self::Verify => "verify",
-            Self::Diff => "diff",
+            Self::Diff | Self::TurnDiff { .. } => "diff",
+            Self::Checkpoint => "checkpoint",
+            Self::Restore => "restore",
             Self::Stop => "stop",
             Self::Land => "land",
+        }
+    }
+
+    /// The request a diff reply answers, by the range it echoes.
+    fn for_diff(from: Option<u32>, to: Option<u32>) -> Self {
+        match (from, to) {
+            (None, None) => Self::Diff,
+            (from, to) => Self::TurnDiff {
+                from: from.unwrap_or(0),
+                to,
+            },
         }
     }
 }
@@ -84,6 +106,7 @@ pub struct Driver {
     context: ContextMeter,
     earlier: Earlier,
     omp_session_file: Option<String>,
+    saves: checkpoints::Saves,
 }
 
 impl Driver {
@@ -107,6 +130,7 @@ impl Driver {
             context: ContextMeter::default(),
             earlier: Earlier::Off,
             omp_session_file: None,
+            saves: checkpoints::Saves::default(),
         }
     }
 
@@ -145,9 +169,13 @@ impl Driver {
         self.queued_land.is_some() || self.land_in_flight
     }
 
-    /// Whether a prompt sent now would start a run.
+    /// Whether a prompt sent now would start a run. A restore or the save of the last run
+    /// must finish first, or the agent would work on a tree that is about to change.
     pub fn can_prompt(&self) -> bool {
         if self.closed || self.omp != OmpState::Running || self.loading_history() {
+            return false;
+        }
+        if self.restoring() || self.saving_checkpoint() {
             return false;
         }
         match self.session.state() {
@@ -165,12 +193,13 @@ impl Driver {
                 SessionState::NeedsReview | SessionState::Idle
             )
             && !self.landing()
+            && !self.restoring()
     }
 
     /// Whether a land can go out now: once the work is ready for review, and again after a land
     /// that failed, since a rejected push is fixed by changing settings and trying again.
     pub fn can_land(&self) -> bool {
-        if self.closed || self.landing() {
+        if self.closed || self.landing() || self.restoring() {
             return false;
         }
         match self.session.state() {
@@ -248,7 +277,11 @@ impl Driver {
 
     pub fn diff(&mut self) -> bool {
         let id = self.next_id();
-        let frame = ClientFrame::Diff { id: id.clone() };
+        let frame = ClientFrame::Diff {
+            id: id.clone(),
+            from: None,
+            to: None,
+        };
         self.send_request(id, Request::Diff, &frame, None)
     }
 
@@ -330,6 +363,7 @@ impl Driver {
         };
         let record = self.transcript.incoming((self.clock)(), line);
         self.keep(record);
+        let before = self.session.state();
         self.session.apply_line(line);
         match line {
             RunnerLine::Runner(RunnerFrame::Stopped { .. } | RunnerFrame::OmpExited { .. }) => {
@@ -346,9 +380,14 @@ impl Driver {
             }
             RunnerLine::Runner(_) => {}
         }
-        if answered == Some(Request::Land) {
-            self.land_in_flight = false;
+        if let (Some(kind), RunnerLine::Runner(frame)) = (answered, line) {
+            match kind {
+                Request::Land => self.land_in_flight = false,
+                Request::Checkpoint | Request::Restore => self.on_checkpoint_answer(kind, frame),
+                Request::Verify | Request::Diff | Request::TurnDiff { .. } | Request::Stop => {}
+            }
         }
+        self.save_after_run(before);
     }
 
     /// Takes the request a runner reply answers off the open list. A reply that names no open
@@ -358,12 +397,24 @@ impl Driver {
     fn take_request(&mut self, frame: &RunnerFrame) -> Result<Option<Request>, String> {
         let (id, expected) = match frame {
             RunnerFrame::Evidence(evidence) => (&evidence.id, Some(Request::Verify)),
-            RunnerFrame::DiffResult { id, .. } => (id, Some(Request::Diff)),
+            RunnerFrame::DiffResult { id, from, to, .. } => {
+                (id, Some(Request::for_diff(*from, *to)))
+            }
+            // A restore saves the tree it replaces first, under its own id, and stays open
+            // until its `ch_restored` or error.
+            RunnerFrame::Checkpointed { id, .. }
+                if self.open.get(id) == Some(&Request::Restore) =>
+            {
+                return Ok(None);
+            }
+            RunnerFrame::Checkpointed { id, .. } => (id, Some(Request::Checkpoint)),
+            RunnerFrame::Restored { id, .. } => (id, Some(Request::Restore)),
             RunnerFrame::Stopped { id, .. } => (id, Some(Request::Stop)),
             RunnerFrame::Landed { id, .. } => (id, Some(Request::Land)),
             RunnerFrame::Error { id: Some(id), .. } => (id, None),
             RunnerFrame::Hello { .. }
             | RunnerFrame::Notice { .. }
+            | RunnerFrame::Checkpoints { .. }
             | RunnerFrame::OmpExited { .. }
             | RunnerFrame::Error { id: None, .. } => return Ok(None),
         };

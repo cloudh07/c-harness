@@ -158,6 +158,7 @@ impl SessionView {
             .children(ask_review.then(|| self.review_prompt(cx)))
             .children(panels::evidence(p, session.evidence()))
             .children(panels::diff(p, session.last_diff()))
+            .children(panels::turn_diff(p, session.turn_diff()))
             .children(landing)
             .children(panels::log(p, live.driver.log()))
     }

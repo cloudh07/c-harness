@@ -317,7 +317,7 @@ pub(crate) fn checkpoint_prefix(session: &str) -> String {
     format!("refs/c-harness/{session}/")
 }
 
-fn delete_checkpoints(repo: &Path, session: &str) -> Result<(), RuntimeError> {
+pub(crate) fn delete_checkpoints(repo: &Path, session: &str) -> Result<(), RuntimeError> {
     let prefix = checkpoint_prefix(session);
     let list = os_args([
         &"-C",
@@ -526,6 +526,56 @@ mod tests {
         assert_eq!(there.discard("s2", Some(&seen_in)).unwrap(), None);
         assert!(!there.worktree_path("s2").unwrap().exists());
         assert_eq!(worktree_count(&other), 2);
+    }
+
+    fn write_hook(path: &Path, script: &str) {
+        fs::write(path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_app_runs_no_hook_the_repository_names() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = repo_with_commit(root.path());
+        let hooks = root.path().join("hooks");
+        fs::create_dir(&hooks).unwrap();
+        let marker = root.path().join("hook-ran");
+        let marker_arg = marker.to_string_lossy().replace('\\', "/");
+        let script = format!("#!/bin/sh\ncat > /dev/null\necho \"$0\" >> '{marker_arg}'\n");
+        for name in ["post-checkout", "reference-transaction"] {
+            write_hook(&hooks.join(name), &script);
+        }
+        git(
+            &repo,
+            &["config", "core.hooksPath", &hooks.to_string_lossy()],
+        );
+        // The hooks do run for plain git.
+        git(&repo, &["update-ref", "refs/probe", "HEAD"]);
+        assert!(marker.exists(), "the test hook never ran");
+        fs::remove_file(&marker).unwrap();
+
+        let provider = provider(root.path(), repo.clone());
+        provider.create_worktree("s1").unwrap();
+        let quiet = format!("core.hooksPath={}", root.path().join("none").display());
+        git(
+            &repo,
+            &[
+                "-c",
+                &quiet,
+                "update-ref",
+                "refs/c-harness/s1/turn-1",
+                "HEAD",
+            ],
+        );
+        provider.discard("s1", None).unwrap();
+
+        assert!(!refs(&repo).contains("refs/c-harness/s1/"));
+        let ran = fs::read_to_string(&marker).unwrap_or_default();
+        assert_eq!(ran, "", "a repository hook ran");
     }
 
     #[test]

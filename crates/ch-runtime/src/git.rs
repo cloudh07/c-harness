@@ -3,6 +3,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use crate::RuntimeError;
 use crate::process::{command, stderr_tail};
@@ -67,8 +68,25 @@ pub(crate) fn os_args<const N: usize>(args: [&dyn AsRef<OsStr>; N]) -> Vec<OsStr
 fn git(args: Vec<OsString>, stdin: Stdio) -> Command {
     let mut git = command("git");
     clear_git_location(&mut git);
-    git.args(args).stdin(stdin);
+    // Hooks and fsmonitor are programs the repository names, and the agent can edit them.
+    git.args(["-c", "core.fsmonitor=false", "-c"])
+        .arg(no_hooks())
+        .args(args)
+        .stdin(stdin);
     git
+}
+
+/// `core.hooksPath` set to this program's own file: no hook can sit under a file.
+fn no_hooks() -> &'static OsStr {
+    static ARG: OnceLock<OsString> = OnceLock::new();
+    ARG.get_or_init(|| {
+        let mut arg = OsString::from("core.hooksPath=");
+        match std::env::current_exe() {
+            Ok(path) => arg.push(path),
+            Err(_) => arg.push("/dev/null"),
+        }
+        arg
+    })
 }
 
 fn spawn_error(source: io::Error) -> RuntimeError {

@@ -4,17 +4,18 @@
 //! each frame it writes through [`Session::apply_action`]. Nothing here reads a clock or waits,
 //! so the same lines always give the same state.
 
-use ch_protocol::runner::{Evidence, RunnerFrame, RunnerLine};
+use ch_protocol::runner::{Checkpoint, Evidence, RunnerFrame, RunnerLine};
 use serde_json::Value;
 
 use crate::approval::{ApprovalRequest, withdrawn_approval};
+use crate::checkpoints;
 use crate::context::note_compaction;
 
 const PROMPT_STAGE: &str = "prompt";
 const OMP_STAGE: &str = "omp";
 const LAND_STAGE: &str = "land";
-// A check that fails or a diff that cannot be built is news about the work, not a broken session.
-const NON_FATAL_STAGES: &[&str] = &["verify", "diff"];
+// A failed check, diff, checkpoint or restore is news about the work, not a broken session.
+const NON_FATAL_STAGES: &[&str] = &["verify", "diff", "checkpoint", "restore"];
 // The runner's stage for a line it could not pass to omp.
 const PROTOCOL_STAGE: &str = "protocol";
 const PROMPT_COMMANDS: &[&str] = &["prompt", "abort_and_prompt"];
@@ -95,6 +96,16 @@ pub struct Diff {
     pub truncated: bool,
 }
 
+/// The latest diff over a range of checkpoints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnDiff {
+    /// A checkpoint's turn, or 0 for the base.
+    pub from: u32,
+    /// `None` for the working tree.
+    pub to: Option<u32>,
+    pub diff: Diff,
+}
+
 /// Where the work landed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Landing {
@@ -123,6 +134,9 @@ pub struct Session {
     tool_calls: Vec<ToolCall>,
     evidence: Vec<Evidence>,
     last_diff: Option<Diff>,
+    turn_diff: Option<TurnDiff>,
+    // `None` until the runner lists them, which it does only for a session worktree.
+    checkpoints: Option<Vec<Checkpoint>>,
     notices: Vec<Notice>,
     warnings: Vec<Failure>,
     failure: Option<Failure>,
@@ -173,6 +187,20 @@ impl Session {
 
     pub fn last_diff(&self) -> Option<&Diff> {
         self.last_diff.as_ref()
+    }
+
+    pub fn turn_diff(&self) -> Option<&TurnDiff> {
+        self.turn_diff.as_ref()
+    }
+
+    /// Whether the runner keeps checkpoints for this session.
+    pub fn checkpoints_on(&self) -> bool {
+        self.checkpoints.is_some()
+    }
+
+    /// Saved checkpoints in turn order; empty while they are off.
+    pub fn checkpoints(&self) -> &[Checkpoint] {
+        self.checkpoints.as_deref().unwrap_or_default()
     }
 
     pub fn notices(&self) -> &[Notice] {
@@ -270,17 +298,47 @@ impl Session {
             RunnerFrame::Evidence(evidence) => self.evidence.push(evidence.clone()),
             RunnerFrame::DiffResult {
                 base,
+                from,
+                to,
                 stat,
                 patch,
                 truncated,
                 ..
             } => {
-                self.last_diff = Some(Diff {
+                let diff = Diff {
                     base: base.clone(),
                     stat: stat.clone(),
                     patch: patch.clone(),
                     truncated: *truncated,
-                });
+                };
+                if from.is_none() && to.is_none() {
+                    self.last_diff = Some(diff);
+                } else {
+                    self.turn_diff = Some(TurnDiff {
+                        from: from.unwrap_or(0),
+                        to: *to,
+                        diff,
+                    });
+                }
+            }
+            RunnerFrame::Checkpoints { checkpoints } => {
+                let mut list = Vec::new();
+                for checkpoint in checkpoints {
+                    checkpoints::add(&mut list, checkpoint);
+                }
+                self.checkpoints = Some(list);
+            }
+            RunnerFrame::Checkpointed { checkpoint, .. } => {
+                if let Some(list) = &mut self.checkpoints {
+                    checkpoints::add(list, checkpoint);
+                }
+            }
+            RunnerFrame::Restored { turn, .. } => {
+                // Both diffs describe a tree that is gone.
+                self.last_diff = None;
+                self.turn_diff = None;
+                let list = self.checkpoints.as_deref().unwrap_or_default();
+                checkpoints::note_restore(&mut self.notices, list, *turn);
             }
             RunnerFrame::Stopped { .. } => self.omp_ended(),
             RunnerFrame::OmpExited {

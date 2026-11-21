@@ -125,7 +125,7 @@ impl Git {
         command
     }
 
-    fn with_index(&self, index: &Path) -> Command {
+    pub(crate) fn with_index(&self, index: &Path) -> Command {
         let mut command = self.command();
         command.env("GIT_INDEX_FILE", index);
         command
@@ -209,42 +209,66 @@ impl Git {
         stat_budget: usize,
         patch_budget: usize,
     ) -> Result<Diff, String> {
-        let result = self.diff_inner(base, index, stat_budget, patch_budget);
+        self.diff_since(base, &base.id, index, (stat_budget, patch_budget))
+    }
+
+    /// The working tree's changes against `since`, a commit or tree id. `index` is scratch,
+    /// filled from `base`, and removed afterwards.
+    pub fn diff_since(
+        &self,
+        base: &Base,
+        since: &str,
+        index: &Path,
+        budgets: (usize, usize),
+    ) -> Result<Diff, String> {
+        let result = self.stage(base, index).and_then(|()| {
+            capped_diff(budgets, |stat| {
+                let mut command = self.with_index(index);
+                diff_args(&mut command, stat);
+                command.arg("--cached").arg(since).arg("--");
+                command
+            })
+        });
         // The index is scratch; leaving it would only waste the temp dir until the session ends.
         let _ = fs::remove_file(index);
         result
     }
 
-    fn diff_inner(
+    /// The changes from one commit or tree to another.
+    pub fn diff_between(
         &self,
-        base: &Base,
-        index: &Path,
-        stat_budget: usize,
-        patch_budget: usize,
+        from: &str,
+        to: &str,
+        budgets: (usize, usize),
     ) -> Result<Diff, String> {
-        self.stage(base, index)?;
-        let diff_command = |stat: bool| {
-            let mut command = self.with_index(index);
-            command.args([
-                "diff",
-                "--cached",
-                "--no-color",
-                "--no-ext-diff",
-                "--no-textconv",
-            ]);
-            if stat {
-                command.arg("--stat");
-            }
-            command.arg(&base.id).arg("--");
+        capped_diff(budgets, |stat| {
+            let mut command = self.command();
+            diff_args(&mut command, stat);
+            command.arg(from).arg(to).arg("--");
             command
-        };
-        let (stat, stat_cut) = run_capped(diff_command(true), "diff --stat", stat_budget)?;
-        let (patch, patch_cut) = run_capped(diff_command(false), "diff", patch_budget)?;
-        Ok(Diff {
-            stat,
-            patch,
-            truncated: stat_cut || patch_cut,
         })
+    }
+}
+
+/// Runs the stat and the patch form of one diff, each cut to its budget.
+fn capped_diff(
+    (stat_budget, patch_budget): (usize, usize),
+    diff_command: impl Fn(bool) -> Command,
+) -> Result<Diff, String> {
+    let (stat, stat_cut) = run_capped(diff_command(true), "diff --stat", stat_budget)?;
+    let (patch, patch_cut) = run_capped(diff_command(false), "diff", patch_budget)?;
+    Ok(Diff {
+        stat,
+        patch,
+        truncated: stat_cut || patch_cut,
+    })
+}
+
+/// Plain diff output: no colour, external diff tools or text conversion the repository set up.
+fn diff_args(command: &mut Command, stat: bool) {
+    command.args(["diff", "--no-color", "--no-ext-diff", "--no-textconv"]);
+    if stat {
+        command.arg("--stat");
     }
 }
 
@@ -254,7 +278,7 @@ fn prefixed(option: &str, path: &Path) -> OsString {
     arg
 }
 
-fn same_dir(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_dir(a: &Path, b: &Path) -> bool {
     match (fs::canonicalize(a), fs::canonicalize(b)) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
@@ -321,7 +345,26 @@ fn failure(what: &str, stderr: &[u8]) -> String {
 
 /// Runs a git command whose output may be far larger than what the client should get, reading
 /// no more than `budget` bytes of it.
-fn run_capped(mut command: Command, what: &str, budget: usize) -> Result<(String, bool), String> {
+pub(crate) fn run_capped(
+    command: Command,
+    what: &str,
+    budget: usize,
+) -> Result<(String, bool), String> {
+    read_capped(command, what, budget).map(|stdout| cut_head(&stdout, budget))
+}
+
+/// Like [`run_capped`], as bytes, or `None` when the output is over `budget`.
+pub(crate) fn run_within(
+    command: Command,
+    what: &str,
+    budget: usize,
+) -> Result<Option<Vec<u8>>, String> {
+    let stdout = read_capped(command, what, budget)?;
+    Ok((stdout.len() <= budget).then_some(stdout))
+}
+
+/// Up to `budget` + 1 bytes of stdout; git is stopped once it prints more than `budget`.
+fn read_capped(mut command: Command, what: &str, budget: usize) -> Result<Vec<u8>, String> {
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -355,7 +398,7 @@ fn run_capped(mut command: Command, what: &str, budget: usize) -> Result<(String
     if !over && !status.success() {
         return Err(failure(what, stderr.as_bytes()));
     }
-    Ok(cut_head(&stdout, budget))
+    Ok(stdout)
 }
 
 fn finish(child: &mut Child, what: &str) -> Result<std::process::ExitStatus, String> {

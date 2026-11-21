@@ -540,4 +540,5 @@ fn stderr_is_masked_before_display() {
     assert!(!log[0].contains(KEY), "{log:?}");
 }
 
+mod checkpoints;
 mod resume;

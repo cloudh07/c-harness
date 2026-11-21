@@ -9,6 +9,7 @@ use crate::git::{clear_git_location, git_output, os_args, run_git};
 use crate::lock::{self, SessionLock};
 use crate::process::{command, runner_info};
 use crate::record::{self, SessionRecord};
+use crate::sweep::delete_checkpoints;
 use crate::{RunnerInfo, RunnerProcess, RuntimeError, SandboxProvider, session_branch};
 
 const LOCATION: &str = "this machine";
@@ -92,6 +93,8 @@ impl LocalProvider {
             "remove the worktree",
             worktree_remove_args(&self.repo, &path),
         )?;
+        // With no worktree left there is nothing to restore into.
+        delete_checkpoints(&self.repo, session)?;
         record::remove(&self.sessions_dir, session)?;
         // A lock file nobody holds is harmless, so a failure here is not worth reporting.
         let _ = lock::remove(&self.sessions_dir, session);
@@ -363,11 +366,19 @@ mod tests {
         assert!(record.created_unix_secs > 1_700_000_000);
 
         fs::write(path.join("scratch.txt"), "uncommitted").unwrap();
+        git(&repo, &["update-ref", "refs/c-harness/s1/turn-1", "HEAD"]);
+        git(&repo, &["update-ref", "refs/c-harness/s10/turn-1", "HEAD"]);
         provider.remove_worktree("s1").unwrap();
         assert!(!path.exists());
         assert_eq!(worktree_count(&repo), 1);
         assert_eq!(git(&repo, &["status", "--porcelain"]), "");
         assert_eq!(provider.record("s1").unwrap(), None);
+        // Its checkpoints go with it; another session's stay.
+        let refs = git(
+            &repo,
+            &["for-each-ref", "--format=%(refname)", "refs/c-harness/"],
+        );
+        assert_eq!(refs, "refs/c-harness/s10/turn-1");
     }
 
     #[test]
