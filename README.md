@@ -108,7 +108,7 @@ or when it cannot tell. `google-antigravity` is always off for the same reason.
 |---|---|
 | Settings | `c-harness/settings.json` under your OS config folder |
 | Model key and GitHub token | The OS keychain. The model key is read when a session starts, the token when you land. |
-| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work; to remove it, run `git worktree unlock <path>` and then `git worktree remove <path>` from your repository, and delete its session record. |
+| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work. To remove it, run `git worktree remove --force --force <path>` from your repository, which also deletes changes nobody committed, then delete its session record. |
 | Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree. It is written before the worktree is created and deleted after it is removed. |
 | Exported transcripts | `c-harness/transcripts` under the same data folder, with secrets removed by pattern |
 
