@@ -39,11 +39,10 @@ in Settings (`write` unless you pick `always-ask`), shows omp's approval request
 sends your answer back. `ch-runner` refuses a start that does not name `--approval-mode`, or
 names it twice. It accepts `always-ask-cached` only from omp 18.12.3 or newer, read from
 `omp --version`, because an older omp does not know the value and replaces it with full auto.
-Settings does not offer it.
-It does not enforce a policy of its own inside the sandbox. An approved
-shell command runs with your full access, so approval limits what runs without asking, not what
-a command can do. The risk level on a card is a hint worked out from the request text, not a
-guarantee.
+Settings does not offer it. C-Harness does not enforce a policy of its own inside the sandbox.
+An approved shell command runs with your full access, so approval limits what runs without
+asking, not what a command can do. The risk level on a card is a hint worked out from the
+request text, not a guarantee.
 
 **A resumed session uses today's Settings.** Resume starts omp again with the approval mode
 and model Settings has now, which may differ from the ones the session started with. omp opens
