@@ -40,7 +40,7 @@ const PR_URL: &str = "https://example.invalid/octo/demo/pull/1";
 /// Generous, so a slow CI machine fails only on a real hang.
 const WAIT: Duration = Duration::from_secs(60);
 
-const SCENARIOS: [(&str, fn()); 6] = [
+const SCENARIOS: [(&str, fn()); 7] = [
     ("full_session", full_session),
     (
         "project_config_and_provider_notice",
@@ -48,6 +48,10 @@ const SCENARIOS: [(&str, fn()); 6] = [
     ),
     ("start_refusals", start_refusals),
     ("omp_exit_is_reported", omp_exit_is_reported),
+    (
+        "a_check_that_writes_blocks_land",
+        a_check_that_writes_blocks_land,
+    ),
     ("protocol_errors", protocol_errors),
     ("binary_cli", binary_cli),
 ];
@@ -293,6 +297,22 @@ fn full_session() {
         (Some("s1"), Some(0))
     );
 
+    // The last check ran before new.txt existed, so it says nothing about the work now.
+    client.send(&land);
+    let stale = client.expect("ch_error");
+    assert_eq!(stale["id"], "l1");
+    assert!(
+        stale["message"]
+            .as_str()
+            .unwrap()
+            .contains("changed after the last check"),
+        "{stale}"
+    );
+    assert_eq!(
+        verify(&mut client, "v3", &helper_command(0, 0))["exit_code"],
+        0
+    );
+
     client.send(&land);
     let landed = client.expect("ch_landed");
     assert_eq!(landed["id"], "l1");
@@ -337,8 +357,13 @@ fn check_started(started: &Value, dir: &Path) {
     assert_eq!(configs[0]["text"], CLIENT_OVERLAY);
     let host = configs[1]["text"].as_str().expect("host overlay");
     assert!(
-        host.starts_with("startup:\n  checkUpdate: false\n"),
+        host.starts_with("startup:\n  checkUpdate: false\nmemory:\n  backend: \"off\"\n"),
         "{host}"
+    );
+    assert_eq!(
+        configs[1]["path"].as_str(),
+        Some(args[5]),
+        "host overlay last"
     );
     assert!(host.contains("google-antigravity"), "{host}");
     assert!(!host.contains("\"anthropic\""), "{host}");
@@ -358,9 +383,8 @@ fn check_started(started: &Value, dir: &Path) {
 }
 
 fn check_verify(client: &mut Client, head: &str) {
-    client.send(&json!({ "type": "ch_verify", "id": "v1", "command": helper_command(3, 0) }));
-    let evidence = client.expect("ch_evidence");
-    assert_eq!(evidence["id"], "v1");
+    let evidence = verify(client, "v1", &helper_command(3, 0));
+    assert_eq!(evidence["tree_before"], evidence["tree_after"]);
     assert_eq!(evidence["exit_code"], 3);
     assert_eq!(evidence["timed_out"], false);
     assert_eq!(evidence["head"], head);
@@ -383,6 +407,55 @@ fn check_verify(client: &mut Client, head: &str) {
     assert_eq!(evidence["id"], "v2");
     assert_eq!(evidence["timed_out"], true);
     assert_eq!(evidence["exit_code"], Value::Null);
+}
+
+/// Sends a `ch_verify` and returns its evidence, which must name the work it ran on.
+fn verify(client: &mut Client, id: &str, command: &str) -> Value {
+    client.send(&json!({ "type": "ch_verify", "id": id, "command": command }));
+    let evidence = client.expect("ch_evidence");
+    assert_eq!(evidence["id"], id);
+    for tree in ["tree_before", "tree_after"] {
+        assert!(evidence[tree].is_string(), "no {tree}: {evidence}");
+    }
+    evidence
+}
+
+/// A check that writes files ran on work that was moving, so land waits for a steady one.
+fn a_check_that_writes_blocks_land() {
+    let repo = repo(true);
+    let dir = repo.path();
+    let remote = bare_remote();
+    let mut client = Client::start(dir, Box::new(FakeOpener::default()));
+    client.expect("ch_runner_hello");
+    client.send(&start_frame(&[]));
+    client.until("fake_started");
+    for expected in fixture_lines() {
+        assert_eq!(client.next_line(), expected);
+    }
+    client.send(&json!({ "type": "ch_stop", "id": "s1" }));
+    client.expect("ch_stopped");
+
+    fs::write(dir.join("new.txt"), "fresh\n").expect("write a file");
+    // `echo x> file` writes the file under both `sh` and `cmd`.
+    let moving = verify(&mut client, "v1", "echo x> during.txt");
+    assert_eq!(moving["exit_code"], 0, "{moving}");
+    assert_ne!(moving["tree_before"], moving["tree_after"], "{moving}");
+    client.send(&land_frame("l1", &remote.path, false));
+    let refused = client.expect("ch_error");
+    assert_eq!(refused["id"], "l1");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("changed while the last check ran"),
+        "{refused}"
+    );
+
+    let steady = verify(&mut client, "v2", &helper_command(0, 0));
+    assert_eq!(steady["tree_before"], steady["tree_after"]);
+    client.send(&land_frame("l2", &remote.path, false));
+    assert_eq!(client.expect("ch_landed")["id"], "l2");
+    assert_eq!(client.finish(), Vec::<Value>::new());
 }
 
 fn check_remote(remote: &Path, commit: &str, parent: &str) {
@@ -414,6 +487,12 @@ fn project_config_and_provider_notice() {
     let dir = repo.path();
     fs::create_dir(dir.join(".omp")).expect("mkdir");
     fs::write(dir.join(".omp/settings.yml"), "x: 1\n").expect("write");
+    // A project asking for full auto: the client's flag is what omp gets.
+    fs::write(
+        dir.join(".omp/config.yml"),
+        "tools:\n  approvalMode: yolo\n",
+    )
+    .expect("write");
     fs::create_dir(dir.join(".claude")).expect("mkdir");
     fs::write(dir.join(".claude/settings.json"), "{}\n").expect("write");
     fs::write(
@@ -432,8 +511,18 @@ fn project_config_and_provider_notice() {
     assert!(message.contains(".omp, .claude"), "{message}");
     assert!(!message.contains(".codex"), "{message}");
 
-    client.send(&start_frame(&[]));
+    let mut frame = start_frame(&[]);
+    frame["omp_args"] = json!(["--mode", "rpc", "--approval-mode", "write"]);
+    client.send(&frame);
     let (started, before) = client.until("fake_started");
+    let args: Vec<&str> = started["args"]
+        .as_array()
+        .expect("args")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(&args[..4], ["--mode", "rpc", "--approval-mode", "write"]);
+    assert!(!args.iter().any(|a| a.contains("yolo")), "{args:?}");
     assert_eq!(before.len(), 1, "{before:?}");
     assert_eq!(before[0]["kind"], "provider_disabled");
     assert!(
@@ -446,6 +535,8 @@ fn project_config_and_provider_notice() {
     let host = started["configs"][1]["text"]
         .as_str()
         .expect("host overlay");
+    assert_eq!(started["configs"][1]["path"].as_str(), args.last().copied());
+    assert!(host.contains("memory:\n  backend: \"off\"\n"), "{host}");
     assert!(host.contains("- \"anthropic\""), "{host}");
     assert!(host.contains("- \"openai\""), "{host}");
     for _ in fixture_lines() {
@@ -492,6 +583,19 @@ fn start_refusals() {
     assert!(
         !text.contains(OAUTH_VALUE) && !text.contains(MODEL_KEY),
         "{text}"
+    );
+
+    let mut yolo = start_frame(&[]);
+    yolo["omp_args"] = json!(["--mode", "rpc", "--yolo"]);
+    client.send(&yolo);
+    let refused = client.expect("ch_error");
+    assert_eq!(refused["stage"], "start");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("--approval-mode"),
+        "{refused}"
     );
 
     client.send(&start_frame(&[]));

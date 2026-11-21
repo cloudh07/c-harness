@@ -38,9 +38,11 @@ A session goes like this:
    prepared on an SSH host.
 3. The agent's text and tool calls stream into the window. Commands omp wants approved stop at
    a card that shows the command and a risk hint. Nothing runs until you choose.
-4. You run your own verify command. `ch-runner` runs it and records the real exit code.
+4. When the agent is done, you run your own verify command. `ch-runner` runs it and records
+   the real exit code and the exact work it ran on.
 5. You read the diff, then land it: the agent is stopped, the work is committed to a new
-   branch, pushed, and a pull request is opened.
+   branch, pushed, and a pull request is opened. If the work changed after the last check,
+   land is refused until you verify again.
 
 Not done yet: cloud sandbox providers, the Agent Client Protocol, cost tracking, plugins, and
 signed releases. [ROADMAP](#roadmap) has the order.
@@ -53,7 +55,8 @@ local session is your own computer:
 
 1. **omp**, the agent. Install it by following the
    [oh-my-pi README](https://github.com/can1357/oh-my-pi), then check `omp --version`.
-2. **git** and **curl** on `PATH`.
+2. **git** and **curl** on `PATH`. Local sessions need git 2.33 or newer, which can record why
+   a worktree is locked.
 3. **`ch-runner`**. Build it together with the app:
 
    ```sh
@@ -105,7 +108,8 @@ or when it cannot tell. `google-antigravity` is always off for the same reason.
 |---|---|
 | Settings | `c-harness/settings.json` under your OS config folder |
 | Model key and GitHub token | The OS keychain. The model key is read when a session starts, the token when you land. |
-| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work; remove it with `git worktree remove <path>` from your repository. |
+| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work. To remove it, run `git worktree remove --force --force <path>` from your repository, which also deletes changes nobody committed, then delete its session record. |
+| Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree. It is written before the worktree is created and deleted after it is removed. |
 | Exported transcripts | `c-harness/transcripts` under the same data folder, with secrets removed by pattern |
 
 The config folder is `%APPDATA%` on Windows, `~/Library/Application Support` on macOS and
@@ -131,8 +135,11 @@ held against them.
    can cap spending per session and per day.
 5. **Leaving is easy.** Tasks, transcripts and settings export to open formats. Your work lives
    on your own git branches.
-6. **Safe by default.** Destructive commands, pushes and outbound network calls wait for an
-   approval card. Full auto must be turned on per project and comes with a kill switch.
+6. **Safe by default.** Every session starts omp with an approval mode from Settings: by
+   default edits and commands wait for an approval card. The mode is passed on omp's command
+   line, which overrides omp's own default (full auto) and a repository's omp config. Approval
+   is not a sandbox: a command you approve runs with your full access. Full auto is not offered
+   yet; when it is, it must be turned on per project and come with a kill switch.
 7. **The core stays free.** The client and the runner are open source. A paid service, if one
    ever exists, adds options and never takes away what you already have.
 8. **Vendor terms in the open.** The docs will keep a table of which providers allow

@@ -95,6 +95,7 @@ fn fixture() -> Fixture {
         repo,
         runner: std::env::current_exe().unwrap(),
         worktrees_dir: root.path().join("worktrees"),
+        sessions_dir: root.path().join("sessions"),
     };
     Fixture {
         _root: root,

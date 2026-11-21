@@ -246,7 +246,7 @@ impl SessionView {
             env,
         } = launched;
         let mut driver = Driver::new(link, driver::epoch_ms);
-        if !driver.start(&session, self.settings.model_args(), env, prompt.clone()) {
+        if !driver.start(&session, self.settings.omp_args(), env, prompt.clone()) {
             runner.retire(false);
             return Phase::LaunchFailed {
                 prompt,

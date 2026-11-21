@@ -53,9 +53,21 @@ Notable changes to C-Harness. The format follows
   session details. When the panel is closed and the agent finishes, the thread asks you to
   review.
 - `ch-app`: approval cards carry a shield in the color of their risk.
+- `ch-app`: an Approvals choice in Settings, "Ask before edits and commands" (omp's `write`,
+  the default) or "Ask before every tool" (`always-ask`). It is sent to omp as
+  `--approval-mode` on every start. Full auto is not offered.
+- `ch-runtime`: a record of each local session in `c-harness/sessions/<session>.json` under the
+  local data folder, with the repository, worktree path, branch, base commit and start time. It
+  is written before the worktree is created and deleted after the worktree is removed, so a
+  crash still leaves a way back to the work. A session id that still has a record is not
+  reused.
 
 ### Changed
 
+- `ch-runtime`: local worktrees are created locked, with the reason
+  `c-harness session <session>`, at the commit their record names. `git worktree prune` no
+  longer drops a session whose folder went missing; removing the session still does. Local
+  sessions need git 2.33 or newer.
 - `ch-app`: New session moved to the sidebar. It waits until the agent is stopped, and a land
   in flight keeps the session open unless the runner is gone.
 - The session screen calls the coding agent "the agent". Settings, install help and error
@@ -75,3 +87,15 @@ Notable changes to C-Harness. The format follows
 - `ch-app` drops a runner reply that names no open request of its kind: evidence must answer a
   verify the app sent, a diff a diff, a stop a stop and a landed branch a land, each only once.
   Dropped replies are logged and kept out of the session.
+- omp no longer starts in its own default approval mode, full auto: the app always sends
+  `--approval-mode`, and a repository's `.omp` config cannot change it. `ch-runner` refuses
+  `--yolo`, `--auto-approve` and an approval mode omp does not know, which omp would silently
+  replace with full auto.
+- The host overlay turns omp's memory off (`memory.backend: "off"`), so omp keeps nothing of
+  its own between sessions.
+- Verify evidence names the work it ran on: `ch-runner` writes the working tree as a git tree
+  (on a private index) when the command starts and when it ends, and sends both as
+  `tree_before` and `tree_after`. Land is refused, with the reason, when the work changed while
+  that check ran or after it, so a file edited after a passing check cannot land on its
+  evidence. `ch-app` refuses Verify while the agent is working. The pull request marks a check
+  that ran on earlier work as "(on earlier work)".

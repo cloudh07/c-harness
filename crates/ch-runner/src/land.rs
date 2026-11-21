@@ -13,6 +13,7 @@ use crate::git::{self, Base, Git};
 use crate::pr::{PrOpener, PrRequest};
 use crate::proc_tree;
 use crate::scratch::PrivateDir;
+use crate::verify::Checked;
 
 /// The one place a land sends a token. Any other host, or a local path, lands without one.
 const GITHUB_PREFIX: &str = "https://github.com/";
@@ -34,6 +35,8 @@ pub struct Lander<'a> {
     /// Branch to the commit this session already landed there, so a retry reuses it.
     pub landed: &'a mut HashMap<String, String>,
     pub opener: &'a dyn PrOpener,
+    /// What the last finished check ran on; `None` when no check has run.
+    pub checked: Option<&'a Checked>,
 }
 
 impl Lander<'_> {
@@ -90,15 +93,12 @@ impl Lander<'_> {
     /// Commits the working tree on top of the base and points the branch at it.
     fn commit(&mut self, request: &LandRequest, reference: &str) -> Result<String, String> {
         let index = self.session.unique_path("land-index");
-        let tree = self
-            .git
-            .stage(self.base, &index)
-            .and_then(|()| self.git.write_tree(&index));
-        // The index is scratch; a failure to remove it only wastes the temp dir.
-        let _ = fs::remove_file(&index);
-        let tree = tree?;
+        let tree = self.git.worktree_tree(self.base, &index)?;
         if tree == self.git.base_tree(self.base)? {
             return Err("nothing to land: the working tree has no changes".to_owned());
+        }
+        if let Some(checked) = self.checked {
+            checked.allows(&tree)?;
         }
         let previous = self.landed.get(&request.branch).cloned();
         if let Some(previous) = &previous

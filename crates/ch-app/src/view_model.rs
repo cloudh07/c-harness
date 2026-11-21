@@ -17,7 +17,7 @@ pub fn session_id(epoch_ms: u64) -> String {
 }
 
 pub fn branch_for(session: &str) -> String {
-    format!("ch/{session}")
+    ch_runtime::session_branch(session)
 }
 
 pub fn transcript_file_name(session: &str) -> String {
@@ -94,10 +94,22 @@ pub fn pr_body(session: &str, evidence: &[Evidence]) -> String {
         return body;
     }
     body.push_str("\nChecks run before landing:\n\n");
+    // Land holds the work to the last check, so a run on another tree checked earlier work.
+    let landed = evidence.last().and_then(still_tree);
     for run in evidence {
-        let _ = writeln!(body, "- `{}`: {}", run.command, check_outcome(run));
+        let earlier = landed.is_some_and(|tree| still_tree(run) != Some(tree));
+        let note = if earlier { " (on earlier work)" } else { "" };
+        let _ = writeln!(body, "- `{}`: {}{note}", run.command, check_outcome(run));
     }
     body
+}
+
+/// The tree a check ran on, when the work stood still while it ran.
+fn still_tree(run: &Evidence) -> Option<&str> {
+    match (&run.tree_before, &run.tree_after) {
+        (Some(before), Some(after)) if before == after => Some(before),
+        _ => None,
+    }
 }
 
 /// An empty port means the SSH default.
@@ -273,6 +285,8 @@ mod tests {
             exit_code,
             duration_ms: 1500,
             head: None,
+            tree_before: None,
+            tree_after: None,
             output_tail: String::new(),
             truncated: false,
             timed_out,
@@ -325,6 +339,24 @@ mod tests {
         assert!(body.contains("failed with exit code 101"), "{body}");
         assert!(body.contains("- `npm test`: timed out"), "{body}");
         assert!(pr_body("s1", &[]).contains("No checks were run"));
+    }
+
+    #[test]
+    fn pr_body_marks_checks_that_ran_on_earlier_work() {
+        let on = |command: &str, tree: &str| Evidence {
+            tree_before: Some(tree.into()),
+            tree_after: Some(tree.into()),
+            ..evidence(command, Some(0), false)
+        };
+        let body = pr_body("s1", &[on("cargo test", "t1"), on("cargo clippy", "t2")]);
+        assert!(
+            body.contains("- `cargo test`: passed in 1.5s (on earlier work)\n"),
+            "{body}"
+        );
+        assert!(
+            body.contains("- `cargo clippy`: passed in 1.5s\n"),
+            "{body}"
+        );
     }
 
     #[test]

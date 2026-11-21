@@ -43,6 +43,26 @@ pub enum ThemePref {
     Dark,
 }
 
+/// omp's `--approval-mode`. Full auto (yolo) is not offered: a file that names it does not load.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApprovalMode {
+    /// Every tool call waits for an answer.
+    AlwaysAsk,
+    /// Reads run; edits and commands wait for an answer.
+    #[default]
+    Write,
+}
+
+impl ApprovalMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AlwaysAsk => "always-ask",
+            Self::Write => "write",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -57,6 +77,8 @@ pub struct Settings {
     pub key_env: String,
     /// `--model` for omp. Empty leaves omp's default.
     pub model: String,
+    /// Always sent, so omp's own default (yolo) and a project's config never decide it.
+    pub approval_mode: ApprovalMode,
     /// Run by `ch-runner` when you press Verify. Empty hides the button.
     pub verify: String,
     pub author_name: String,
@@ -76,6 +98,7 @@ impl Default for Settings {
             provider: "openai".to_string(),
             key_env: "OPENAI_API_KEY".to_string(),
             model: String::new(),
+            approval_mode: ApprovalMode::Write,
             verify: String::new(),
             author_name: String::new(),
             author_email: String::new(),
@@ -209,6 +232,16 @@ impl Settings {
             vec!["--model".to_string(), model.to_string()]
         }
     }
+
+    /// What the app adds to omp's command line: the approval mode, then the model.
+    pub fn omp_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "--approval-mode".to_string(),
+            self.approval_mode.as_str().to_string(),
+        ];
+        args.extend(self.model_args());
+        args
+    }
 }
 
 fn is_provider_id(value: &str) -> bool {
@@ -272,6 +305,11 @@ pub fn worktrees_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("worktrees"))
 }
 
+/// Where local session records go: `<local data dir>/c-harness/sessions`.
+pub fn sessions_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("sessions"))
+}
+
 /// Where redacted transcripts are exported: `<local data dir>/c-harness/transcripts`.
 pub fn transcripts_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("transcripts"))
@@ -317,6 +355,7 @@ pub fn save(path: &Path, settings: &Settings) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ch_protocol::validate_approval_mode;
 
     fn ready() -> Settings {
         Settings {
@@ -484,6 +523,45 @@ mod tests {
             None
         );
     }
+    #[test]
+    fn omp_args_always_carry_the_approval_mode() {
+        assert_eq!(ready().omp_args(), ["--approval-mode", "write"]);
+        let asking = Settings {
+            approval_mode: ApprovalMode::AlwaysAsk,
+            model: "gpt-5".to_string(),
+            ..ready()
+        };
+        assert_eq!(
+            asking.omp_args(),
+            ["--approval-mode", "always-ask", "--model", "gpt-5"]
+        );
+        for mode in [ApprovalMode::AlwaysAsk, ApprovalMode::Write] {
+            assert_eq!(validate_approval_mode(mode.as_str()), Ok(()), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_without_an_approval_mode_asks_before_writes() {
+        let old: Settings = serde_json::from_str(r#"{"repo": "/work/app"}"#).expect("parses");
+        assert_eq!(old.approval_mode, ApprovalMode::Write);
+        let text = serde_json::to_string(&Settings {
+            approval_mode: ApprovalMode::AlwaysAsk,
+            ..Settings::default()
+        })
+        .expect("serializes");
+        assert!(text.contains(r#""approval_mode":"always-ask""#), "{text}");
+    }
+
+    #[test]
+    fn a_hand_edited_yolo_is_refused_not_obeyed() {
+        // Full auto is not offered yet: the file fails to load and the app falls back to write.
+        for mode in ["yolo", "Write", ""] {
+            let text = format!(r#"{{"approval_mode": "{mode}"}}"#);
+            assert!(serde_json::from_str::<Settings>(&text).is_err(), "{mode:?}");
+        }
+        assert_eq!(Settings::default().approval_mode, ApprovalMode::Write);
+    }
+
     #[test]
     fn a_file_from_before_themes_follows_the_system() {
         let old: Settings = serde_json::from_str(r#"{"repo": "/work/app"}"#).expect("parses");

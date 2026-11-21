@@ -13,7 +13,7 @@ use gpui_kit::{
 };
 
 use crate::assets::provider_logo;
-use crate::settings::{self, Location, Settings, ThemePref};
+use crate::settings::{self, ApprovalMode, Location, Settings, ThemePref};
 use crate::view_model::parse_port;
 use crate::widgets::{Tone, banner, button, field, muted, section};
 
@@ -140,6 +140,7 @@ pub struct SettingsView {
     model_key: Entity<InputState>,
     github_token: Entity<InputState>,
     use_ssh: bool,
+    approval_mode: ApprovalMode,
     saved: Settings,
     load_error: Option<String>,
     status: Option<Result<String, String>>,
@@ -170,6 +171,7 @@ impl SettingsView {
             model_key: secret_input("Paste a new key to store it", window, cx),
             github_token: secret_input("Paste a new token to store it", window, cx),
             use_ssh: matches!(saved.location, Location::Ssh { .. }),
+            approval_mode: saved.approval_mode,
             fields,
             saved,
             load_error,
@@ -260,6 +262,7 @@ impl SettingsView {
             provider: value(&f.provider, cx),
             key_env: value(&f.key_env, cx),
             model: value(&f.model, cx),
+            approval_mode: self.approval_mode,
             verify: value(&f.verify, cx),
             author_name: value(&f.author_name, cx),
             author_email: value(&f.author_email, cx),
@@ -353,6 +356,42 @@ impl SettingsView {
                     },
                 )),
             )
+    }
+
+    fn approval_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = self.palette;
+        let choice = |id, label, mode: ApprovalMode| {
+            let tone = if self.approval_mode == mode {
+                Tone::Primary
+            } else {
+                Tone::Plain
+            };
+            button(p, id, label, tone, true).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
+                    this.approval_mode = mode;
+                    this.status = None;
+                    cx.notify();
+                },
+            ))
+        };
+        let buttons = div()
+            .flex()
+            .gap_2()
+            .child(choice(
+                "approve-write",
+                "Ask before edits and commands",
+                ApprovalMode::Write,
+            ))
+            .child(choice(
+                "approve-always",
+                "Ask before every tool",
+                ApprovalMode::AlwaysAsk,
+            ));
+        div().flex().flex_col().gap_3().child(buttons).child(muted(
+            p,
+            "Applies to new sessions and wins over a repository's own omp config. Approval is \
+             not a sandbox: an approved command runs with your full access.",
+        ))
     }
 
     fn stored_row(
@@ -555,6 +594,8 @@ impl Render for SettingsView {
                 Input::new(&self.model_key),
             ))
             .child(self.stored_row("remove-model-key", &self.key_stored, key_what, Self::remove_model_key, cx))
+            .child(section("Approvals"))
+            .child(self.approval_toggle(cx))
             .child(section("Checks"))
             .child(field(
                 p,

@@ -30,10 +30,13 @@ impl Target {
             Location::Local => {
                 let worktrees_dir = settings::worktrees_dir()
                     .ok_or("This system has no local data folder for worktrees.")?;
+                let sessions_dir = settings::sessions_dir()
+                    .ok_or("This system has no local data folder for session records.")?;
                 Ok(Self::Local(LocalProvider {
                     repo: PathBuf::from(settings.repo.trim()),
                     runner: runner_path(settings.runner.trim(), app_dir().as_deref()),
                     worktrees_dir,
+                    sessions_dir,
                 }))
             }
             Location::Ssh {
