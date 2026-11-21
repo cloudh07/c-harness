@@ -17,8 +17,9 @@ pub use frames::{
 };
 pub use probe::{
     ANTHROPIC_PROVIDER, ExitReason, GOOGLE_ANTIGRAVITY_PROVIDER, NO_OAUTH_ACCOUNTS,
-    PROBE_SENTINEL_PROVIDER, PROVIDER_LIST_PREFIX, SUBSCRIPTION_TOKEN_ENV, classify_exit,
-    host_config_overlay, host_disabled_providers, parse_configured_providers,
-    parse_disabled_providers, parse_oauth_account_count, parse_version, selects_anthropic_model,
-    selects_antigravity_model, validate_approval_mode, validate_model, validate_thinking_level,
+    PROBE_SENTINEL_PROVIDER, PROVIDER_LIST_PREFIX, SUBSCRIPTION_TOKEN_ENV,
+    check_approval_mode_version, classify_exit, host_config_overlay, host_disabled_providers,
+    parse_configured_providers, parse_disabled_providers, parse_oauth_account_count, parse_version,
+    selects_anthropic_model, selects_antigravity_model, validate_approval_mode, validate_model,
+    validate_thinking_level,
 };

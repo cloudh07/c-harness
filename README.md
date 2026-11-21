@@ -123,8 +123,9 @@ commit the session began from.
 ### If C-Harness closes during a session
 
 When the window closes, `ch-runner` sees its input end and stops the agent. A local session's
-worktree, record and usage file stay. The next start lists the session under "Left from earlier
-sessions" on the empty session screen:
+worktree, record and usage file stay. An SSH session keeps no record, so it is not listed or
+resumed. The next start lists the local session under "Left from earlier sessions" on the empty
+session screen:
 
 - **Resume** starts the runner again in that worktree and omp on the saved conversation: the
   file the session record names, or, when it names none or the file is gone, the worktree's

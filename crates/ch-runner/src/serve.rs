@@ -15,7 +15,10 @@ use ch_protocol::runner::{
     ClientFrame, ClientLine, Evidence, LandRequest, RUNNER_PROTOCOL_VERSION, RouteError,
     RunnerFrame, StartSession, route_client_line,
 };
-use ch_protocol::{LineSplitter, MAX_FRAME_BYTES, host_config_overlay, host_disabled_providers};
+use ch_protocol::{
+    LineSplitter, MAX_FRAME_BYTES, check_approval_mode_version, host_config_overlay,
+    host_disabled_providers,
+};
 use serde_json::Value;
 
 use crate::checkpoint::Store;
@@ -301,7 +304,10 @@ impl Session {
     }
 
     fn start_omp(&self, start: &StartSession) -> Result<(Omp, Base), String> {
-        omp::check_start(start)?;
+        let mode = omp::check_start(start)?;
+        check_approval_mode_version(mode, || {
+            omp::probe_version(&self.omp_program, self.git.workdir(), &start.env)
+        })?;
         let base = self.git.base()?;
         let write = |stem: &str, text: &str| {
             self.dir

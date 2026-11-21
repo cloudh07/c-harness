@@ -40,16 +40,22 @@ const PR_URL: &str = "https://example.invalid/octo/demo/pull/1";
 /// Generous, so a slow CI machine fails only on a real hang.
 const WAIT: Duration = Duration::from_secs(60);
 
+#[path = "serve/approval.rs"]
+mod approval;
 #[path = "serve/checkpoints.rs"]
 mod checkpoints;
 
-const SCENARIOS: [(&str, fn()); 9] = [
+const SCENARIOS: [(&str, fn()); 10] = [
     ("full_session", full_session),
     (
         "project_config_and_provider_notice",
         project_config_and_provider_notice,
     ),
     ("start_refusals", start_refusals),
+    (
+        "cached_approval_needs_a_new_omp",
+        approval::cached_approval_needs_a_new_omp,
+    ),
     ("omp_exit_is_reported", omp_exit_is_reported),
     (
         "a_check_that_writes_blocks_land",
@@ -194,6 +200,11 @@ fn fake_omp(args: &[OsString]) -> ExitCode {
             r#"{{"key":"disabledProviders","value":{},"type":"array","description":""}}"#,
             answer("fake-omp-disabled", "[]")
         ),
+        // No version file plays an omp whose version cannot be read.
+        Some("--version") => match fs::read_to_string(Path::new(".git/fake-omp-version")) {
+            Ok(version) => print!("{version}"),
+            Err(_) => return ExitCode::FAILURE,
+        },
         _ => return fake_session(&args),
     }
     ExitCode::SUCCESS
@@ -360,9 +371,9 @@ fn check_started(started: &Value, dir: &Path) {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert_eq!(args.len(), 6, "{args:?}");
-    assert_eq!(&args[..2], ["--mode", "rpc"]);
-    assert_eq!((args[2], args[4]), ("--config", "--config"));
+    assert_eq!(args.len(), 8, "{args:?}");
+    assert_eq!(&args[..4], ["--mode", "rpc", "--approval-mode", "write"]);
+    assert_eq!((args[4], args[6]), ("--config", "--config"));
 
     let configs = started["configs"].as_array().expect("configs");
     assert_eq!(configs[0]["text"], CLIENT_OVERLAY);
@@ -373,7 +384,7 @@ fn check_started(started: &Value, dir: &Path) {
     );
     assert_eq!(
         configs[1]["path"].as_str(),
-        Some(args[5]),
+        Some(args[7]),
         "host overlay last"
     );
     assert!(host.contains("google-antigravity"), "{host}");
@@ -992,7 +1003,7 @@ fn start_frame(extra_env: &[(&str, &str)]) -> Value {
     json!({
         "type": "ch_start",
         "session": "s-test",
-        "omp_args": ["--mode", "rpc"],
+        "omp_args": ["--mode", "rpc", "--approval-mode", "write"],
         "config_overlay": CLIENT_OVERLAY,
         "env": env,
     })

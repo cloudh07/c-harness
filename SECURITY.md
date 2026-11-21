@@ -36,7 +36,11 @@ session behaved oddly.
 
 **Approvals come from omp.** C-Harness starts omp with `--approval-mode` set to the mode chosen
 in Settings (`write` unless you pick `always-ask`), shows omp's approval requests as cards and
-sends your answer back. It does not enforce a policy of its own inside the sandbox. An approved
+sends your answer back. `ch-runner` refuses a start that does not name `--approval-mode`, or
+names it twice. It accepts `always-ask-cached` only from omp 18.12.3 or newer, read from
+`omp --version`, because an older omp does not know the value and replaces it with full auto.
+Settings does not offer it.
+It does not enforce a policy of its own inside the sandbox. An approved
 shell command runs with your full access, so approval limits what runs without asking, not what
 a command can do. The risk level on a card is a hint worked out from the request text, not a
 guarantee.

@@ -156,7 +156,9 @@ Notable changes to C-Harness. The format follows
 - omp no longer starts in its own default approval mode, full auto: the app always sends
   `--approval-mode`, and a repository's `.omp` config cannot change it. `ch-runner` refuses
   `--yolo`, `--auto-approve` and an approval mode omp does not know, which omp would silently
-  replace with full auto.
+  replace with full auto. It also refuses a start without `--approval-mode` or with it twice,
+  and accepts `always-ask-cached` only from an omp whose `--version` reads 18.12.3 or newer.
+  Settings does not offer that mode.
 - The host overlay turns omp's memory off (`memory.backend: "off"`), so omp keeps nothing of
   its own between sessions.
 - Verify evidence names the work it ran on: `ch-runner` writes the working tree as a git tree
