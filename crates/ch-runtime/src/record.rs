@@ -1,6 +1,6 @@
 //! The file a local session leaves on disk, so its worktree can be found again after a crash.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -25,6 +25,34 @@ pub struct SessionRecord {
 
 fn path(dir: &Path, session: &str) -> PathBuf {
     dir.join(format!("{session}.json"))
+}
+
+/// Writes the first record of `record.session`. Fails with `WorktreeExists` when the session
+/// already has one, so two starts of one id cannot both win. A crash in between leaves an empty
+/// file, which reads as damaged.
+pub(crate) fn create(dir: &Path, record: &SessionRecord) -> Result<(), RuntimeError> {
+    let failed = |source: io::Error| RuntimeError::Io {
+        action: "write the session record",
+        source,
+    };
+    let target = path(dir, &record.session);
+    // Apart from the claim: a file in the directory's place is also `AlreadyExists`.
+    fs::create_dir_all(dir).map_err(failed)?;
+    let claimed = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target);
+    match claimed {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(RuntimeError::WorktreeExists(record.worktree.clone()));
+        }
+        Err(source) => return Err(failed(source)),
+    }
+    write(dir, record).inspect_err(|_| {
+        // Gives the id back; the write error is the one worth reporting.
+        let _ = fs::remove_file(&target);
+    })
 }
 
 /// Writes `record` so that a crash leaves either no file or the whole file.
@@ -136,6 +164,28 @@ mod tests {
         write(dir.path(), &record("s1")).unwrap();
         remove(dir.path(), "s1").unwrap();
         assert_eq!(read(dir.path(), "s1").unwrap(), None);
+    }
+
+    #[test]
+    fn only_the_first_create_of_an_id_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = dir.path().join("sessions");
+        create(&records, &record("s1")).unwrap();
+        let mut other = record("s1");
+        other.base_commit = "ffff".to_owned();
+
+        let err = create(&records, &other).unwrap_err();
+        assert!(matches!(err, RuntimeError::WorktreeExists(_)), "{err}");
+        assert_eq!(read(&records, "s1").unwrap(), Some(record("s1")));
+    }
+
+    #[test]
+    fn a_create_that_cannot_write_gives_the_id_back() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the temp file goes makes the write fail after the claim.
+        fs::create_dir_all(dir.path().join(".s1.json.tmp")).unwrap();
+        assert!(create(dir.path(), &record("s1")).is_err());
+        assert!(!dir.path().join("s1.json").exists());
     }
 
     #[test]

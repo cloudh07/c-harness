@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ch_runtime::{LocalProvider, RunnerProcess, SandboxProvider, SshProvider};
+use ch_runtime::{Leftover, LocalProvider, RunnerProcess, SandboxProvider, SshProvider};
 use ch_vault::{SecretName, SecretStore, Vault};
 
 use crate::link::Link;
@@ -130,21 +130,60 @@ impl Runner {
                     Ok(None) => thread::sleep(EXIT_POLL),
                 }
             }
+            // Held until the worktree is gone, so no other window starts or discards it meanwhile.
+            let lock = process.take_lock();
             drop(process);
             if remove_worktree && let Some((provider, session)) = local {
                 let _ = provider.remove_worktree(&session);
             }
+            drop(lock);
         });
     }
 }
 
-/// Checks the runner, reads the key and starts `session` on a background thread.
-pub fn spawn(settings: Settings, session: String) -> Receiver<Result<Launched, String>> {
+/// Runs `work` on its own thread; the receiver gets its result.
+fn background<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Receiver<Result<T, String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(launch(&settings, &session));
+        let _ = tx.send(work());
     });
     rx
+}
+
+/// Checks the runner, reads the key and starts `session` on a background thread.
+pub fn spawn(settings: Settings, session: String) -> Receiver<Result<Launched, String>> {
+    background(move || launch(&settings, &session))
+}
+
+/// A provider for the local records and worktrees only. It looks in the configured repository
+/// even when sessions now run over SSH, since earlier local ones may still be there.
+fn sweeper(settings: &Settings) -> Result<LocalProvider, String> {
+    let (Some(worktrees_dir), Some(sessions_dir)) =
+        (settings::worktrees_dir(), settings::sessions_dir())
+    else {
+        return Err("This system has no local data folder for session records.".to_string());
+    };
+    Ok(LocalProvider {
+        repo: PathBuf::from(settings.repo.trim()),
+        runner: PathBuf::new(),
+        worktrees_dir,
+        sessions_dir,
+    })
+}
+
+/// Finds the local sessions earlier runs left behind, on a background thread.
+pub fn leftovers(settings: &Settings) -> Receiver<Result<Vec<Leftover>, String>> {
+    let provider = sweeper(settings);
+    background(move || provider?.leftovers().map_err(|e| e.to_string()))
+}
+
+/// Deletes what `session` left behind, on a background thread. The result is the folder that
+/// was kept because git no longer listed it, if any.
+pub fn discard(settings: &Settings, session: String) -> Receiver<Result<Option<PathBuf>, String>> {
+    let provider = sweeper(settings);
+    background(move || provider?.discard(&session).map_err(|e| e.to_string()))
 }
 
 fn launch(settings: &Settings, session: &str) -> Result<Launched, String> {

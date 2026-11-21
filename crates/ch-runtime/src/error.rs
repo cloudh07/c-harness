@@ -35,6 +35,8 @@ pub enum RuntimeError {
     },
     /// The session's worktree directory already exists.
     WorktreeExists(PathBuf),
+    /// Another C-Harness window has this session open.
+    SessionInUse,
     /// A process could not be started for a reason other than "not found".
     Spawn { program: String, source: io::Error },
     /// A filesystem step failed.
@@ -105,6 +107,10 @@ impl fmt::Display for RuntimeError {
                 "a worktree for this session already exists at {}. Remove it first or use a new \
                  session id",
                 path.display()
+            ),
+            Self::SessionInUse => f.write_str(
+                "this session is open in another C-Harness window. Close it there, or wait for \
+                 that window to finish, then try again",
             ),
             Self::Spawn { program, source } => write!(
                 f,

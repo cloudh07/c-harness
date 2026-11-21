@@ -3,6 +3,7 @@
 
 mod composer;
 mod header;
+mod leftovers;
 mod review;
 mod thread;
 
@@ -26,6 +27,7 @@ use crate::launch::{self, Launched, Runner};
 use crate::settings::{self, Problem, Settings};
 use crate::view_model::{land_request, session_id, transcript_file_name};
 use crate::widgets::{Tone, banner, icon_button};
+use leftovers::Leftovers;
 
 const TICK: Duration = Duration::from_millis(50);
 const CONTENT_WIDTH: f32 = 760.0;
@@ -66,6 +68,7 @@ pub struct SessionView {
     prompt: Entity<TextareaState>,
     message: Option<Result<String, String>>,
     review_open: bool,
+    leftovers: Leftovers,
     scroll: ScrollHandle,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -127,6 +130,7 @@ impl SessionView {
                 }
             }
         });
+        let leftovers = Leftovers::scanning(launch::leftovers(&settings));
         Self {
             palette,
             settings,
@@ -134,6 +138,7 @@ impl SessionView {
             prompt,
             message: None,
             review_open: true,
+            leftovers,
             scroll: ScrollHandle::new(),
             _ticker: ticker,
             _subscriptions: subscriptions,
@@ -146,6 +151,10 @@ impl SessionView {
     }
 
     pub fn set_settings(&mut self, settings: Settings, cx: &mut Context<Self>) {
+        // Another repository may have its own leftovers.
+        if settings.repo.trim() != self.settings.repo.trim() {
+            self.leftovers = Leftovers::scanning(launch::leftovers(&settings));
+        }
         self.settings = settings;
         self.message = None;
         cx.notify();
@@ -209,7 +218,8 @@ impl SessionView {
             Phase::Live(live) => live.driver.pump(),
             Phase::Empty | Phase::LaunchFailed { .. } => false,
         };
-        if changed {
+        let swept = self.leftovers.poll();
+        if changed || swept {
             cx.notify();
         }
     }

@@ -2,22 +2,37 @@ use std::ffi::OsStr;
 use std::io;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output};
 
-use crate::{RunnerInfo, RuntimeError};
+use crate::{RunnerInfo, RuntimeError, SessionLock};
 
 const MAX_STDERR_TAIL_BYTES: usize = 2000;
 
 /// A running `ch-runner serve`, or the `ssh` client that carries one.
 ///
-/// Dropping it kills and reaps the process it owns. Over SSH that process is the local `ssh`
-/// client: the remote runner sees its stdin close and is expected to exit on its own.
+/// Dropping it kills and reaps the process it owns, then releases the session lock it holds.
+/// Over SSH that process is the local `ssh` client: the remote runner sees its stdin close and
+/// is expected to exit on its own.
 #[derive(Debug)]
 pub struct RunnerProcess {
     child: Child,
+    // Fields drop after `Drop::drop`, so the lock outlives the process.
+    lock: Option<SessionLock>,
 }
 
 impl RunnerProcess {
     pub(crate) fn new(child: Child) -> Self {
-        Self { child }
+        Self { child, lock: None }
+    }
+
+    pub(crate) fn locked(child: Child, lock: SessionLock) -> Self {
+        Self {
+            child,
+            lock: Some(lock),
+        }
+    }
+
+    /// Takes the session lock, so the caller can keep it until the session's worktree is gone.
+    pub fn take_lock(&mut self) -> Option<SessionLock> {
+        self.lock.take()
     }
 
     /// The OS process id of the local child.

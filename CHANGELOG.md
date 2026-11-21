@@ -61,6 +61,14 @@ Notable changes to C-Harness. The format follows
   is written before the worktree is created and deleted after the worktree is removed, so a
   crash still leaves a way back to the work. A session id that still has a record is not
   reused.
+- `ch-app`: the empty session screen lists local sessions an earlier run left behind, with
+  what is left of each: a live worktree, a worktree whose folder is gone, a record only, a
+  record whose repository moved, a worktree with no record, or a damaged record. Keep hides one
+  until the next start. Discard, pressed twice, deletes its worktree with any uncommitted
+  changes, its checkpoint refs and its record, and keeps its `ch/<session>` branch. Only a
+  folder git lists as that session's worktree is deleted; any other is named and left alone.
+- `ch-runtime`: an open local session holds `c-harness/sessions/<session>.lock`, so a second
+  window cannot start or discard it. The lock is released after the worktree is removed.
 
 ### Changed
 
@@ -68,6 +76,8 @@ Notable changes to C-Harness. The format follows
   `c-harness session <session>`, at the commit their record names. `git worktree prune` no
   longer drops a session whose folder went missing; removing the session still does. Local
   sessions need git 2.33 or newer.
+- `ch-runtime`: a session id is claimed by creating its record with create-new, so two starts
+  of one id cannot both win.
 - `ch-app`: New session moved to the sidebar. It waits until the agent is stopped, and a land
   in flight keeps the session open unless the runner is gone.
 - The session screen calls the coding agent "the agent". Settings, install help and error

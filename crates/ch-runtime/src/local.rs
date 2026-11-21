@@ -2,17 +2,19 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::process::{command, runner_info, stderr_tail};
+use crate::git::{clear_git_location, git_output, os_args, run_git};
+use crate::lock::{self, SessionLock};
+use crate::process::{command, runner_info};
 use crate::record::{self, SessionRecord};
 use crate::{RunnerInfo, RunnerProcess, RuntimeError, SandboxProvider, session_branch};
 
 const LOCATION: &str = "this machine";
 const MAX_SESSION_LEN: usize = 64;
 /// Starts the reason git shows for a session's locked worktree.
-const LOCK_REASON_PREFIX: &str = "c-harness session ";
+pub(crate) const LOCK_REASON_PREFIX: &str = "c-harness session ";
 
 /// Runs sessions on this machine, each in its own detached git worktree.
 ///
@@ -69,7 +71,7 @@ impl LocalProvider {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs()),
         };
-        record::write(&self.sessions_dir, &record)?;
+        record::create(&self.sessions_dir, &record)?;
         let add = worktree_add_args(&self.repo, &path, session, &record.base_commit);
         if let Err(err) = run_git("create a worktree", add) {
             // The git error is the one worth reporting.
@@ -79,8 +81,9 @@ impl LocalProvider {
         Ok(path)
     }
 
-    /// Deletes `session`'s worktree, including changes nobody committed, then its record. Stop
-    /// its runner first: Windows refuses to delete a directory a running process is using.
+    /// Deletes `session`'s worktree, including changes nobody committed, then its record and
+    /// lock file. Stop its runner first: Windows refuses to delete a directory a running process
+    /// is using.
     pub fn remove_worktree(&self, session: &str) -> Result<(), RuntimeError> {
         let path = self.worktree_path(session)?;
         // Also drops git's entry when the directory was deleted by hand.
@@ -88,7 +91,10 @@ impl LocalProvider {
             "remove the worktree",
             worktree_remove_args(&self.repo, &path),
         )?;
-        record::remove(&self.sessions_dir, session)
+        record::remove(&self.sessions_dir, session)?;
+        // A lock file nobody holds is harmless, so a failure here is not worth reporting.
+        let _ = lock::remove(&self.sessions_dir, session);
+        Ok(())
     }
 
     /// The record of `session`'s worktree, or `None` when it has none.
@@ -143,7 +149,18 @@ impl SandboxProvider for LocalProvider {
 
     fn start(&self, session: &str) -> Result<RunnerProcess, RuntimeError> {
         let program = self.runner_program()?;
-        let workdir = self.create_worktree(session)?;
+        validate_session(session)?;
+        // Taken before the record exists, so a scan never sees a session half started.
+        let Some(lock) = SessionLock::acquire(&self.sessions_dir, session)? else {
+            return Err(RuntimeError::SessionInUse);
+        };
+        let workdir = match self.create_worktree(session) {
+            Ok(workdir) => workdir,
+            Err(err) => {
+                let _ = lock::remove(&self.sessions_dir, session);
+                return Err(err);
+            }
+        };
         let mut runner = command(program);
         clear_git_location(&mut runner);
         let spawned = runner
@@ -154,7 +171,7 @@ impl SandboxProvider for LocalProvider {
             .stderr(Stdio::piped())
             .spawn();
         match spawned {
-            Ok(child) => Ok(RunnerProcess::new(child)),
+            Ok(child) => Ok(RunnerProcess::locked(child, lock)),
             Err(source) => {
                 // So that a retry with the same session id can create the worktree again. The
                 // spawn error is the one worth reporting, so a cleanup failure is dropped.
@@ -191,55 +208,6 @@ fn is_windows_device_name(name: &str) -> bool {
     }
 }
 
-// A git hook or wrapper may export these, and they would point git at another repository.
-fn clear_git_location(command: &mut Command) {
-    for var in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_COMMON_DIR",
-    ] {
-        command.env_remove(var);
-    }
-}
-
-fn run_git(action: &'static str, args: Vec<OsString>) -> Result<(), RuntimeError> {
-    git_output(action, args).map(drop)
-}
-
-/// Runs git and returns its trimmed stdout.
-fn git_output(action: &'static str, args: Vec<OsString>) -> Result<String, RuntimeError> {
-    let mut git = command("git");
-    clear_git_location(&mut git);
-    let output = git
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|source| {
-            if source.kind() == io::ErrorKind::NotFound {
-                RuntimeError::ToolNotFound { tool: "git" }
-            } else {
-                RuntimeError::Spawn {
-                    program: "git".to_owned(),
-                    source,
-                }
-            }
-        })?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    } else {
-        Err(RuntimeError::Git {
-            action,
-            stderr: stderr_tail(&output.stderr),
-        })
-    }
-}
-
-fn os_args<const N: usize>(args: [&dyn AsRef<std::ffi::OsStr>; N]) -> Vec<OsString> {
-    args.iter().map(|arg| arg.as_ref().to_owned()).collect()
-}
-
 fn base_commit_args(repo: &Path) -> Vec<OsString> {
     os_args([&"-C", &repo, &"rev-parse", &"--verify", &"HEAD^{commit}"])
 }
@@ -263,7 +231,7 @@ fn worktree_add_args(repo: &Path, path: &Path, session: &str, commit: &str) -> V
 }
 
 // A locked worktree needs the second --force. It also drops a worktree whose directory is gone.
-fn worktree_remove_args(repo: &Path, path: &Path) -> Vec<OsString> {
+pub(crate) fn worktree_remove_args(repo: &Path, path: &Path) -> Vec<OsString> {
     os_args([
         &"-C",
         &repo,
@@ -283,51 +251,7 @@ fn serve_args(workdir: &Path) -> Vec<OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn git(dir: &Path, args: &[&str]) -> String {
-        let mut git = Command::new("git");
-        clear_git_location(&mut git);
-        let output = git
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .output()
-            .expect("git runs");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    }
-
-    fn repo_with_commit(root: &Path) -> PathBuf {
-        let repo = root.join("repo");
-        fs::create_dir(&repo).unwrap();
-        git(&repo, &["init", "-q"]);
-        fs::write(repo.join("README"), "hello\n").unwrap();
-        git(&repo, &["add", "README"]);
-        git(&repo, &["commit", "-q", "--no-verify", "-m", "init"]);
-        repo
-    }
-
-    fn worktree_count(repo: &Path) -> usize {
-        git(repo, &["worktree", "list", "--porcelain"])
-            .lines()
-            .filter(|line| line.starts_with("worktree "))
-            .count()
-    }
-
-    fn provider(root: &Path, repo: PathBuf) -> LocalProvider {
-        LocalProvider {
-            repo,
-            runner: root.join("no-such-ch-runner"),
-            worktrees_dir: root.join("worktrees"),
-            sessions_dir: root.join("sessions"),
-        }
-    }
+    use crate::test_support::{git, provider, repo_with_commit, worktree_count};
 
     #[test]
     fn session_ids_are_portable_directory_names() {
@@ -513,9 +437,26 @@ mod tests {
         assert!(matches!(err, RuntimeError::RunnerNotFound { .. }), "{err}");
         assert!(!provider.worktree_path("s1").unwrap().exists());
         assert_eq!(provider.record("s1").unwrap(), None);
+        assert!(!root.path().join("sessions").join("s1.lock").exists());
         assert!(matches!(
             provider.check(),
             Err(RuntimeError::RunnerNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn a_session_open_elsewhere_is_not_started_twice() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = repo_with_commit(root.path());
+        let provider = provider(root.path(), repo.clone());
+        let held = SessionLock::acquire(&provider.sessions_dir, "s1")
+            .unwrap()
+            .unwrap();
+
+        let err = provider.start("s1").unwrap_err();
+        assert!(matches!(err, RuntimeError::SessionInUse), "{err}");
+        assert_eq!(provider.record("s1").unwrap(), None);
+        assert_eq!(worktree_count(&repo), 1);
+        drop(held);
     }
 }

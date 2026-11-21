@@ -111,6 +111,7 @@ impl SessionView {
             .pt(px(64.0))
             .child(intro)
             .children(setup)
+            .children(self.leftovers_card(cx))
     }
 
     fn live_thread(&self, live: &Live, cx: &mut Context<Self>) -> Div {

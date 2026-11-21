@@ -60,7 +60,8 @@ them, or names one of another kind.
 
 1. The app reads the model key from the keychain and asks `ch-runtime` for a sandbox: a
    detached, locked git worktree of your repository with a session record on disk, or a
-   checkout you prepared on a machine you reach over SSH.
+   checkout you prepared on a machine you reach over SSH. A local session holds a lock file
+   for as long as its window has it open.
 2. `ch-runtime` starts `ch-runner` there. The model key travels in `ch_start` over stdin and
    lands in omp's environment only. It never appears on a command line.
 3. `ch-runner` checks the working tree for project omp config (`.omp`, `.claude`, `.codex`,
@@ -76,6 +77,11 @@ them, or names one of another kind.
    never touched), pushes from a scratch repository with system and global git config ignored,
    and opens the pull request with `curl` reading the token from stdin. The GitHub token reaches
    the sandbox only in this step.
+
+When the app starts it looks for local sessions an earlier run left behind: records, and
+worktrees locked as `c-harness session <session>` or sitting in its worktrees folder. Sessions
+another window holds are skipped. Discard deletes only a worktree git lists for that session,
+never runs `git worktree prune`, and keeps the `ch/<session>` branch.
 
 [SECURITY.md](SECURITY.md) lists what this design does not protect against.
 
