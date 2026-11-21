@@ -76,7 +76,9 @@ mod tests {
         let sessions = dir.path().join("sessions");
         assert!(!is_held(&sessions, "s1").unwrap());
 
-        let first = SessionLock::acquire(&sessions, "s1").unwrap().expect("free");
+        let first = SessionLock::acquire(&sessions, "s1")
+            .unwrap()
+            .expect("free");
         assert!(SessionLock::acquire(&sessions, "s1").unwrap().is_none());
         assert!(is_held(&sessions, "s1").unwrap());
         // Asking does not take the lock away from its holder.

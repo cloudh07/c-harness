@@ -25,10 +25,11 @@ pub(crate) fn run_git(action: &'static str, args: Vec<OsString>) -> Result<(), R
 }
 
 /// Runs git and returns its trimmed stdout.
-pub(crate) fn git_output(action: &'static str, args: Vec<OsString>) -> Result<String, RuntimeError> {
-    let output = git(args, Stdio::null())
-        .output()
-        .map_err(spawn_error)?;
+pub(crate) fn git_output(
+    action: &'static str,
+    args: Vec<OsString>,
+) -> Result<String, RuntimeError> {
+    let output = git(args, Stdio::null()).output().map_err(spawn_error)?;
     finish(action, &output)
 }
 

@@ -179,11 +179,20 @@ pub fn leftovers(settings: &Settings) -> Receiver<Result<Vec<Leftover>, String>>
     background(move || provider?.leftovers().map_err(|e| e.to_string()))
 }
 
-/// Deletes what `session` left behind, on a background thread. The result is the folder that
-/// was kept because git no longer listed it, if any.
-pub fn discard(settings: &Settings, session: String) -> Receiver<Result<Option<PathBuf>, String>> {
+/// Deletes what `session` left behind, on a background thread; `seen_in` is the repository the
+/// scan found its worktree in. The result is the folder that was kept because git no longer
+/// listed it, if any.
+pub fn discard(
+    settings: &Settings,
+    session: String,
+    seen_in: Option<PathBuf>,
+) -> Receiver<Result<Option<PathBuf>, String>> {
     let provider = sweeper(settings);
-    background(move || provider?.discard(&session).map_err(|e| e.to_string()))
+    background(move || {
+        provider?
+            .discard(&session, seen_in.as_deref())
+            .map_err(|e| e.to_string())
+    })
 }
 
 fn launch(settings: &Settings, session: &str) -> Result<Launched, String> {

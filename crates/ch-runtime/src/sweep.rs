@@ -59,20 +59,27 @@ impl LocalProvider {
     /// The sessions earlier runs left behind, in session id order. Sessions another window
     /// has open are skipped. Runs git once per repository, so call it off the UI thread.
     pub fn leftovers(&self) -> Result<Vec<Leftover>, RuntimeError> {
-        self.scan(None)
+        self.scan(None, None)
     }
 
     /// Deletes what `session` left behind: its worktree with any uncommitted changes, its
     /// checkpoint refs, its record and its lock file. Its `ch/<session>` branch stays.
     ///
+    /// `seen_in` is the repository a scan found its worktree in. It is searched too, since a
+    /// worktree with no record may sit in a repository only another session's record names.
+    ///
     /// Returns the record's worktree folder when git no longer knew it and it was kept: only a
     /// folder git lists as this session's worktree is ever deleted.
-    pub fn discard(&self, session: &str) -> Result<Option<PathBuf>, RuntimeError> {
+    pub fn discard(
+        &self,
+        session: &str,
+        seen_in: Option<&Path>,
+    ) -> Result<Option<PathBuf>, RuntimeError> {
         validate_session(session)?;
         let Some(held) = SessionLock::acquire(&self.sessions_dir, session)? else {
             return Err(RuntimeError::SessionInUse);
         };
-        let found = self.scan(Some(session))?.into_iter().next();
+        let found = self.scan(Some(session), seen_in)?.into_iter().next();
         let kept = match found {
             Some(leftover) => self.discard_leftover(&leftover)?,
             None => None,
@@ -107,12 +114,13 @@ impl LocalProvider {
         })
     }
 
-    fn scan(&self, only: Option<&str>) -> Result<Vec<Leftover>, RuntimeError> {
+    fn scan(&self, only: Option<&str>, also: Option<&Path>) -> Result<Vec<Leftover>, RuntimeError> {
         let records = self.read_records(only)?;
         let mut repos = Vec::new();
         if !self.repo.as_os_str().is_empty() {
             repos.push(self.repo.clone());
         }
+        repos.extend(also.map(Path::to_path_buf));
         repos.extend(records.values().flatten().map(|record| record.repo.clone()));
 
         let mut seen = Vec::new();
@@ -307,7 +315,13 @@ pub(crate) fn checkpoint_prefix(session: &str) -> String {
 
 fn delete_checkpoints(repo: &Path, session: &str) -> Result<(), RuntimeError> {
     let prefix = checkpoint_prefix(session);
-    let list = os_args([&"-C", &repo, &"for-each-ref", &"--format=%(refname)", &prefix]);
+    let list = os_args([
+        &"-C",
+        &repo,
+        &"for-each-ref",
+        &"--format=%(refname)",
+        &prefix,
+    ]);
     let refs = git_output("list the session's checkpoints", list)?;
     let input: String = refs
         .lines()
@@ -400,7 +414,13 @@ mod tests {
         let unlisted = provider.create_worktree("s3").unwrap();
         git(
             &repo,
-            &["worktree", "remove", "--force", "--force", &path_str(&unlisted)],
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                "--force",
+                &path_str(&unlisted),
+            ],
         );
         fs::create_dir_all(&unlisted).unwrap();
         fs::write(unlisted.join("notes.txt"), "mine").unwrap();
@@ -443,7 +463,7 @@ mod tests {
         git(&repo, &["branch", "ch/s1"]);
         git(&repo, &["update-ref", "refs/c-harness/s1/turn-1", "HEAD"]);
         git(&repo, &["update-ref", "refs/c-harness/s10/turn-1", "HEAD"]);
-        assert_eq!(provider.discard("s1").unwrap(), None);
+        assert_eq!(provider.discard("s1", None).unwrap(), None);
         assert!(!provider.worktree_path("s1").unwrap().exists());
         let after = refs(&repo);
         assert!(after.contains("refs/heads/ch/s1"), "{after}");
@@ -451,27 +471,56 @@ mod tests {
         assert!(!after.contains("refs/c-harness/s1/"), "{after}");
 
         assert!(matches!(
-            provider.discard("s8"),
+            provider.discard("s8", None),
             Err(RuntimeError::SessionInUse)
         ));
         drop(held);
 
         // A folder git does not list as the worktree is kept and handed back.
-        assert_eq!(provider.discard("s3").unwrap(), Some(unlisted.clone()));
+        assert_eq!(
+            provider.discard("s3", None).unwrap(),
+            Some(unlisted.clone())
+        );
         assert!(unlisted.join("notes.txt").exists());
 
         for session in ["s2", "s4", "s5", "s6", "s7", "s8"] {
-            provider.discard(session).unwrap();
+            provider.discard(session, None).unwrap();
         }
         assert_eq!(kinds(&provider), []);
         assert_eq!(worktree_count(&repo), 2);
         assert!(mine.is_dir());
-        assert_eq!(provider.discard("s99").unwrap(), None);
+        assert_eq!(provider.discard("s99", None).unwrap(), None);
         let lock_files: Vec<_> = fs::read_dir(&provider.sessions_dir)
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert!(lock_files.is_empty(), "{lock_files:?}");
+    }
+
+    #[test]
+    fn discard_finds_a_worktree_in_the_repository_the_scan_saw_it_in() {
+        let root = tempfile::tempdir().unwrap();
+        let home = repo_with_commit(root.path());
+        let other_root = root.path().join("other");
+        fs::create_dir(&other_root).unwrap();
+        let other = repo_with_commit(&other_root);
+        let mut there = provider(root.path(), other.clone());
+        // One recorded session makes the scan look in `other`; the second has no record.
+        there.create_worktree("s1").unwrap();
+        there.create_worktree("s2").unwrap();
+        record::remove(&there.sessions_dir, "s2").unwrap();
+        there.repo = home;
+
+        let found = there.leftovers().unwrap();
+        let orphan = found.iter().find(|leftover| leftover.session == "s2");
+        let seen_in = orphan
+            .and_then(|leftover| leftover.entry.clone())
+            .unwrap()
+            .repo;
+
+        assert_eq!(there.discard("s2", Some(&seen_in)).unwrap(), None);
+        assert!(!there.worktree_path("s2").unwrap().exists());
+        assert_eq!(worktree_count(&other), 2);
     }
 
     #[test]
@@ -482,7 +531,7 @@ mod tests {
         provider.repo = root.path().join("not-a-repo");
         assert_eq!(kinds(&provider), []);
         assert!(matches!(
-            provider.discard("../x"),
+            provider.discard("../x", None),
             Err(RuntimeError::InvalidSession)
         ));
     }

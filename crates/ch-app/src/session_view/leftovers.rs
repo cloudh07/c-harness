@@ -167,6 +167,15 @@ impl Leftovers {
         }
     }
 
+    /// The repository the scan found `session`'s worktree in.
+    fn seen_in(&self, session: &str) -> Option<PathBuf> {
+        let row = self
+            .rows
+            .iter()
+            .find(|row| row.leftover.session == session)?;
+        row.leftover.entry.as_ref().map(|entry| entry.repo.clone())
+    }
+
     fn discarding(&mut self, session: &str, rx: Discarding) {
         if let Some(row) = self.row_mut(session) {
             row.discarding = Some(rx);
@@ -182,7 +191,8 @@ impl SessionView {
 
     fn discard_leftover(&mut self, session: &str, cx: &mut Context<Self>) {
         if self.leftovers.press_discard(session) {
-            let rx = launch::discard(&self.settings, session.to_string());
+            let seen_in = self.leftovers.seen_in(session);
+            let rx = launch::discard(&self.settings, session.to_string(), seen_in);
             self.leftovers.discarding(session, rx);
         }
         cx.notify();
