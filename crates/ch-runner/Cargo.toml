@@ -1,0 +1,29 @@
+[package]
+name = "ch-runner"
+description = "The program inside a sandbox: hosts omp, measures verification commands, and lands the work as a branch and pull request."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ch-runner"
+path = "src/main.rs"
+
+[dependencies]
+ch-protocol = { path = "../ch-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+# A plain binary, so its main can also act as a fake omp for the runner it drives.
+[[test]]
+name = "serve"
+path = "tests/serve.rs"
+harness = false

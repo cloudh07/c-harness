@@ -191,6 +191,7 @@ pub const ANTHROPIC_PROVIDER: &str = "anthropic";
 pub const GOOGLE_ANTIGRAVITY_PROVIDER: &str = "google-antigravity";
 
 /// The sentence omp prints when a provider has no stored OAuth account (measured, 18.10.1).
+/// 18.13.1 prints it on stderr and exits 1, so callers read both streams whatever the status.
 pub const NO_OAUTH_ACCOUNTS: &str = "No OAuth accounts found";
 
 /// Count the OAuth accounts in `omp token <provider> --list` output. The command prints one
@@ -222,9 +223,15 @@ pub fn parse_oauth_account_count(text: &str) -> Option<usize> {
 /// slip past the stored-login check.
 pub const SUBSCRIPTION_TOKEN_ENV: [&str; 2] = ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"];
 
-/// Parse `omp config get disabledProviders --json` (a JSON array of ids).
+/// Parse `omp config get disabledProviders --json`. Older builds print the bare array; 18.13.1
+/// prints `{"key":"disabledProviders","value":[...],"type":"array",...}` (measured).
 pub fn parse_disabled_providers(text: &str) -> Option<Vec<String>> {
-    serde_json::from_str::<Vec<String>>(text.trim()).ok()
+    let answer: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+    let ids = match answer {
+        serde_json::Value::Object(mut fields) => fields.remove("value")?,
+        bare => bare,
+    };
+    serde_json::from_value(ids).ok()
 }
 
 /// The `disabledProviders` list every host-spawned omp session must run with.
@@ -472,6 +479,21 @@ mod tests {
             Some(vec!["openai".to_string()])
         );
         assert_eq!(parse_disabled_providers("not json"), None);
+        let described =
+            r#"{"key":"disabledProviders","value":["openai"],"type":"array","description":""}"#;
+        assert_eq!(
+            parse_disabled_providers(described),
+            Some(vec!["openai".to_string()])
+        );
+        assert_eq!(
+            parse_disabled_providers(r#"{"key":"disabledProviders","value":[],"type":"array"}"#),
+            Some(vec![])
+        );
+        assert_eq!(
+            parse_disabled_providers(r#"{"key":"disabledProviders"}"#),
+            None
+        );
+        assert_eq!(parse_disabled_providers(r#"{"value":"openai"}"#), None);
         let user = vec!["openai".to_string()];
         let ag = || "google-antigravity".to_string();
         assert_eq!(

@@ -1,0 +1,12 @@
+{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864,"supportsBashExcludeFromContext":true}
+{"id":"req_1","type":"response","command":"prompt","success":true}
+{"type":"agent_start"}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"I'll run the tests first."}}
+{"type":"extension_ui_request","id":"ui_1","method":"select","title":"Allow tool: bash\nReason: run the test suite\nArguments:\n  command: cargo test -p demo","options":["Approve","Approve bash for this session","Deny"]}
+{"type":"tool_execution_start","toolCallId":"call_1","toolName":"bash","args":{"command":"cargo test -p demo"}}
+{"type":"tool_execution_update","toolCallId":"call_1","toolName":"bash","partialResult":{"content":[{"type":"text","text":"running 3 tests"}]}}
+{"type":"tool_execution_end","toolCallId":"call_1","toolName":"bash","result":{"content":[{"type":"text","text":"test result: ok. 3 passed"}]},"isError":false}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"All three tests pass."}}
+{"type":"agent_end","messages":[],"isTerminal":true,"yielded":true}
+{"id":"req_1","type":"prompt_result","agentInvoked":true,"status":"completed","sessionSettled":false}
+{"type":"session_settled"}

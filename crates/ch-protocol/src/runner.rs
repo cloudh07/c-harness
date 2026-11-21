@@ -1,0 +1,449 @@
+//! Frames between the desktop client and `ch-runner`.
+//!
+//! The runner speaks omp's own JSONL on its stdio and adds a few frames of its own, each with a
+//! `type` that starts with [`RUNNER_FRAME_PREFIX`]. A client line of any other type goes to omp's
+//! stdin unchanged, and an omp line goes back to the client unchanged.
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Bumped when a frame changes shape. The runner announces it in [`RunnerFrame::Hello`].
+pub const RUNNER_PROTOCOL_VERSION: u32 = 1;
+
+/// Every frame the runner adds has a `type` with this prefix. omp never uses it.
+pub const RUNNER_FRAME_PREFIX: &str = "ch_";
+
+/// The runner keeps at most this much of a verification command's output (the end of it).
+pub const MAX_OUTPUT_TAIL_BYTES: usize = 64 * 1024;
+
+/// The runner sends at most this much of a diff. `ch_diff_result.truncated` says when it cut.
+pub const MAX_PATCH_BYTES: usize = 512 * 1024;
+
+const MASKED: &str = "<hidden>";
+
+/// What the client sends the runner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ClientFrame {
+    /// Starts omp. Valid once, as the first runner frame of a connection.
+    #[serde(rename = "ch_start")]
+    Start(StartSession),
+    /// Runs a command in the working tree and reports its real exit code.
+    #[serde(rename = "ch_verify")]
+    Verify {
+        id: String,
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_secs: Option<u64>,
+    },
+    /// Reports the working tree's changes against the commit the session started from.
+    #[serde(rename = "ch_diff")]
+    Diff { id: String },
+    /// Ends the agent: closes omp's stdin, drains its output, then ends what it left running.
+    #[serde(rename = "ch_stop")]
+    Stop { id: String },
+    /// Commits the work on a branch, pushes it, and optionally opens a pull request.
+    /// Refused while the agent is still running.
+    #[serde(rename = "ch_land")]
+    Land(LandRequest),
+}
+
+/// The `ch_start` payload.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartSession {
+    pub session: String,
+    /// Arguments after `omp`. The runner adds nothing but `--config <overlay>`.
+    pub omp_args: Vec<String>,
+    /// YAML the runner writes outside the working tree and passes with `--config`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_overlay: Option<String>,
+    /// Environment for omp only, usually the model provider's key.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for StartSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let env: BTreeMap<&str, &str> = self.env.keys().map(|k| (k.as_str(), MASKED)).collect();
+        f.debug_struct("StartSession")
+            .field("session", &self.session)
+            .field("omp_args", &self.omp_args)
+            .field("config_overlay", &self.config_overlay)
+            .field("env", &env)
+            .finish()
+    }
+}
+
+/// The `ch_land` payload.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LandRequest {
+    pub id: String,
+    pub branch: String,
+    pub message: String,
+    /// The commit's author and committer. A fresh sandbox usually has no git identity.
+    pub author: GitAuthor,
+    /// Where the branch is pushed. Never read from the working tree's own git config.
+    pub remote_url: String,
+    /// Sent only now, after the agent has stopped, and used for this push and pull request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<PullRequestSpec>,
+}
+
+impl fmt::Debug for LandRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LandRequest")
+            .field("id", &self.id)
+            .field("branch", &self.branch)
+            .field("message", &self.message)
+            .field("author", &self.author)
+            .field("remote_url", &self.remote_url)
+            .field("token", &self.token.as_ref().map(|_| MASKED))
+            .field("pull_request", &self.pull_request)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitAuthor {
+    pub name: String,
+    pub email: String,
+}
+
+/// A GitHub pull request to open after the push.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequestSpec {
+    /// `owner/name`.
+    pub repo: String,
+    pub base: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// What the runner sends the client, besides omp's own frames.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum RunnerFrame {
+    /// First line the runner writes.
+    #[serde(rename = "ch_runner_hello")]
+    Hello {
+        version: String,
+        protocol: u32,
+        workdir: String,
+    },
+    /// Something the person should see before trusting the session, such as a repository
+    /// that carries its own omp config.
+    #[serde(rename = "ch_notice")]
+    Notice { kind: String, message: String },
+    #[serde(rename = "ch_evidence")]
+    Evidence(Evidence),
+    #[serde(rename = "ch_diff_result")]
+    DiffResult {
+        id: String,
+        base: String,
+        stat: String,
+        patch: String,
+        truncated: bool,
+    },
+    #[serde(rename = "ch_stopped")]
+    Stopped { id: String, exit_code: Option<i32> },
+    #[serde(rename = "ch_landed")]
+    Landed {
+        id: String,
+        branch: String,
+        commit: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pull_request_url: Option<String>,
+    },
+    /// omp ended without a `ch_stop`.
+    #[serde(rename = "ch_omp_exited")]
+    OmpExited {
+        exit_code: Option<i32>,
+        stderr_tail: Vec<String>,
+    },
+    #[serde(rename = "ch_error")]
+    Error {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        stage: String,
+        message: String,
+    },
+}
+
+/// The result of a `ch_verify`, measured by the runner rather than reported by the agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Evidence {
+    pub id: String,
+    pub command: String,
+    /// `None` when the process was killed by a signal or by the timeout.
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    /// `HEAD` when the command ran, if the working tree has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// The end of stdout and stderr, interleaved as written, at most [`MAX_OUTPUT_TAIL_BYTES`].
+    pub output_tail: String,
+    pub truncated: bool,
+    pub timed_out: bool,
+}
+
+impl Evidence {
+    pub fn passed(&self) -> bool {
+        self.exit_code == Some(0) && !self.timed_out
+    }
+}
+
+impl ClientFrame {
+    pub fn to_line(&self) -> String {
+        serde_json::to_string(self).expect("client frames always serialize")
+    }
+}
+
+impl RunnerFrame {
+    pub fn to_line(&self) -> String {
+        serde_json::to_string(self).expect("runner frames always serialize")
+    }
+}
+
+/// Why a line could not be routed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RouteError {
+    NotJson(String),
+    MissingType,
+    /// A `ch_` frame this side does not know, or a known one with bad fields.
+    BadRunnerFrame(String),
+}
+
+impl fmt::Display for RouteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotJson(e) => write!(f, "line is not a JSON object: {e}"),
+            Self::MissingType => f.write_str("frame has no string \"type\""),
+            Self::BadRunnerFrame(e) => write!(f, "bad runner frame: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RouteError {}
+
+/// A line the runner read from the client.
+// One value per line, consumed at once: boxing the large variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum ClientLine {
+    Runner(ClientFrame),
+    /// For omp's stdin, byte for byte.
+    Omp(String),
+}
+
+/// A line the client read from the runner.
+#[derive(Debug, PartialEq)]
+pub enum RunnerLine {
+    Runner(RunnerFrame),
+    Omp(Value),
+}
+
+fn frame_type(value: &Value) -> Result<&str, RouteError> {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or(RouteError::MissingType)
+}
+
+fn parse_object(line: &str) -> Result<Value, RouteError> {
+    let value: Value =
+        serde_json::from_str(line).map_err(|e| RouteError::NotJson(e.to_string()))?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err(RouteError::NotJson("not an object".into()))
+    }
+}
+
+/// Sorts a client line into a runner command or a line for omp.
+pub fn route_client_line(line: &str) -> Result<ClientLine, RouteError> {
+    let value = parse_object(line)?;
+    if frame_type(&value)?.starts_with(RUNNER_FRAME_PREFIX) {
+        serde_json::from_value(value)
+            .map(ClientLine::Runner)
+            .map_err(|e| RouteError::BadRunnerFrame(e.to_string()))
+    } else {
+        Ok(ClientLine::Omp(line.to_owned()))
+    }
+}
+
+/// Sorts a runner line into a runner frame or an omp frame.
+pub fn route_runner_line(line: &str) -> Result<RunnerLine, RouteError> {
+    let value = parse_object(line)?;
+    if frame_type(&value)?.starts_with(RUNNER_FRAME_PREFIX) {
+        serde_json::from_value(value)
+            .map(RunnerLine::Runner)
+            .map_err(|e| RouteError::BadRunnerFrame(e.to_string()))
+    } else {
+        Ok(RunnerLine::Omp(value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn start() -> StartSession {
+        StartSession {
+            session: "s1".into(),
+            omp_args: vec!["--mode".into(), "rpc".into()],
+            config_overlay: Some("startup:\n  checkUpdate: false\n".into()),
+            env: BTreeMap::from([("ANTHROPIC_API_KEY".into(), "sk-ant-secret-value".into())]),
+        }
+    }
+
+    fn land() -> LandRequest {
+        LandRequest {
+            id: "l1".into(),
+            branch: "ch/s1".into(),
+            message: "Add a test".into(),
+            author: GitAuthor {
+                name: "Octo Cat".into(),
+                email: "octo@example.com".into(),
+            },
+            remote_url: "https://github.com/octo/repo.git".into(),
+            token: Some("github_pat_secret_value".into()),
+            pull_request: Some(PullRequestSpec {
+                repo: "octo/repo".into(),
+                base: "main".into(),
+                title: "Add a test".into(),
+                body: String::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn client_frames_round_trip() {
+        let frames = [
+            ClientFrame::Start(start()),
+            ClientFrame::Verify {
+                id: "v1".into(),
+                command: "cargo test".into(),
+                timeout_secs: Some(600),
+            },
+            ClientFrame::Diff { id: "d1".into() },
+            ClientFrame::Stop { id: "x1".into() },
+            ClientFrame::Land(land()),
+        ];
+        for frame in frames {
+            let line = frame.to_line();
+            assert_eq!(route_client_line(&line), Ok(ClientLine::Runner(frame)));
+        }
+    }
+
+    #[test]
+    fn runner_frames_round_trip() {
+        let frames = [
+            RunnerFrame::Hello {
+                version: "0.1.0".into(),
+                protocol: RUNNER_PROTOCOL_VERSION,
+                workdir: "/work/repo".into(),
+            },
+            RunnerFrame::Evidence(Evidence {
+                id: "v1".into(),
+                command: "cargo test".into(),
+                exit_code: Some(101),
+                duration_ms: 1200,
+                head: Some("abc123".into()),
+                output_tail: "test result: FAILED".into(),
+                truncated: false,
+                timed_out: false,
+            }),
+            RunnerFrame::Landed {
+                id: "l1".into(),
+                branch: "ch/s1".into(),
+                commit: "def456".into(),
+                pull_request_url: None,
+            },
+            RunnerFrame::Error {
+                id: None,
+                stage: "start".into(),
+                message: "omp not found".into(),
+            },
+        ];
+        for frame in frames {
+            let line = frame.to_line();
+            assert_eq!(route_runner_line(&line), Ok(RunnerLine::Runner(frame)));
+        }
+    }
+
+    #[test]
+    fn omp_lines_pass_through_unchanged() {
+        let line = r#"{"id":"req_1","type":"prompt","message":"hi"}"#;
+        assert_eq!(
+            route_client_line(line),
+            Ok(ClientLine::Omp(line.to_owned()))
+        );
+
+        let out = r#"{"type":"agent_start"}"#;
+        match route_runner_line(out) {
+            Ok(RunnerLine::Omp(value)) => assert_eq!(value["type"], "agent_start"),
+            other => panic!("expected an omp frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_runner_frames_are_refused_not_forwarded() {
+        let line = r#"{"type":"ch_format_disk"}"#;
+        assert!(matches!(
+            route_client_line(line),
+            Err(RouteError::BadRunnerFrame(_))
+        ));
+    }
+
+    #[test]
+    fn lines_without_a_type_are_refused() {
+        assert_eq!(
+            route_client_line(r#"{"id":"1"}"#),
+            Err(RouteError::MissingType)
+        );
+        assert!(matches!(
+            route_client_line("[1,2]"),
+            Err(RouteError::NotJson(_))
+        ));
+        assert!(matches!(
+            route_client_line("not json"),
+            Err(RouteError::NotJson(_))
+        ));
+    }
+
+    #[test]
+    fn debug_output_hides_secrets() {
+        let start = format!("{:?}", ClientFrame::Start(start()));
+        assert!(start.contains("ANTHROPIC_API_KEY"));
+        assert!(!start.contains("sk-ant-secret-value"));
+
+        let land = format!("{:?}", ClientFrame::Land(land()));
+        assert!(!land.contains("github_pat_secret_value"));
+        assert!(land.contains(MASKED));
+    }
+
+    #[test]
+    fn evidence_passes_only_on_zero_without_timeout() {
+        let mut evidence = Evidence {
+            id: "v".into(),
+            command: "true".into(),
+            exit_code: Some(0),
+            duration_ms: 1,
+            head: None,
+            output_tail: String::new(),
+            truncated: false,
+            timed_out: false,
+        };
+        assert!(evidence.passed());
+        evidence.timed_out = true;
+        assert!(!evidence.passed());
+        evidence.timed_out = false;
+        evidence.exit_code = None;
+        assert!(!evidence.passed());
+    }
+}

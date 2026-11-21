@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/mark-on-dark.svg">
+    <img src="assets/brand/mark-on-light.svg" alt="The C-Harness mark: three arcs closing on a core" width="96">
+  </picture>
+</p>
+
 # C-Harness
 
 A native desktop client for coding agents that run in sandboxes you own. Written in Rust on
@@ -9,22 +16,104 @@ Your keys, your cloud and your bill stay yours.
 
 ## Status
 
-Phase 0. Nothing connects to a sandbox yet.
+Pre-alpha. Every piece of the path from prompt to pull request is written and tested on its
+own, but nobody has run the whole path end to end yet. As of 2026-11-20:
 
-What exists:
+- The tests of every crate pass on Windows. The integration tests drive `ch-runner` with a fake
+  omp that answers the way omp 18.13.1 does.
+- On Windows, `ch-runner` was run against omp 18.13.1. It started the agent, reported its exit
+  and error output, returned the diff, and stopped it without leaving omp processes behind.
+  That run had no model key, so the agent never answered a prompt.
+- The crates other than the desktop app type-check and pass clippy for Linux and macOS. They
+  have not been run on either.
 
-- A window with the inbox groups (Needs you, Running, Needs review, Landed) and an empty state.
-  It follows the system light or dark appearance.
-- `ch-protocol`, the wire layer for hosting `omp` as an RPC child: NDJSON line splitting,
-  `rpc_chunk` reassembly with size caps, and the pre-flight probe. The probe builds the list
-  of providers a session must run without: `google-antigravity` always, and `anthropic`
-  whenever an Anthropic OAuth login is stored or the check cannot tell. Nothing spawns `omp`
-  yet, so the list is computed and tested but not yet applied to a live session.
-- Color tokens for both themes, with a test that holds body and muted text to WCAG AA on
-  every surface.
+Not checked yet: a full session with a model key, landing a pull request on GitHub, the desktop
+app on macOS and Linux, and the release builds. Until those pass, build it, read it, and try it
+on a throwaway repository. Read [SECURITY.md](SECURITY.md) first.
 
-The first milestone is one agent session in a sandbox over SSH, with an approval card and a
-diff, ending in a pull request, on Windows, macOS and Linux.
+A session goes like this:
+
+1. You pick a repository and write a prompt.
+2. `ch-runner` starts the omp agent in a separate git worktree (local) or in a checkout you
+   prepared on an SSH host.
+3. The agent's text and tool calls stream into the window. Commands omp wants approved stop at
+   a card that shows the command and a risk hint. Nothing runs until you choose.
+4. You run your own verify command. `ch-runner` runs it and records the real exit code.
+5. You read the diff, then land it: the agent is stopped, the work is committed to a new
+   branch, pushed, and a pull request is opened.
+
+Not done yet: cloud sandbox providers, the Agent Client Protocol, cost tracking, plugins, and
+signed releases. [ROADMAP](#roadmap) has the order.
+
+## Try it
+
+There is no release yet, so build from source (the platform prerequisites are under
+[Building](#building)). You need three things on the machine where sessions run, which for a
+local session is your own computer:
+
+1. **omp**, the agent. Install it by following the
+   [oh-my-pi README](https://github.com/can1357/oh-my-pi), then check `omp --version`.
+2. **git** and **curl** on `PATH`.
+3. **`ch-runner`**. Build it together with the app:
+
+   ```sh
+   cargo build --release -p ch-app -p ch-runner
+   ```
+
+   Both binaries land in `target/release/`. The app looks for `ch-runner` in its own folder
+   first, so start it from there: `target/release/c-harness`. For an SSH machine, install the
+   runner on it with
+   `cargo install --git https://github.com/cloudh07/c-harness ch-runner --locked`.
+
+`ch-runner` looks for `omp` on its own `PATH`. If the session reports that omp could not be
+started:
+
+- **Local:** start the app from a terminal, so it inherits your shell's `PATH`. A desktop
+  launcher may not read your shell profile.
+- **SSH:** run `ssh <host> omp --version`. A non-interactive SSH login often skips the file
+  that puts omp on `PATH`. Add omp's folder to `PATH` in a file that such logins read, such as
+  `~/.zshenv`, or the top of `~/.bashrc` before its interactive-only guard.
+
+Then open **Settings**:
+
+- **Where.** *This computer*: the git repository to work in. Each session gets its own
+  detached worktree, so your checkout is never touched. *SSH*: a host alias from your
+  `~/.ssh/config`, the path of a checkout you prepared on that host, and where `ch-runner` is
+  installed there. C-Harness uses your system `ssh` and never asks for a password, so
+  key-based login must already work.
+- **Model.** omp's provider id (`openai`, `openrouter`, `google`, `anthropic` and so on), the
+  environment variable omp reads the key from, the key itself, and optionally a model id. The
+  key is stored in your OS keychain. Give C-Harness its own key with a spending limit: the
+  agent can read it.
+- **Verify.** The command that proves the change works, such as `cargo test`. `ch-runner` runs
+  it in the session's checkout.
+- **Land.** Commit author, the GitHub repository as `owner/name`, the base branch, and a
+  [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new)
+  for that one repository with **Contents: read and write** and **Pull requests: read and
+  write**, and a short expiry. Leave **Workflows** off: then a branch that changes
+  `.github/workflows` is refused by GitHub, so the agent cannot edit your CI through C-Harness.
+  The token is read from the keychain when you click Land and sent to `ch-runner` only then.
+
+Claude API keys work only where omp has no Claude subscription login stored. Anthropic does not
+allow third-party apps to use subscription logins, and omp prefers a stored login over a key,
+so `ch-runner` turns the `anthropic` provider off for the session while such a login exists,
+or when it cannot tell. `google-antigravity` is always off for the same reason.
+
+### Where things are kept
+
+| What | Where |
+|---|---|
+| Settings | `c-harness/settings.json` under your OS config folder |
+| Model key and GitHub token | The OS keychain. The model key is read when a session starts, the token when you land. |
+| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work; remove it with `git worktree remove <path>` from your repository. |
+| Exported transcripts | `c-harness/transcripts` under the same data folder, with secrets removed by pattern |
+
+The config folder is `%APPDATA%` on Windows, `~/Library/Application Support` on macOS and
+`~/.config` on Linux. The local data folder is `%LOCALAPPDATA%`, `~/Library/Application
+Support` and `~/.local/share`.
+
+macOS may ask for your login password when C-Harness reads the keychain. Builds are not
+signed, so it can ask again after you rebuild or update.
 
 ## Commitments
 
@@ -73,12 +162,12 @@ Platform prerequisites:
 The pure crates build and test without any of that:
 
 ```sh
-cargo test -p ch-protocol -p ch-ui
+cargo test -p ch-protocol -p ch-core -p ch-runner -p ch-runtime -p ch-vault -p ch-ui
 ```
 
-The CI workflow runs format, clippy, tests and a release build of `ch-app` on Ubuntu, macOS
-and Windows. `cargo deny` checks licenses, bans and sources and fails the build on a
-violation. Its advisory check only reports, so a newly published advisory does not block
+The CI workflow runs format, clippy, tests and a release build of `ch-app` and `ch-runner` on
+Ubuntu, macOS and Windows. `cargo deny` checks licenses, bans and sources and fails the build
+on a violation. Its advisory check only reports, so a newly published advisory does not block
 unrelated work.
 
 ## Crates
@@ -87,12 +176,28 @@ unrelated work.
 |---|---|
 | `ch-app` | The desktop window. Builds the `c-harness` binary. |
 | `ch-ui` | Color tokens and status colors. Plain data, no GPUI. |
-| `ch-protocol` | omp RPC framing and the provider probe. No I/O, no process spawning. |
+| `ch-protocol` | omp RPC framing, the provider probe, and the frames the app and `ch-runner` exchange. No I/O. |
+| `ch-core` | Session state, approval parsing, risk hints, transcripts and secret redaction. No I/O. |
+| `ch-runtime` | Where a session runs: a local git worktree or a machine over SSH. |
+| `ch-runner` | The process next to the agent: starts omp, runs verify, builds the diff, lands the branch. |
+| `ch-vault` | Keys and tokens in the OS keychain. |
 
-[ARCHITECTURE.md](ARCHITECTURE.md) lists the crates that come next and how a session will flow.
+[ARCHITECTURE.md](ARCHITECTURE.md) shows how they fit together.
+
+## Roadmap
+
+1. **Closed alpha (in progress).** One task from prompt to pull request, locally or over SSH,
+   checked end to end on Windows, macOS and Linux.
+2. **Public beta.** Several sessions side by side, cost per session with caps, cloud sandbox
+   providers, signed releases.
+3. **Agent Client Protocol.** Agents other than omp, behind the same approval cards.
+4. **Plugins.** A WebAssembly host for providers and tools.
+
+Feedback decides the order inside each step. Open an issue and tell us what you need.
 
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
 
-`ch-protocol` is derived from code in ZUS and carries its MIT notice. See [NOTICE](NOTICE).
+`ch-protocol` and parts of `ch-core` are derived from code in ZUS and carry its MIT notice.
+See [NOTICE](NOTICE).

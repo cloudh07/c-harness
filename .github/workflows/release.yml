@@ -1,0 +1,124 @@
+name: Release
+
+# Pushing a tag such as v0.1.0-alpha.1 builds every platform and leaves a draft release.
+# A maintainer reads it over and publishes it by hand.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  GH_REPO: ${{ github.repository }}
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Create draft release
+        run: |
+          flags=(--draft --verify-tag --title "$TAG" --generate-notes)
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" "${flags[@]}"
+
+  build:
+    needs: draft
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            packages: -p ch-app -p ch-runner
+          - name: macos-aarch64
+            os: macos-latest
+            packages: -p ch-app -p ch-runner
+          - name: windows-x86_64
+            os: windows-latest
+            packages: -p ch-app -p ch-runner
+          # A static runner for whatever Linux machine a session runs on, old glibc included.
+          - name: runner-linux-x86_64-musl
+            os: ubuntu-latest
+            packages: -p ch-runner
+            target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Linux build dependencies
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc g++ clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev \
+            vulkan-validationlayers libvulkan1
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+
+      - uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+
+      - name: Build
+        run: |
+          if [[ -n "${{ matrix.target }}" ]]; then
+            rustup target add "${{ matrix.target }}"
+            cargo build --release --locked ${{ matrix.packages }} --target "${{ matrix.target }}"
+            echo "BIN_DIR=target/${{ matrix.target }}/release" >> "$GITHUB_ENV"
+          else
+            cargo build --release --locked ${{ matrix.packages }}
+            echo "BIN_DIR=target/release" >> "$GITHUB_ENV"
+          fi
+
+      - name: Package
+        run: |
+          stage="c-harness-$TAG-${{ matrix.name }}"
+          mkdir "$stage"
+          exe=""
+          if [[ "$RUNNER_OS" == "Windows" ]]; then exe=".exe"; fi
+          for bin in c-harness ch-runner; do
+            if [[ -f "$BIN_DIR/$bin$exe" ]]; then cp "$BIN_DIR/$bin$exe" "$stage/"; fi
+          done
+          cp LICENSE NOTICE README.md SECURITY.md "$stage/"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            7z a -tzip "$stage.zip" "$stage" > /dev/null
+            echo "ASSET=$stage.zip" >> "$GITHUB_ENV"
+          else
+            tar -czf "$stage.tar.gz" "$stage"
+            echo "ASSET=$stage.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload
+        run: gh release upload "$TAG" "$ASSET" --clobber
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Write SHA256SUMS
+        run: |
+          mkdir dist && cd dist
+          gh release download "$TAG" --pattern "c-harness-*"
+          sha256sum c-harness-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
