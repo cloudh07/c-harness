@@ -10,6 +10,7 @@ use ch_protocol::runner::RunnerLine;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::context::STATS_COMMAND;
 use crate::redact::{MASK, is_secret_name, redact_secrets};
 
 enum Keep {
@@ -36,6 +37,22 @@ const INBOUND: &[(&str, Keep)] = &[
     ("prompt_result", Keep::All),
     ("session_settled", Keep::All),
     ("extension_ui_request", Keep::All),
+    // `result` holds omp's summary of the conversation, which the deltas already carry.
+    (
+        "auto_compaction_start",
+        Keep::Fields(&["type", "reason", "action"]),
+    ),
+    (
+        "auto_compaction_end",
+        Keep::Fields(&[
+            "type",
+            "action",
+            "aborted",
+            "willRetry",
+            "skipped",
+            "errorMessage",
+        ]),
+    ),
     ("ch_runner_hello", Keep::All),
     ("ch_notice", Keep::All),
     ("ch_evidence", Keep::All),
@@ -78,6 +95,10 @@ const OUTBOUND: &[(&str, Keep)] = &[
     ),
 ];
 
+/// Commands the app sends on its own to read state. Their answers repeat every turn and say
+/// nothing about the work, and `get_session_stats` names omp's own session file.
+const POLLED: &[&str] = &[STATS_COMMAND];
+
 #[derive(Serialize)]
 struct Record<'a> {
     epoch: u64,
@@ -110,6 +131,7 @@ impl Transcript {
     /// one line of JSON without the trailing newline.
     pub fn incoming(&mut self, epoch_ms: u64, line: &RunnerLine) -> Option<String> {
         match line {
+            RunnerLine::Omp(frame) if answers_a_poll(frame) => None,
             RunnerLine::Omp(frame) => self.record(epoch_ms, "in", INBOUND, frame),
             RunnerLine::Runner(frame) => {
                 let frame = serde_json::to_value(frame).ok()?;
@@ -157,6 +179,14 @@ impl Transcript {
         self.next_seq += 1;
         Some(line)
     }
+}
+
+fn answers_a_poll(frame: &Value) -> bool {
+    frame.get("type").and_then(Value::as_str) == Some("response")
+        && frame
+            .get("command")
+            .and_then(Value::as_str)
+            .is_some_and(|command| POLLED.contains(&command))
 }
 
 fn pick(fields: &Map<String, Value>, names: &[&str]) -> Value {
@@ -341,6 +371,38 @@ mod tests {
             json!({
                 "type": "message_update",
                 "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "l"},
+            })
+        );
+    }
+
+    #[test]
+    fn stats_answers_are_not_recorded_and_take_no_number() {
+        let mut transcript = Transcript::new();
+        let stats = r#"{"id":"req_2","type":"response","command":"get_session_stats","success":true,"data":{"sessionFile":"/home/u/.omp/s.jsonl"}}"#;
+        assert_eq!(incoming(&mut transcript, stats), None);
+        let ask = json!({"id": "req_2", "type": STATS_COMMAND});
+        assert_eq!(transcript.outgoing(0, &ask), None);
+        let prompt = r#"{"id":"req_1","type":"response","command":"prompt","success":true}"#;
+        let record = incoming(&mut transcript, prompt).expect("recorded");
+        assert!(record.contains(r#""seq":1"#), "{record}");
+    }
+
+    #[test]
+    fn compaction_frames_keep_their_outcome_without_the_summary() {
+        let start =
+            r#"{"type":"auto_compaction_start","reason":"threshold","action":"context-full"}"#;
+        let record = incoming(&mut Transcript::new(), start).expect("recorded");
+        assert_eq!(
+            frame_of(&record),
+            json!({"type": "auto_compaction_start", "reason": "threshold", "action": "context-full"})
+        );
+        let end = r#"{"type":"auto_compaction_end","action":"context-full","aborted":false,"willRetry":false,"result":{"summary":"the user asked for secret things"}}"#;
+        let record = incoming(&mut Transcript::new(), end).expect("recorded");
+        assert_eq!(
+            frame_of(&record),
+            json!({
+                "type": "auto_compaction_end", "action": "context-full",
+                "aborted": false, "willRetry": false,
             })
         );
     }

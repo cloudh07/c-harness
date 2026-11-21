@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ch_core::{
-    ApprovalDecision, ApprovalRequest, ClientAction, Session, SessionState, Transcript, Usage,
-    redact_secrets,
+    ApprovalDecision, ApprovalRequest, ClientAction, ContextMeter, ContextState, STATS_COMMAND,
+    Session, SessionState, Transcript, Usage, redact_secrets,
 };
 use ch_protocol::runner::{ClientFrame, LandRequest, RunnerFrame, RunnerLine, StartSession};
 use serde_json::{Value, json};
@@ -76,6 +76,7 @@ pub struct Driver {
     omp: OmpState,
     closed: bool,
     usage: Usage,
+    context: ContextMeter,
 }
 
 impl Driver {
@@ -96,12 +97,18 @@ impl Driver {
             omp: OmpState::Running,
             closed: false,
             usage: Usage::default(),
+            context: ContextMeter::default(),
         }
     }
 
     /// Tokens and cost per model turn so far.
     pub fn usage(&self) -> &Usage {
         &self.usage
+    }
+
+    /// How full omp's context window was at its last answer.
+    pub fn context(&self) -> ContextState {
+        self.context.state()
     }
 
     pub fn session(&self) -> &Session {
@@ -321,6 +328,9 @@ impl Driver {
             }
             RunnerLine::Omp(frame) => {
                 self.usage.on_omp((self.clock)(), frame);
+                if self.context.on_omp(frame) {
+                    self.ask_context();
+                }
                 self.cancel_unanswerable(frame);
             }
             RunnerLine::Runner(_) => {}
@@ -424,6 +434,15 @@ impl Driver {
             self.open.insert(id, kind);
         }
         sent
+    }
+
+    /// Asks omp how full its context is. The answer is read in `ContextMeter::on_omp`.
+    fn ask_context(&mut self) {
+        if self.closed || self.omp != OmpState::Running {
+            return;
+        }
+        let frame = json!({ "id": self.next_id(), "type": STATS_COMMAND });
+        self.send_omp(&frame, None);
     }
 
     fn send_client(&mut self, frame: &ClientFrame, action: Option<ClientAction>) -> bool {
@@ -593,6 +612,43 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].turn, rows[0].at_ms), (1, 1));
         assert_eq!((rows[0].input, rows[0].output), (Some(10), Some(2)));
+    }
+
+    #[test]
+    fn each_turn_end_reads_the_context_and_keeps_it_out_of_the_transcript() {
+        let mut rig = Rig::new();
+        assert_eq!(rig.driver.context(), ContextState::NotRead);
+        rig.say(&json!({"type":"turn_end","turnIndex":0,"toolResults":[]}));
+        rig.pump_until("a stats request", |_, sent| {
+            !of_type(sent, STATS_COMMAND).is_empty()
+        });
+        let sent = rig.sent();
+        let id = of_type(&sent, STATS_COMMAND)[0]["id"].clone();
+        assert!(id.is_string(), "{id}");
+
+        rig.say(&json!({
+            "id": id, "type": "response", "command": STATS_COMMAND, "success": true,
+            "data": { "sessionFile": "/home/me/.omp/s.jsonl",
+                "contextUsage": { "tokens": 18003, "contextWindow": 200_000 } },
+        }));
+        rig.pump_until("the reading", |d, _| {
+            matches!(d.context(), ContextState::Known(_))
+        });
+        let transcript = rig.driver.transcript();
+        assert!(!transcript.contains(STATS_COMMAND), "{transcript}");
+        assert!(!transcript.contains("sessionFile"), "{transcript}");
+    }
+
+    #[test]
+    fn no_stats_request_once_omp_is_asked_to_stop() {
+        let mut rig = Rig::new();
+        assert!(rig.driver.stop());
+        rig.say(&json!({
+            "type":"turn_end","turnIndex":0,"toolResults":[],
+            "message":{"role":"assistant","usage":{"input":1}}
+        }));
+        rig.pump_until("the turn", |d, _| !d.usage().rows().is_empty());
+        assert_eq!(of_type(&rig.sent(), STATS_COMMAND), Vec::<&Value>::new());
     }
 
     fn land_request() -> LandRequest {

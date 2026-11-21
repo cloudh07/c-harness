@@ -4,6 +4,7 @@
 //! every rule here is reachable from `cargo test -p ch-core`.
 
 mod approval;
+mod context;
 mod redact;
 mod risk;
 mod session;
@@ -11,6 +12,10 @@ mod transcript;
 mod usage;
 
 pub use approval::{ApprovalDecision, ApprovalRequest, ReplyError, withdrawn_approval};
+pub use context::{
+    COMPACTION_NOTICE, ContextMeter, ContextReading, ContextState, STATS_COMMAND,
+    compaction_notice, is_stats,
+};
 pub use redact::{MASK, holds_provider_secret, redact_secrets};
 pub use risk::{Assessment, Risk, classify};
 pub use session::{

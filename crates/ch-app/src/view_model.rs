@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use ch_core::{SessionState, UsageTotals};
+use ch_core::{ContextReading, ContextState, SessionState, UsageTotals};
 use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
 
 use crate::settings::{Location, Settings};
@@ -329,6 +329,32 @@ fn compact(n: u64) -> String {
     }
 }
 
+/// The header's context line, or `None` before omp first answered. "≈" because omp estimates
+/// what came after its last reply.
+pub fn context_label(state: ContextState) -> Option<String> {
+    match state {
+        ContextState::NotRead => None,
+        ContextState::Compacting => Some("Compacting context…".into()),
+        ContextState::Unknown => Some("Context unknown".into()),
+        ContextState::Known(ContextReading {
+            tokens,
+            window: Some(window),
+        }) => {
+            let percent = tokens.saturating_mul(100).saturating_add(window / 2) / window;
+            let shown = if percent == 0 && tokens > 0 {
+                "<1".to_string()
+            } else {
+                percent.to_string()
+            };
+            Some(format!("Context ≈{shown}% of {}", compact(window)))
+        }
+        ContextState::Known(ContextReading {
+            tokens,
+            window: None,
+        }) => Some(format!("Context ≈{} tokens", compact(tokens))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,6 +621,25 @@ mod tests {
             cost_usd: cost,
             tokens_complete: true,
             cost_complete: cost.is_some(),
+        }
+    }
+
+    #[test]
+    fn context_label_says_how_full_the_window_is() {
+        let known = |tokens, window| ContextState::Known(ContextReading { tokens, window });
+        let cases = [
+            (ContextState::NotRead, None),
+            (ContextState::Compacting, Some("Compacting context…")),
+            (ContextState::Unknown, Some("Context unknown")),
+            (known(18_003, Some(200_000)), Some("Context ≈9% of 200k")),
+            (known(18_003, Some(1_050_000)), Some("Context ≈2% of 1M")),
+            (known(100, Some(200_000)), Some("Context ≈<1% of 200k")),
+            (known(0, Some(200_000)), Some("Context ≈0% of 200k")),
+            (known(210_000, Some(200_000)), Some("Context ≈105% of 200k")),
+            (known(18_003, None), Some("Context ≈18k tokens")),
+        ];
+        for (state, label) in cases {
+            assert_eq!(context_label(state).as_deref(), label, "{state:?}");
         }
     }
 

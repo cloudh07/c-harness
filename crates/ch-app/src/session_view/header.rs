@@ -8,7 +8,9 @@ use gpui_kit::{
 
 use super::{Phase, SessionView, status_for};
 use crate::assets::{Icon, icon, status_icon};
-use crate::view_model::{branch_for, repo_label, session_title, state_label, usage_label};
+use crate::view_model::{
+    branch_for, context_label, repo_label, session_title, state_label, usage_label,
+};
 use crate::widgets::{MONO, Tone, icon_button};
 
 const STATUS_ICON: f32 = 16.0;
@@ -101,9 +103,12 @@ impl SessionView {
     fn meta(&self, color: u32, label: &'static str, branch: Option<String>) -> Div {
         let p = self.palette;
         let repo = repo_label(&self.settings);
-        let usage = match &self.phase {
-            Phase::Live(live) => usage_label(&live.driver.usage().totals()),
-            _ => None,
+        let (usage, context) = match &self.phase {
+            Phase::Live(live) => (
+                usage_label(&live.driver.usage().totals()),
+                context_label(live.driver.context()),
+            ),
+            _ => (None, None),
         };
         div()
             .flex()
@@ -129,6 +134,10 @@ impl SessionView {
             .when_some(usage, |row, usage| {
                 row.child(dot(p.text_faint))
                     .child(meta_item(p, Icon::Sparkles, usage, None))
+            })
+            .when_some(context, |row, context| {
+                row.child(dot(p.text_faint))
+                    .child(meta_item(p, Icon::Gauge, context, None))
             })
     }
 }

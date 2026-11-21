@@ -8,12 +8,15 @@ use ch_protocol::runner::{Evidence, RunnerFrame, RunnerLine};
 use serde_json::Value;
 
 use crate::approval::{ApprovalRequest, withdrawn_approval};
+use crate::context::note_compaction;
 
 const PROMPT_STAGE: &str = "prompt";
 const OMP_STAGE: &str = "omp";
 const LAND_STAGE: &str = "land";
 // A check that fails or a diff that cannot be built is news about the work, not a broken session.
 const NON_FATAL_STAGES: &[&str] = &["verify", "diff"];
+// The runner's stage for a line it could not pass to omp.
+const PROTOCOL_STAGE: &str = "protocol";
 const PROMPT_COMMANDS: &[&str] = &["prompt", "abort_and_prompt"];
 
 /// Where a session stands, which decides what the app offers next.
@@ -250,6 +253,9 @@ impl Session {
             "prompt_result" => self.on_prompt_result(frame),
             "session_settled" if self.phase == Phase::Running => self.phase = Phase::Review,
             "extension_ui_request" => self.on_ui_request(frame),
+            "auto_compaction_start" | "auto_compaction_end" => {
+                note_compaction(&mut self.notices, frame);
+            }
             _ => {}
         }
     }
@@ -307,7 +313,10 @@ impl Session {
                     stage: stage.clone(),
                     message: message.clone(),
                 };
-                if NON_FATAL_STAGES.contains(&stage.as_str()) {
+                // A line sent just before omp died is dropped, which says nothing new and must
+                // not replace why omp ended.
+                let after_omp = self.omp_gone && stage == PROTOCOL_STAGE;
+                if after_omp || NON_FATAL_STAGES.contains(&stage.as_str()) {
                     self.warnings.push(problem);
                 } else {
                     self.fail_with(problem);
@@ -681,6 +690,33 @@ mod tests {
     }
 
     #[test]
+    fn a_line_dropped_after_omp_died_keeps_the_real_failure() {
+        let dropped = r#"{"type":"ch_error","stage":"protocol","message":"omp is not running, so a line for it was dropped"}"#;
+        let mut crashed = running();
+        feed(
+            &mut crashed,
+            r#"{"type":"ch_omp_exited","exit_code":1,"stderr_tail":["panic"]}"#,
+        );
+        feed(&mut crashed, dropped);
+        assert_eq!(crashed.failure().map(|f| f.stage.as_str()), Some("omp"));
+        assert_eq!(crashed.warnings().len(), 1);
+
+        let mut stopped = running();
+        stopped.apply_action(&ClientAction::StopSent);
+        feed(
+            &mut stopped,
+            r#"{"type":"ch_stopped","id":"s1","exit_code":0}"#,
+        );
+        feed(&mut stopped, dropped);
+        assert_eq!(stopped.state(), SessionState::NeedsReview);
+
+        // While omp runs, a protocol error still means the session is broken.
+        let mut live = running();
+        feed(&mut live, dropped);
+        assert_eq!(live.state(), SessionState::Failed);
+    }
+
+    #[test]
     fn stopping_leads_to_review() {
         let mut stopped = running();
         feed(&mut stopped, APPROVAL);
@@ -726,6 +762,27 @@ mod tests {
         assert_eq!(session.failure(), Some(&failure("start", "omp not found")));
         session.apply_action(&ClientAction::PromptSent);
         assert_eq!(session.state(), SessionState::Failed);
+    }
+
+    #[test]
+    fn compaction_keeps_one_notice_and_the_state() {
+        let mut session = running();
+        feed(
+            &mut session,
+            r#"{"type":"ch_notice","kind":"k","message":"m"}"#,
+        );
+        feed(
+            &mut session,
+            r#"{"type":"auto_compaction_start","reason":"threshold"}"#,
+        );
+        feed(
+            &mut session,
+            r#"{"type":"auto_compaction_end","aborted":false}"#,
+        );
+        assert_eq!(session.state(), SessionState::Running);
+        let kinds: Vec<_> = session.notices().iter().map(|n| n.kind.as_str()).collect();
+        assert_eq!(kinds, ["k", crate::COMPACTION_NOTICE]);
+        assert_eq!(session.notices()[1].message, "Context compacted.");
     }
 
     #[test]

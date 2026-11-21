@@ -75,6 +75,14 @@ Notable changes to C-Harness. The format follows
   written as `null`, never as a free turn. The session header sums the turns, and marks a sum
   that misses turns with "≥". If the file cannot be written, the app says so once and stops
   writing it.
+- `ch-app`: the session header shows how full omp's context window is, as a share of the
+  window, read with `get_session_stats` after each turn and after each compaction. Right after
+  a compaction omp has no count yet, which is shown as "Context unknown", never as zero.
+- `ch-core`: omp's automatic compaction shows as a notice that says whether it finished, was
+  stopped, was skipped or failed, and whether omp will retry. A newer compaction notice replaces
+  the older one. The transcript keeps the compaction outcome but not omp's summary of the
+  conversation, and keeps neither the context questions nor their answers, which name omp's
+  session file.
 
 ### Changed
 
@@ -88,6 +96,8 @@ Notable changes to C-Harness. The format follows
   in flight keeps the session open unless the runner is gone.
 - The session screen calls the coding agent "the agent". Settings, install help and error
   messages still name omp, because that is the program you install and configure.
+- `ch-core`: once omp has ended, a line the runner could not pass to it is a warning, not a
+  failure, so it no longer replaces why omp ended or fails a session that was stopped.
 
 ### Security
 
