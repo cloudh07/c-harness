@@ -190,6 +190,17 @@ impl Git {
         run_text(command, "write-tree")
     }
 
+    /// The tree the working tree would commit as on top of `base`. `index` is scratch and is
+    /// removed afterwards.
+    pub fn worktree_tree(&self, base: &Base, index: &Path) -> Result<String, String> {
+        let tree = self
+            .stage(base, index)
+            .and_then(|()| self.write_tree(index));
+        // A scratch index left behind only wastes the temp dir.
+        let _ = fs::remove_file(index);
+        tree
+    }
+
     /// The working tree's changes against `base`, each part cut to its budget.
     pub fn diff(
         &self,

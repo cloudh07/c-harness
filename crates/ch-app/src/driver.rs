@@ -208,7 +208,12 @@ impl Driver {
         }
     }
 
+    /// Asks the runner to run `command`. Refused while the agent works, since a check must
+    /// measure work that is standing still.
     pub fn verify(&mut self, command: &str) -> bool {
+        if !self.can_review() {
+            return false;
+        }
         let id = self.next_id();
         let frame = ClientFrame::Verify {
             id: id.clone(),
@@ -744,6 +749,30 @@ mod tests {
         rig.pump_until("review", |d, _| {
             d.session().state() == SessionState::NeedsReview
         });
+    }
+
+    #[test]
+    fn verify_waits_until_the_agent_is_done() {
+        let mut rig = Rig::new();
+        rig.driver
+            .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
+        rig.say(&json!({"type":"ready"}));
+        rig.pump_until("the prompt", |_, sent| sent.len() == 2);
+        rig.say(&json!({"type":"agent_start"}));
+        rig.pump_until("the agent to run", |d, _| {
+            d.session().state() == SessionState::Running
+        });
+        assert!(!rig.driver.verify("cargo test"));
+
+        rig.say(&json!({"type":"session_settled"}));
+        rig.pump_until("review", |d, _| {
+            d.session().state() == SessionState::NeedsReview
+        });
+        assert!(
+            of_type(&rig.sent(), "ch_verify").is_empty(),
+            "a verify went out while the agent worked"
+        );
+        assert!(rig.driver.verify("cargo test"));
     }
 
     #[test]

@@ -38,9 +38,11 @@ A session goes like this:
    prepared on an SSH host.
 3. The agent's text and tool calls stream into the window. Commands omp wants approved stop at
    a card that shows the command and a risk hint. Nothing runs until you choose.
-4. You run your own verify command. `ch-runner` runs it and records the real exit code.
+4. When the agent is done, you run your own verify command. `ch-runner` runs it and records
+   the real exit code and the exact work it ran on.
 5. You read the diff, then land it: the agent is stopped, the work is committed to a new
-   branch, pushed, and a pull request is opened.
+   branch, pushed, and a pull request is opened. If the work changed after the last check,
+   land is refused until you verify again.
 
 Not done yet: cloud sandbox providers, the Agent Client Protocol, cost tracking, plugins, and
 signed releases. [ROADMAP](#roadmap) has the order.

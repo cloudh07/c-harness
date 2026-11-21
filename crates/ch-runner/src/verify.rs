@@ -22,6 +22,41 @@ const POLL: Duration = Duration::from_millis(25);
 /// it left behind, before they are ended.
 const LINGER: Duration = Duration::from_secs(2);
 
+const CHANGED_DURING: &str = "the work changed while the last check ran (the agent or the check \
+                              wrote files): run Verify again";
+const CHANGED_AFTER: &str =
+    "the work changed after the last check: run Verify again before landing";
+const NOT_RECORDED: &str = "the last check could not record the work it ran on: run Verify again";
+
+/// What the last finished check says about the work, for land to hold it to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Checked {
+    /// The check ran on this tree, which stood still while it ran.
+    Tree(String),
+    /// The check does not stand for any one tree; land is refused for this reason.
+    Unusable(&'static str),
+}
+
+impl Checked {
+    /// The trees read at the start and end of a check.
+    pub fn from_trees(before: &Result<String, String>, after: &Result<String, String>) -> Self {
+        match (before, after) {
+            (Ok(before), Ok(after)) if before == after => Self::Tree(before.clone()),
+            (Ok(_), Ok(_)) => Self::Unusable(CHANGED_DURING),
+            _ => Self::Unusable(NOT_RECORDED),
+        }
+    }
+
+    /// Whether work whose tree is `tree` may land on this check.
+    pub fn allows(&self, tree: &str) -> Result<(), String> {
+        match self {
+            Self::Tree(checked) if checked == tree => Ok(()),
+            Self::Tree(_) => Err(CHANGED_AFTER.to_owned()),
+            Self::Unusable(reason) => Err((*reason).to_owned()),
+        }
+    }
+}
+
 pub struct Job {
     pub id: String,
     pub command: String,
@@ -90,6 +125,8 @@ pub fn run(job: Job, stop: &AtomicBool) -> Result<Evidence, String> {
         exit_code,
         duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
         head: job.head,
+        tree_before: None,
+        tree_after: None,
         output_tail,
         truncated,
         timed_out,
@@ -128,4 +165,45 @@ fn collect(mut reader: io::PipeReader, output: Arc<Mutex<TailBuffer>>) -> JoinHa
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_still_tree_allows_only_itself() {
+        let checked = Checked::from_trees(&Ok("t1".to_owned()), &Ok("t1".to_owned()));
+        assert_eq!(checked, Checked::Tree("t1".to_owned()));
+        assert_eq!(checked.allows("t1"), Ok(()));
+        let refused = checked.allows("t2").unwrap_err();
+        assert!(
+            refused.contains("changed after the last check"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_tree_that_moved_during_the_check_allows_nothing() {
+        let checked = Checked::from_trees(&Ok("t1".to_owned()), &Ok("t2".to_owned()));
+        for now in ["t1", "t2"] {
+            let refused = checked.allows(now).unwrap_err();
+            assert!(
+                refused.contains("changed while the last check ran"),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unread_tree_allows_nothing() {
+        let failed = Err("git write-tree failed".to_owned());
+        for checked in [
+            Checked::from_trees(&failed, &Ok("t1".to_owned())),
+            Checked::from_trees(&Ok("t1".to_owned()), &failed),
+        ] {
+            let refused = checked.allows("t1").unwrap_err();
+            assert!(refused.contains("could not record"), "{refused}");
+        }
+    }
 }

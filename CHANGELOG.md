@@ -84,3 +84,8 @@ Notable changes to C-Harness. The format follows
   replace with full auto.
 - The host overlay turns omp's memory off (`memory.backend: "off"`), so omp keeps nothing of
   its own between sessions.
+- Verify evidence names the work it ran on: `ch-runner` writes the working tree as a git tree
+  (on a private index) when the command starts and when it ends, and sends both as
+  `tree_before` and `tree_after`. Land is refused, with the reason, when the work changed while
+  that check ran or after it, so a file edited after a passing check cannot land on its
+  evidence. `ch-app` refuses Verify while the agent is working.

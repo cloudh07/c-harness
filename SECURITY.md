@@ -78,6 +78,12 @@ on startup lands on the same stream.
 records the real exit code. The agent may still have edited the tests or scripts that command
 runs, so read the diff.
 
+**Evidence is bound to the work it checked.** `ch-runner` records the working tree as a git
+tree before and after each check, and refuses to land when the work differs from the tree the
+last check ran on, or when files changed while that check ran. Two limits: a change made and
+undone while a check runs is not seen, and a land with no check at all is still allowed (the
+pull request then says no checks were run).
+
 **Releases are not signed yet.** macOS and Windows will warn when you open them. Check the
 download against `SHA256SUMS` from the same release.
 

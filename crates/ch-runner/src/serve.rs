@@ -5,14 +5,14 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use ch_protocol::runner::{
-    ClientFrame, ClientLine, LandRequest, MAX_OUTPUT_TAIL_BYTES, MAX_PATCH_BYTES,
+    ClientFrame, ClientLine, Evidence, LandRequest, MAX_OUTPUT_TAIL_BYTES, MAX_PATCH_BYTES,
     RUNNER_PROTOCOL_VERSION, RouteError, RunnerFrame, StartSession, route_client_line,
 };
 use ch_protocol::{LineSplitter, MAX_FRAME_BYTES, host_config_overlay, host_disabled_providers};
@@ -26,7 +26,7 @@ use crate::pr::PrOpener;
 use crate::proc_tree;
 use crate::scratch::PrivateDir;
 use crate::scrub::Scrubber;
-use crate::verify::{self, Job};
+use crate::verify::{self, Checked, Job};
 
 // The `ch_error` stages the client tells apart; `verify` and `diff` failures leave the
 // session usable, every other stage ends it.
@@ -96,6 +96,7 @@ where
         landed: HashMap::new(),
         workers: Vec::new(),
         shutdown: Arc::new(AtomicBool::new(false)),
+        checked: Arc::new(Mutex::new(None)),
     };
     session.run(&receiver);
     session.close();
@@ -177,6 +178,8 @@ struct Session {
     landed: HashMap<String, String>,
     workers: Vec<JoinHandle<()>>,
     shutdown: Arc<AtomicBool>,
+    /// What the last finished check ran on, for land to hold the work to.
+    checked: Arc<Mutex<Option<Checked>>>,
 }
 
 fn error(id: Option<String>, stage: &str, message: impl Into<String>) -> RunnerFrame {
@@ -325,14 +328,16 @@ impl Session {
     }
 
     fn verify(&mut self, id: String, command: String, timeout_secs: Option<u64>) {
-        if self.base.is_none() {
+        let Some(base) = self.base.clone() else {
             self.out
                 .frame(&error(Some(id), VERIFY, "send ch_start before ch_verify"));
             return;
-        }
+        };
         let git = self.git.clone();
         let out = self.out.clone();
         let stop = Arc::clone(&self.shutdown);
+        let checked = Arc::clone(&self.checked);
+        let index = self.dir.unique_path("verify-index");
         self.workers.push(thread::spawn(move || {
             let job = Job {
                 id: id.clone(),
@@ -341,8 +346,20 @@ impl Session {
                 workdir: git.workdir().to_owned(),
                 head: git.head(),
             };
+            // The tree is read on both sides of the command, so a check that ran while files
+            // changed stands for no tree at all.
+            let before = git.worktree_tree(&base, &index);
             let frame = match verify::run(job, &stop) {
-                Ok(evidence) => RunnerFrame::Evidence(evidence),
+                Ok(evidence) => {
+                    let after = git.worktree_tree(&base, &index);
+                    *checked.lock().unwrap_or_else(PoisonError::into_inner) =
+                        Some(Checked::from_trees(&before, &after));
+                    RunnerFrame::Evidence(Evidence {
+                        tree_before: before.ok(),
+                        tree_after: after.ok(),
+                        ..evidence
+                    })
+                }
                 Err(e) => error(Some(id), VERIFY, e),
             };
             out.frame(&frame);
@@ -460,12 +477,19 @@ impl Session {
             }
         };
         let scrubber = Scrubber::for_token(request.token.as_deref());
+        // No worker runs now, so this is what the last check left.
+        let checked = self
+            .checked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let outcome = Lander {
             git: &self.git,
             base: &base,
             session: &self.dir,
             landed: &mut self.landed,
             opener: self.opener.as_ref(),
+            checked: checked.as_ref(),
         }
         .land(request);
         let frame = match outcome {

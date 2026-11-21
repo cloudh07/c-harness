@@ -185,6 +185,14 @@ pub struct Evidence {
     /// `HEAD` when the command ran, if the working tree has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
+    /// The work as a git tree (the working tree staged on the session's base) when the command
+    /// started. `None` when it could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_before: Option<String>,
+    /// The same when the command ended. It differs from `tree_before` when files changed
+    /// while the check ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_after: Option<String>,
     /// The end of stdout and stderr, interleaved as written, at most [`MAX_OUTPUT_TAIL_BYTES`].
     pub output_tail: String,
     pub truncated: bool,
@@ -354,6 +362,8 @@ mod tests {
                 exit_code: Some(101),
                 duration_ms: 1200,
                 head: Some("abc123".into()),
+                tree_before: Some("t1".into()),
+                tree_after: Some("t1".into()),
                 output_tail: "test result: FAILED".into(),
                 truncated: false,
                 timed_out: false,
@@ -428,6 +438,18 @@ mod tests {
     }
 
     #[test]
+    fn evidence_from_an_older_runner_has_no_trees() {
+        let line = r#"{"type":"ch_evidence","id":"v1","command":"true","exit_code":0,
+            "duration_ms":1,"output_tail":"","truncated":false,"timed_out":false}"#;
+        match route_runner_line(line) {
+            Ok(RunnerLine::Runner(RunnerFrame::Evidence(evidence))) => {
+                assert_eq!((evidence.tree_before, evidence.tree_after), (None, None));
+            }
+            other => panic!("expected evidence, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn evidence_passes_only_on_zero_without_timeout() {
         let mut evidence = Evidence {
             id: "v".into(),
@@ -435,11 +457,15 @@ mod tests {
             exit_code: Some(0),
             duration_ms: 1,
             head: None,
+            tree_before: None,
+            tree_after: None,
             output_tail: String::new(),
             truncated: false,
             timed_out: false,
         };
         assert!(evidence.passed());
+        let line = RunnerFrame::Evidence(evidence.clone()).to_line();
+        assert!(!line.contains("tree_"), "{line}");
         evidence.timed_out = true;
         assert!(!evidence.passed());
         evidence.timed_out = false;

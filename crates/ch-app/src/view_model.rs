@@ -273,6 +273,8 @@ mod tests {
             exit_code,
             duration_ms: 1500,
             head: None,
+            tree_before: None,
+            tree_after: None,
             output_tail: String::new(),
             truncated: false,
             timed_out,
