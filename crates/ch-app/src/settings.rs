@@ -305,6 +305,11 @@ pub fn worktrees_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("worktrees"))
 }
 
+/// Where local session records go: `<local data dir>/c-harness/sessions`.
+pub fn sessions_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("sessions"))
+}
+
 /// Where redacted transcripts are exported: `<local data dir>/c-harness/transcripts`.
 pub fn transcripts_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("transcripts"))

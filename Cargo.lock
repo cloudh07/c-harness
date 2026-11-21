@@ -829,6 +829,8 @@ name = "ch-runtime"
 version = "0.1.0"
 dependencies = [
  "ch-protocol",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

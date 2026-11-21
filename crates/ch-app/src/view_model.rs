@@ -17,7 +17,7 @@ pub fn session_id(epoch_ms: u64) -> String {
 }
 
 pub fn branch_for(session: &str) -> String {
-    format!("ch/{session}")
+    ch_runtime::session_branch(session)
 }
 
 pub fn transcript_file_name(session: &str) -> String {

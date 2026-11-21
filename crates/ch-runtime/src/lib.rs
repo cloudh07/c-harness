@@ -6,16 +6,23 @@
 mod error;
 mod local;
 mod process;
+mod record;
 mod ssh;
 
 pub use error::RuntimeError;
 pub use local::{LocalProvider, validate_session};
 pub use process::RunnerProcess;
+pub use record::SessionRecord;
 pub use ssh::{DEFAULT_REMOTE_RUNNER, SshProvider};
 
 /// How to install `ch-runner` where a session runs.
 pub const RUNNER_INSTALL_COMMAND: &str =
     "cargo install --git https://github.com/cloudh07/c-harness ch-runner --locked";
+
+/// The branch a session's work lands on.
+pub fn session_branch(session: &str) -> String {
+    format!("ch/{session}")
+}
 
 /// What `ch-runner --version` reported.
 #[derive(Clone, Debug, PartialEq, Eq)]

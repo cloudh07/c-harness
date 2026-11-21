@@ -55,7 +55,8 @@ local session is your own computer:
 
 1. **omp**, the agent. Install it by following the
    [oh-my-pi README](https://github.com/can1357/oh-my-pi), then check `omp --version`.
-2. **git** and **curl** on `PATH`.
+2. **git** and **curl** on `PATH`. Local sessions need git 2.33 or newer, which can record why
+   a worktree is locked.
 3. **`ch-runner`**. Build it together with the app:
 
    ```sh
@@ -107,7 +108,8 @@ or when it cannot tell. `google-antigravity` is always off for the same reason.
 |---|---|
 | Settings | `c-harness/settings.json` under your OS config folder |
 | Model key and GitHub token | The OS keychain. The model key is read when a session starts, the token when you land. |
-| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work; remove it with `git worktree remove <path>` from your repository. |
+| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work; to remove it, run `git worktree unlock <path>` and then `git worktree remove <path>` from your repository, and delete its session record. |
+| Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree. It is written before the worktree is created and deleted after it is removed. |
 | Exported transcripts | `c-harness/transcripts` under the same data folder, with secrets removed by pattern |
 
 The config folder is `%APPDATA%` on Windows, `~/Library/Application Support` on macOS and
