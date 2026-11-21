@@ -69,6 +69,12 @@ Notable changes to C-Harness. The format follows
   folder git lists as that session's worktree is deleted; any other is named and left alone.
 - `ch-runtime`: an open local session holds `c-harness/sessions/<session>.lock`, so a second
   window cannot start or discard it. The lock is released after the worktree is removed.
+- `ch-app`: a usage ledger. Each model turn adds a line to `c-harness/usage/<session>.jsonl`
+  with its provider, model, input, output and cache tokens, omp's cost estimate, and whether
+  the counts are complete, partial or unavailable. omp's zero means "not reported", so it is
+  written as `null`, never as a free turn. The session header sums the turns, and marks a sum
+  that misses turns with "≥". If the file cannot be written, the app says so once and stops
+  writing it.
 
 ### Changed
 

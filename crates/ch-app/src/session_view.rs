@@ -24,6 +24,7 @@ use gpui_kit::{
 use crate::assets::Icon;
 use crate::driver::{self, Driver};
 use crate::launch::{self, Launched, Runner};
+use crate::ledger::Ledger;
 use crate::settings::{self, Problem, Settings};
 use crate::view_model::{land_request, session_id, transcript_file_name};
 use crate::widgets::{Tone, banner, icon_button};
@@ -59,6 +60,7 @@ struct Live {
     /// Earlier prompts and the full reply each one got.
     turns: Vec<(String, String)>,
     prompt: String,
+    ledger: Ledger,
 }
 
 pub struct SessionView {
@@ -215,7 +217,16 @@ impl SessionView {
     fn tick(&mut self, cx: &mut Context<Self>) {
         let changed = match &mut self.phase {
             Phase::Launching { .. } => self.poll_launch(),
-            Phase::Live(live) => live.driver.pump(),
+            Phase::Live(live) => {
+                let pumped = live.driver.pump();
+                match live.ledger.sync(live.driver.usage().rows()) {
+                    Some(problem) => {
+                        self.message = Some(Err(problem));
+                        true
+                    }
+                    None => pumped,
+                }
+            }
             Phase::Empty | Phase::LaunchFailed { .. } => false,
         };
         let swept = self.leftovers.poll();
@@ -265,6 +276,7 @@ impl SessionView {
         }
         Phase::Live(Box::new(Live {
             worktree: runner.worktree(),
+            ledger: Ledger::new(settings::usage_dir().as_deref(), &session),
             session,
             driver,
             runner: Some(runner),
@@ -427,17 +439,22 @@ impl SessionView {
     }
 
     fn close_session(&mut self, cx: &mut Context<Self>) {
+        let mut problem = None;
         if let Phase::Live(live) = std::mem::replace(&mut self.phase, Phase::Empty) {
             let Live {
-                mut driver, runner, ..
+                mut driver,
+                runner,
+                mut ledger,
+                ..
             } = *live;
+            problem = ledger.sync(driver.usage().rows());
             let landed = driver.session().state() == SessionState::Landed;
             driver.close();
             if let Some(runner) = runner {
                 runner.retire(landed);
             }
         }
-        self.message = None;
+        self.message = problem.map(Err);
         cx.notify();
     }
 

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ch_core::{
-    ApprovalDecision, ApprovalRequest, ClientAction, Session, SessionState, Transcript,
+    ApprovalDecision, ApprovalRequest, ClientAction, Session, SessionState, Transcript, Usage,
     redact_secrets,
 };
 use ch_protocol::runner::{ClientFrame, LandRequest, RunnerFrame, RunnerLine, StartSession};
@@ -75,6 +75,7 @@ pub struct Driver {
     land_in_flight: bool,
     omp: OmpState,
     closed: bool,
+    usage: Usage,
 }
 
 impl Driver {
@@ -94,7 +95,13 @@ impl Driver {
             land_in_flight: false,
             omp: OmpState::Running,
             closed: false,
+            usage: Usage::default(),
         }
+    }
+
+    /// Tokens and cost per model turn so far.
+    pub fn usage(&self) -> &Usage {
+        &self.usage
     }
 
     pub fn session(&self) -> &Session {
@@ -312,7 +319,10 @@ impl Driver {
                 self.omp = OmpState::Ended;
                 self.queued_prompt = None;
             }
-            RunnerLine::Omp(frame) => self.cancel_unanswerable(frame),
+            RunnerLine::Omp(frame) => {
+                self.usage.on_omp((self.clock)(), frame);
+                self.cancel_unanswerable(frame);
+            }
             RunnerLine::Runner(_) => {}
         }
         if answered == Some(Request::Land) {
@@ -565,6 +575,24 @@ mod tests {
 
     fn of_type<'a>(lines: &'a [Value], kind: &str) -> Vec<&'a Value> {
         lines.iter().filter(|l| l["type"] == kind).collect()
+    }
+
+    #[test]
+    fn each_turn_end_adds_a_usage_row() {
+        let mut rig = Rig::new();
+        rig.say(&json!({"type":"agent_start"}));
+        rig.say(&json!({"type":"message_end","message":{"role":"assistant"}}));
+        rig.say(&json!({
+            "type":"turn_end","turnIndex":0,"toolResults":[],
+            "message":{"role":"assistant","provider":"anthropic","model":"m","stopReason":"stop",
+                "usage":{"input":10,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":12,
+                    "cost":{"total":0.001}}}
+        }));
+        rig.pump_until("a usage row", |driver, _| !driver.usage().rows().is_empty());
+        let rows = rig.driver.usage().rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].turn, rows[0].at_ms), (1, 1));
+        assert_eq!((rows[0].input, rows[0].output), (Some(10), Some(2)));
     }
 
     fn land_request() -> LandRequest {

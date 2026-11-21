@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use ch_core::SessionState;
+use ch_core::{SessionState, UsageTotals};
 use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
 
 use crate::settings::{Location, Settings};
@@ -274,6 +274,61 @@ pub fn repo_label(settings: &Settings) -> String {
     }
 }
 
+/// The header's usage line, or `None` before the first turn ends. "≥" marks a sum that misses
+/// turns omp could not count; the cost is omp's own estimate.
+pub fn usage_label(totals: &UsageTotals) -> Option<String> {
+    if totals.turns == 0 {
+        return None;
+    }
+    let counts = [
+        totals.input,
+        totals.output,
+        totals.cache_read,
+        totals.cache_write,
+    ];
+    if counts.iter().all(|n| *n == 0) {
+        return Some("Usage not reported".into());
+    }
+    let at_least = if totals.tokens_complete { "" } else { "≥" };
+    let mut parts = vec![
+        format!("{at_least}{} in", compact(totals.input)),
+        format!("{at_least}{} out", compact(totals.output)),
+    ];
+    if totals.cache_read > 0 {
+        parts.push(format!("{at_least}{} cached", compact(totals.cache_read)));
+    }
+    if let Some(cost) = totals.cost_usd {
+        if totals.cost_complete {
+            parts.push(if cost < 0.01 {
+                "<$0.01".into()
+            } else {
+                format!("${cost:.2}")
+            });
+        } else {
+            // A lower bound must not round up, so whole cents only.
+            let floor = (cost * 100.0).floor() / 100.0;
+            if floor >= 0.01 {
+                parts.push(format!("≥${floor:.2}"));
+            }
+        }
+    }
+    Some(parts.join(" · "))
+}
+
+/// `950`, `12.3k`, `1.2M`: one decimal, cut rather than rounded.
+fn compact(n: u64) -> String {
+    let (whole, tenth, unit) = match n {
+        0..1_000 => return n.to_string(),
+        1_000..1_000_000 => (n / 1_000, n % 1_000 / 100, "k"),
+        _ => (n / 1_000_000, n % 1_000_000 / 100_000, "M"),
+    };
+    if tenth == 0 {
+        format!("{whole}{unit}")
+    } else {
+        format!("{whole}.{tenth}{unit}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,5 +583,66 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(repo_label(&remote), "devbox");
+    }
+
+    fn used(input: u64, output: u64, cache_read: u64, cost: Option<f64>) -> UsageTotals {
+        UsageTotals {
+            turns: 2,
+            input,
+            output,
+            cache_read,
+            cache_write: 0,
+            cost_usd: cost,
+            tokens_complete: true,
+            cost_complete: cost.is_some(),
+        }
+    }
+
+    #[test]
+    fn usage_label_is_hidden_before_the_first_turn() {
+        assert_eq!(usage_label(&UsageTotals::default()), None);
+    }
+
+    #[test]
+    fn usage_label_shows_counts_cache_and_cost() {
+        let full = used(12_345, 4_567, 1_250_000, Some(0.126));
+        assert_eq!(
+            usage_label(&full).as_deref(),
+            Some("12.3k in · 4.5k out · 1.2M cached · $0.13")
+        );
+        let small = used(950, 40, 0, Some(0.004));
+        assert_eq!(
+            usage_label(&small).as_deref(),
+            Some("950 in · 40 out · <$0.01")
+        );
+        let round = used(2_000, 7, 0, None);
+        assert_eq!(usage_label(&round).as_deref(), Some("2k in · 7 out"));
+    }
+
+    #[test]
+    fn usage_label_marks_lower_bounds() {
+        let gaps = UsageTotals {
+            tokens_complete: false,
+            cost_complete: false,
+            ..used(1_500, 20, 0, Some(0.129))
+        };
+        assert_eq!(
+            usage_label(&gaps).as_deref(),
+            Some("≥1.5k in · ≥20 out · ≥$0.12")
+        );
+        let tiny = UsageTotals {
+            cost_complete: false,
+            ..used(10, 1, 0, Some(0.001))
+        };
+        assert_eq!(usage_label(&tiny).as_deref(), Some("10 in · 1 out"));
+    }
+
+    #[test]
+    fn usage_label_says_when_nothing_was_counted() {
+        let none = UsageTotals {
+            tokens_complete: false,
+            ..used(0, 0, 0, None)
+        };
+        assert_eq!(usage_label(&none).as_deref(), Some("Usage not reported"));
     }
 }

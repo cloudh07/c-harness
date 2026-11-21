@@ -310,6 +310,11 @@ pub fn sessions_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("sessions"))
 }
 
+/// Where per-turn usage is kept: `<local data dir>/c-harness/usage`.
+pub fn usage_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("usage"))
+}
+
 /// Where redacted transcripts are exported: `<local data dir>/c-harness/transcripts`.
 pub fn transcripts_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("transcripts"))

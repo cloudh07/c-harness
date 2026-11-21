@@ -8,6 +8,7 @@ mod redact;
 mod risk;
 mod session;
 mod transcript;
+mod usage;
 
 pub use approval::{ApprovalDecision, ApprovalRequest, ReplyError, withdrawn_approval};
 pub use redact::{MASK, holds_provider_secret, redact_secrets};
@@ -16,3 +17,4 @@ pub use session::{
     ClientAction, Diff, Failure, Landing, Notice, Session, SessionState, ToolCall, ToolStatus,
 };
 pub use transcript::Transcript;
+pub use usage::{Usage, UsageRow, UsageStatus, UsageTotals};
