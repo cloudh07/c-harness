@@ -34,9 +34,12 @@ can throw away.
 runs can print it. Give C-Harness its own key with a spending limit, and revoke the key if a
 session behaved oddly.
 
-**Approvals come from omp.** C-Harness shows omp's approval requests as cards and sends your
-answer back. It does not enforce a policy of its own inside the sandbox. The risk level on a card
-is a hint worked out from the request text, not a guarantee.
+**Approvals come from omp.** C-Harness starts omp with `--approval-mode` set to the mode chosen
+in Settings (`write` unless you pick `always-ask`), shows omp's approval requests as cards and
+sends your answer back. It does not enforce a policy of its own inside the sandbox. An approved
+shell command runs with your full access, so approval limits what runs without asking, not what
+a command can do. The risk level on a card is a hint worked out from the request text, not a
+guarantee.
 
 **A repository can change how omp behaves.** omp reads project config and extensions from
 `.omp`, `.claude`, `.codex` and `.gemini` in the working tree. They can loosen approval prompts

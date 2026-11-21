@@ -131,8 +131,11 @@ held against them.
    can cap spending per session and per day.
 5. **Leaving is easy.** Tasks, transcripts and settings export to open formats. Your work lives
    on your own git branches.
-6. **Safe by default.** Destructive commands, pushes and outbound network calls wait for an
-   approval card. Full auto must be turned on per project and comes with a kill switch.
+6. **Safe by default.** Every session starts omp with an approval mode from Settings: by
+   default edits and commands wait for an approval card. The mode is passed on omp's command
+   line, which overrides omp's own default (full auto) and a repository's omp config. Approval
+   is not a sandbox: a command you approve runs with your full access. Full auto is not offered
+   yet; when it is, it must be turned on per project and come with a kill switch.
 7. **The core stays free.** The client and the runner are open source. A paid service, if one
    ever exists, adds options and never takes away what you already have.
 8. **Vendor terms in the open.** The docs will keep a table of which providers allow

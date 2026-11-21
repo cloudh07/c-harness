@@ -14,7 +14,7 @@ use std::time::Duration;
 use ch_protocol::runner::{RUNNER_FRAME_PREFIX, RunnerFrame, StartSession};
 use ch_protocol::{
     ANTHROPIC_PROVIDER, LineSplitter, SUBSCRIPTION_TOKEN_ENV, parse_disabled_providers,
-    parse_oauth_account_count,
+    parse_oauth_account_count, validate_approval_mode,
 };
 use serde_json::Value;
 
@@ -37,7 +37,8 @@ pub const DRAIN_ON_EXIT: Duration = Duration::from_secs(2);
 
 /// Refuses a `ch_start` the runner could not honour safely.
 pub fn check_start(start: &StartSession) -> Result<(), String> {
-    for arg in &start.omp_args {
+    let mut args = start.omp_args.iter();
+    while let Some(arg) = args.next() {
         if arg.contains('\0') {
             return Err("an omp argument holds a NUL byte".to_owned());
         }
@@ -47,6 +48,7 @@ pub fn check_start(start: &StartSession) -> Result<(), String> {
                 "omp_args may not hold {arg:?}: the runner passes --config itself"
             ));
         }
+        check_approval_arg(arg, &mut args)?;
     }
     for (name, value) in &start.env {
         if name.is_empty() || name.contains(['=', '\0']) {
@@ -68,6 +70,28 @@ pub fn check_start(start: &StartSession) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The approval policy may only come as `--approval-mode` with a value omp knows. omp keeps
+/// its own default, yolo, when the value is wrong, and the shortcut flags hide the policy.
+fn check_approval_arg<'a>(
+    arg: &str,
+    rest: &mut impl Iterator<Item = &'a String>,
+) -> Result<(), String> {
+    let flag = arg.split_once('=').map_or(arg, |(flag, _)| flag);
+    if matches!(flag, "--yolo" | "--auto-approve") {
+        return Err(format!(
+            "omp_args may not hold {flag}: set the approval policy with --approval-mode"
+        ));
+    }
+    if flag != "--approval-mode" {
+        return Ok(());
+    }
+    let value = match arg.split_once('=') {
+        Some((_, value)) => value,
+        None => rest.next().ok_or("--approval-mode needs a value")?.as_str(),
+    };
+    validate_approval_mode(value)
 }
 
 /// omp's arguments: the client's, then each overlay, the host's last so its keys win.
@@ -462,6 +486,29 @@ mod tests {
             assert!(check_start(&start(&[arg], &[])).is_err(), "{arg}");
         }
         assert!(check_start(&start(&["a\0b"], &[])).is_err());
+    }
+
+    #[test]
+    fn approval_policy_comes_only_as_a_known_approval_mode() {
+        for args in [
+            &["--approval-mode", "write"][..],
+            &["--approval-mode=always-ask"],
+            &["--approval-mode", "yolo"],
+        ] {
+            assert_eq!(check_start(&start(args, &[])), Ok(()), "{args:?}");
+        }
+        // omp takes a bad value without a word and keeps its own default, which is yolo.
+        for args in [
+            &["--approval-mode", "Write"][..],
+            &["--approval-mode=never"],
+            &["--approval-mode"],
+            &["--yolo"],
+            &["--auto-approve"],
+            &["--yolo=true"],
+        ] {
+            let error = check_start(&start(args, &[])).unwrap_err();
+            assert!(error.contains("approval"), "{args:?}: {error}");
+        }
     }
 
     #[test]

@@ -337,8 +337,13 @@ fn check_started(started: &Value, dir: &Path) {
     assert_eq!(configs[0]["text"], CLIENT_OVERLAY);
     let host = configs[1]["text"].as_str().expect("host overlay");
     assert!(
-        host.starts_with("startup:\n  checkUpdate: false\n"),
+        host.starts_with("startup:\n  checkUpdate: false\nmemory:\n  backend: \"off\"\n"),
         "{host}"
+    );
+    assert_eq!(
+        configs[1]["path"].as_str(),
+        Some(args[5]),
+        "host overlay last"
     );
     assert!(host.contains("google-antigravity"), "{host}");
     assert!(!host.contains("\"anthropic\""), "{host}");
@@ -414,6 +419,12 @@ fn project_config_and_provider_notice() {
     let dir = repo.path();
     fs::create_dir(dir.join(".omp")).expect("mkdir");
     fs::write(dir.join(".omp/settings.yml"), "x: 1\n").expect("write");
+    // A project asking for full auto: the client's flag is what omp gets.
+    fs::write(
+        dir.join(".omp/config.yml"),
+        "tools:\n  approvalMode: yolo\n",
+    )
+    .expect("write");
     fs::create_dir(dir.join(".claude")).expect("mkdir");
     fs::write(dir.join(".claude/settings.json"), "{}\n").expect("write");
     fs::write(
@@ -432,8 +443,18 @@ fn project_config_and_provider_notice() {
     assert!(message.contains(".omp, .claude"), "{message}");
     assert!(!message.contains(".codex"), "{message}");
 
-    client.send(&start_frame(&[]));
+    let mut frame = start_frame(&[]);
+    frame["omp_args"] = json!(["--mode", "rpc", "--approval-mode", "write"]);
+    client.send(&frame);
     let (started, before) = client.until("fake_started");
+    let args: Vec<&str> = started["args"]
+        .as_array()
+        .expect("args")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(&args[..4], ["--mode", "rpc", "--approval-mode", "write"]);
+    assert!(!args.iter().any(|a| a.contains("yolo")), "{args:?}");
     assert_eq!(before.len(), 1, "{before:?}");
     assert_eq!(before[0]["kind"], "provider_disabled");
     assert!(
@@ -446,6 +467,8 @@ fn project_config_and_provider_notice() {
     let host = started["configs"][1]["text"]
         .as_str()
         .expect("host overlay");
+    assert_eq!(started["configs"][1]["path"].as_str(), args.last().copied());
+    assert!(host.contains("memory:\n  backend: \"off\"\n"), "{host}");
     assert!(host.contains("- \"anthropic\""), "{host}");
     assert!(host.contains("- \"openai\""), "{host}");
     for _ in fixture_lines() {
@@ -492,6 +515,19 @@ fn start_refusals() {
     assert!(
         !text.contains(OAUTH_VALUE) && !text.contains(MODEL_KEY),
         "{text}"
+    );
+
+    let mut yolo = start_frame(&[]);
+    yolo["omp_args"] = json!(["--mode", "rpc", "--yolo"]);
+    client.send(&yolo);
+    let refused = client.expect("ch_error");
+    assert_eq!(refused["stage"], "start");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("--approval-mode"),
+        "{refused}"
     );
 
     client.send(&start_frame(&[]));

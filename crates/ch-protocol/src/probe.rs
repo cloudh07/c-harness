@@ -165,8 +165,11 @@ fn validate_choice(label: &str, value: &str, allowed: &[&str]) -> Result<(), Str
 /// `disabled_providers` is written as omp's `disabledProviders` setting. Because the overlay
 /// is last-wins, the caller must pass the user's own list merged with the host's additions
 /// (see [`host_disabled_providers`]), or the user's choices would be re-enabled.
+///
+/// `memory.backend` is off so omp keeps no memory of its own across sessions; the value is
+/// quoted because a bare `off` is a YAML boolean.
 pub fn host_config_overlay(disabled_providers: &[String]) -> String {
-    let mut text = String::from("startup:\n  checkUpdate: false\n");
+    let mut text = String::from("startup:\n  checkUpdate: false\nmemory:\n  backend: \"off\"\n");
     if !disabled_providers.is_empty() {
         text.push_str("disabledProviders:\n");
         for id in disabled_providers {
@@ -435,6 +438,17 @@ mod tests {
     fn host_overlay_disables_the_startup_update_check() {
         assert!(host_config_overlay(&[]).contains("checkUpdate: false"));
         assert!(!host_config_overlay(&[]).contains("disabledProviders"));
+    }
+
+    #[test]
+    fn host_overlay_turns_omp_memory_off_with_a_quoted_value() {
+        // Unquoted `off` is a YAML 1.1 boolean, not the string omp expects.
+        assert_eq!(
+            host_config_overlay(&[]),
+            "startup:\n  checkUpdate: false\nmemory:\n  backend: \"off\"\n"
+        );
+        let text = host_config_overlay(&["openai".to_string()]);
+        assert!(text.contains("memory:\n  backend: \"off\"\n"), "{text}");
     }
 
     #[test]

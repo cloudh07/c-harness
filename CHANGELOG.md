@@ -53,6 +53,9 @@ Notable changes to C-Harness. The format follows
   session details. When the panel is closed and the agent finishes, the thread asks you to
   review.
 - `ch-app`: approval cards carry a shield in the color of their risk.
+- `ch-app`: an Approvals choice in Settings, "Ask before edits and commands" (omp's `write`,
+  the default) or "Ask before every tool" (`always-ask`). It is sent to omp as
+  `--approval-mode` on every start. Full auto is not offered.
 
 ### Changed
 
@@ -75,3 +78,9 @@ Notable changes to C-Harness. The format follows
 - `ch-app` drops a runner reply that names no open request of its kind: evidence must answer a
   verify the app sent, a diff a diff, a stop a stop and a landed branch a land, each only once.
   Dropped replies are logged and kept out of the session.
+- omp no longer starts in its own default approval mode, full auto: the app always sends
+  `--approval-mode`, and a repository's `.omp` config cannot change it. `ch-runner` refuses
+  `--yolo`, `--auto-approve` and an approval mode omp does not know, which omp would silently
+  replace with full auto.
+- The host overlay turns omp's memory off (`memory.backend: "off"`), so omp keeps nothing of
+  its own between sessions.
