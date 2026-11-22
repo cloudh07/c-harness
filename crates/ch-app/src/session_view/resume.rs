@@ -27,6 +27,22 @@ fn earliest_prompt(turns: &[(String, String)]) -> Option<String> {
         .cloned()
 }
 
+/// The earlier conversation, then this run's turns, and the title: this run's first prompt, or
+/// the earlier conversation's when this run has none yet.
+fn after_earlier(
+    earlier: Vec<(String, String)>,
+    current: Vec<(String, String)>,
+    title: String,
+) -> (Vec<(String, String)>, String) {
+    let title = match earliest_prompt(&earlier) {
+        Some(prompt) if title.is_empty() => prompt,
+        _ => title,
+    };
+    let mut turns = earlier;
+    turns.extend(current);
+    (turns, title)
+}
+
 impl SessionView {
     pub(super) fn resume_leftover(&mut self, session: &str, cx: &mut Context<Self>) {
         if matches!(self.phase, Phase::Empty) {
@@ -110,13 +126,12 @@ impl Live {
             hidden,
             problem,
         } = earlier;
-        if self.first_prompt.is_empty()
-            && let Some(prompt) = earliest_prompt(&turns)
-        {
-            self.first_prompt = prompt;
-        }
+        (self.turns, self.first_prompt) = after_earlier(
+            turns,
+            std::mem::take(&mut self.turns),
+            std::mem::take(&mut self.first_prompt),
+        );
         self.hidden = hidden;
-        self.turns.splice(0..0, turns);
         let problems: Vec<String> = [problem, noted].into_iter().flatten().collect();
         (true, (!problems.is_empty()).then(|| problems.join(" ")))
     }
@@ -179,5 +194,22 @@ mod tests {
         );
         assert_eq!(earliest_prompt(&[pair("", "Hello.")]), None);
         assert_eq!(earliest_prompt(&[]), None);
+    }
+
+    #[test]
+    fn the_earlier_conversation_goes_before_this_runs_turns() {
+        let earlier = vec![pair("", "Hello."), pair("Fix it", "Fixed.")];
+        let current = vec![pair("Now test it", "Tested.")];
+        let (turns, title) = after_earlier(earlier.clone(), current.clone(), String::new());
+        assert_eq!(
+            turns,
+            [earlier[0].clone(), earlier[1].clone(), current[0].clone()]
+        );
+        assert_eq!(title, "Fix it");
+
+        let (_, title) = after_earlier(earlier, current, "Now test it".to_string());
+        assert_eq!(title, "Now test it", "this run already has a title");
+        let (turns, title) = after_earlier(Vec::new(), Vec::new(), String::new());
+        assert_eq!((turns.len(), title.as_str()), (0, ""));
     }
 }

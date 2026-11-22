@@ -65,22 +65,27 @@ Notable changes to C-Harness. The format follows
   what is left of each: a live worktree, a worktree whose folder is gone, a record only, a
   record whose repository moved, a worktree with no record, or a damaged record. A record that
   cannot be read at all, such as one another program holds open, is left off the list and
-  cannot be discarded. Keep hides one until the next start. Discard, pressed twice, deletes its
-  worktree with any uncommitted changes, its checkpoint refs and its record, and keeps its
-  `ch/<session>` branch. Only a
-  folder git lists as that session's worktree is deleted; any other is named and left alone.
+  cannot be discarded. Each row says when its session started. Keep hides one until the next
+  start. Discard, pressed twice, deletes its worktree with any uncommitted changes, its
+  checkpoint refs and its record, and keeps its `ch/<session>` branch. A double click counts as
+  one press, so the warning shows before anything is deleted. Only a folder git lists as that
+  session's worktree is deleted; any other is named and left alone.
 - `ch-runtime`: an open local session holds `c-harness/sessions/<session>.lock`, so a second
   window cannot start or discard it. The lock is released after the worktree is removed.
 - `ch-app`: a usage ledger. Each model turn adds a line to `c-harness/usage/<session>.jsonl`
   with its provider, model, input, output and cache tokens, omp's cost estimate, and whether
   the counts are complete, partial or unavailable. omp's zero means "not reported", so it is
   written as `null`, never as a free turn. The session header sums the turns, and marks a sum
-  that misses turns with "≥". If the file cannot be written, the app says so once and stops
-  writing it.
+  that misses turns with "≥". If the file cannot be written, the app says so once and tries
+  the same lines again after the next turn and when you start a new session, and says so again
+  if that last try fails too. Lines still unsaved when the app quits are lost. A write after
+  one cut off mid-line, in this run or an earlier one, starts on a new line, and a turn a retry
+  wrote twice is read back once.
 - `ch-app`: the session header shows how full omp's context window is, as a share of the
   window, read with `get_session_stats` after each turn and after each compaction. Right after
   a compaction omp has no count yet, which is shown as "Context unknown", never as zero. When
-  omp ends in the middle of a compaction, the header stops saying it is compacting.
+  omp ends in the middle of a compaction, the header stops saying it is compacting. From 80%
+  the share is drawn in the warning color. A share under one percent reads "<1%".
 - `ch-core`: omp's automatic compaction shows as a notice that says whether it finished, was
   stopped, was skipped or failed, and whether omp will retry. A newer compaction notice replaces
   the older one. The transcript keeps the compaction outcome but not omp's summary of the
@@ -94,16 +99,19 @@ Notable changes to C-Harness. The format follows
   and reply text comes back, at most 32,000 characters each: a longer prompt keeps its start
   and a longer reply its end. Usage turns number on from the session's ledger. A failed resume
   shows its reason on the row. Resume is offered only while Settings runs sessions on this
-  computer.
+  computer. The header takes its title from the earlier conversation's first prompt, or reads
+  "Resumed session" when there is none.
 - `ch-runtime`: the session record keeps the path of the file omp keeps the conversation in,
   once omp names it in a `get_session_stats` answer. Only an absolute `.jsonl` path with no
   `..` or control characters is kept or passed back, and on Windows only one on a drive
   letter, never a network share. Records without it still load.
 - `ch-runner`, `ch-app`: turn checkpoints for local sessions. Each time the agent finishes a run,
   the runner saves the working tree, untracked files included and ignored ones left out, as a
-  commit under `refs/c-harness/<session>/turn-<n>`, up to 1000 per session. The review panel
-  lists the last eight. Each shows what changed since the one before it in a card in the
-  thread, and Restore puts the working tree back as it was then, or as the session started. A
+  commit under `refs/c-harness/<session>/turn-<n>`, up to 1000 per session. A failed save is
+  not tried again, but the next run is still saved, with those changes in it. The review panel
+  lists the last eight, each with how long ago it was saved. Each shows what changed since the
+  one before it in a card in the thread, and Restore puts the working tree back as it was then,
+  or as the session started. A
   restore first saves the tree it replaces as a checkpoint of its own, so it can be undone. It
   is refused when it would write over or delete a file no checkpoint holds, such as an ignored
   one. Files come back with the repository's line-ending settings. A prompt waits for a restore,
@@ -131,6 +139,8 @@ Notable changes to C-Harness. The format follows
   where omp keeps its conversation before the first turn. An answer without a count, before
   any count, leaves the meter blank. The transcript keeps neither history page requests nor
   their answers.
+- `ch-core`: a warning the session already shows is not added again, so a checkpoint save that
+  fails the same way after every run shows one warning.
 
 ### Security
 

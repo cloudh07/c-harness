@@ -9,7 +9,8 @@ use gpui_kit::{
 use super::{Phase, SessionView, status_for};
 use crate::assets::{Icon, icon, status_icon};
 use crate::view_model::{
-    branch_for, context_label, repo_label, session_title, state_label, usage_label,
+    branch_for, context_label, context_near_full, live_title, repo_label, session_title,
+    state_label, usage_label,
 };
 use crate::widgets::{MONO, Tone, icon_button};
 
@@ -40,7 +41,7 @@ impl SessionView {
             }
             Phase::LaunchFailed { prompt, .. } => (session_title(prompt), None),
             Phase::Live(live) => (
-                session_title(&live.first_prompt),
+                live_title(&live.first_prompt),
                 Some(branch_for(&live.session)),
             ),
         };
@@ -102,16 +103,18 @@ impl SessionView {
 }
 
 impl SessionView {
-    /// The line under the title: state, repository, branch and, once a turn ends, usage.
+    /// The line under the title: state, repository, branch and, once a turn ends, usage and
+    /// context, the context drawn as a warning when the window is nearly full.
     fn meta(&self, color: u32, label: &'static str, branch: Option<String>) -> Div {
         let p = self.palette;
         let repo = repo_label(&self.settings);
-        let (usage, context) = match &self.phase {
+        let (usage, context, near_full) = match &self.phase {
             Phase::Live(live) => (
                 usage_label(&live.driver.usage().totals()),
                 context_label(live.driver.context()),
+                context_near_full(live.driver.context()),
             ),
-            _ => (None, None),
+            _ => (None, None, false),
         };
         div()
             .flex()
@@ -139,8 +142,11 @@ impl SessionView {
                     .child(meta_item(p, Icon::Sparkles, usage, None))
             })
             .when_some(context, |row, context| {
-                row.child(dot(p.text_faint))
-                    .child(meta_item(p, Icon::Gauge, context, None))
+                row.child(dot(p.text_faint)).child(
+                    meta_item(p, Icon::Gauge, context, None).when(near_full, |item| {
+                        item.text_color(rgb(p.status(Status::NearCap)))
+                    }),
+                )
             })
     }
 }

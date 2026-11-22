@@ -10,8 +10,9 @@ use gpui_kit::{ClickEvent, Context, Div, FontWeight, ParentElement, Styled, div,
 
 use super::SessionView;
 use super::resume::can_resume;
-use crate::launch;
+use crate::view_model::age_label;
 use crate::widgets::{Tone, banner, button, card, eyebrow, muted};
+use crate::{driver, launch};
 
 type Discarding = Receiver<Result<Option<PathBuf>, String>>;
 
@@ -153,8 +154,10 @@ impl Leftovers {
         }
     }
 
-    /// The first press asks for a second; the second returns true, meaning delete now.
-    fn press_discard(&mut self, session: &str) -> bool {
+    /// The first press asks for a second; the second returns true, meaning delete now. A
+    /// press that is part of a double click never confirms: it would land before the warning
+    /// could be read.
+    fn press_discard(&mut self, session: &str, repeated: bool) -> bool {
         let Some(row) = self.row_mut(session) else {
             return false;
         };
@@ -163,6 +166,9 @@ impl Leftovers {
         }
         row.error = None;
         if row.confirming {
+            if repeated {
+                return false;
+            }
             row.confirming = false;
             return true;
         }
@@ -198,8 +204,8 @@ impl SessionView {
         cx.notify();
     }
 
-    fn discard_leftover(&mut self, session: &str, cx: &mut Context<Self>) {
-        if self.leftovers.press_discard(session) {
+    fn discard_leftover(&mut self, session: &str, repeated: bool, cx: &mut Context<Self>) {
+        if self.leftovers.press_discard(session, repeated) {
             let seen_in = self.leftovers.seen_in(session);
             let rx = launch::discard(&self.settings, session.to_string(), seen_in);
             self.leftovers.discarding(session, rx);
@@ -236,6 +242,7 @@ impl SessionView {
                 ),
             )
         });
+        let now = driver::epoch_ms() / 1_000;
         let list = (!state.rows.is_empty()).then(|| {
             card(p)
                 .gap_3()
@@ -247,7 +254,7 @@ impl SessionView {
                 ))
                 .children(state.rows.iter().map(|row| {
                     let resumable = can_resume(row.leftover.kind, &self.settings.location);
-                    leftover_row(p, row, resumable, cx)
+                    leftover_row(p, row, now, resumable, cx)
                 }))
         });
         if error.is_none() && kept.is_none() && list.is_none() {
@@ -265,15 +272,34 @@ impl SessionView {
     }
 }
 
-fn leftover_row(p: Palette, row: &Row, resumable: bool, cx: &mut Context<SessionView>) -> Div {
+/// `now` in seconds since the Unix epoch, like the record's start time.
+fn leftover_row(
+    p: Palette,
+    row: &Row,
+    now: u64,
+    resumable: bool,
+    cx: &mut Context<SessionView>,
+) -> Div {
     let session = &row.leftover.session;
+    let started = row.leftover.record.as_ref().map(|record| {
+        muted(
+            p,
+            format!("Started {}", age_label(now, record.created_unix_secs)),
+        )
+    });
     let path = row
         .leftover
         .worktree()
         .map(|path| muted(p, path.display().to_string()));
+    // The warning before a delete reads at full contrast, not muted like the details above it.
     let note = row
         .confirming
-        .then(|| muted(p, warning(session)))
+        .then(|| {
+            div()
+                .text_xs()
+                .text_color(rgb(p.text))
+                .child(warning(session))
+        })
         .or_else(|| {
             row.error.as_ref().map(|e| {
                 div()
@@ -308,6 +334,7 @@ fn leftover_row(p: Palette, row: &Row, resumable: bool, cx: &mut Context<Session
                                 .child(session.clone()),
                         )
                         .child(muted(p, describe(row.leftover.kind)))
+                        .children(started)
                         .children(path),
                 )
                 .child(row_actions(p, row, resumable, cx)),
@@ -362,8 +389,8 @@ fn row_actions(p: Palette, row: &Row, resumable: bool, cx: &mut Context<SessionV
     };
     let id = session.clone();
     let second = button(p, format!("leftover-discard-{session}"), label, tone, !busy).on_click(
-        cx.listener(move |this, _: &ClickEvent, _, cx| {
-            this.discard_leftover(&id, cx);
+        cx.listener(move |this, event: &ClickEvent, _, cx| {
+            this.discard_leftover(&id, event.click_count() > 1, cx);
         }),
     );
     div()
@@ -448,7 +475,7 @@ mod tests {
     #[test]
     fn a_failed_resume_shows_its_reason_on_the_row() {
         let mut state = found(&["s1", "s2"]);
-        assert!(!state.press_discard("s1"));
+        assert!(!state.press_discard("s1", false));
         state.failed("s1", "omp is missing".to_string());
         state.failed("missing", "ignored".to_string());
         assert_eq!(sessions(&state), ["s1", "s2"]);
@@ -460,11 +487,24 @@ mod tests {
     #[test]
     fn discard_needs_a_second_press_and_cancel_resets_it() {
         let mut state = found(&["s1"]);
-        assert!(!state.press_discard("s1"));
+        assert!(!state.press_discard("s1", false));
         state.cancel("s1");
-        assert!(!state.press_discard("s1"));
-        assert!(state.press_discard("s1"));
-        assert!(!state.press_discard("missing"));
+        assert!(!state.press_discard("s1", false));
+        assert!(state.press_discard("s1", false));
+        assert!(!state.press_discard("missing", false));
+    }
+
+    #[test]
+    fn a_double_click_on_discard_does_not_delete() {
+        let mut state = found(&["s1"]);
+        assert!(!state.press_discard("s1", false));
+        assert!(
+            !state.press_discard("s1", true),
+            "the double click's second half"
+        );
+        assert!(!state.press_discard("s1", true), "a triple click");
+        assert!(state.rows[0].confirming, "the warning stays up");
+        assert!(state.press_discard("s1", false));
     }
 
     #[test]
@@ -476,7 +516,10 @@ mod tests {
             state.discarding(session, rx);
             senders.push(tx);
         }
-        assert!(!state.press_discard("s1"), "a busy row ignores presses");
+        assert!(
+            !state.press_discard("s1", false),
+            "a busy row ignores presses"
+        );
 
         senders[0].send(Ok(None)).unwrap();
         senders[1]

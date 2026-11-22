@@ -207,6 +207,25 @@ fn checkpoint_and_restore_errors_are_warnings() {
 }
 
 #[test]
+fn a_warning_already_shown_is_not_added_again() {
+    let mut session = reviewing();
+    let full = json!({
+        "type": "ch_error", "id": "x", "stage": "checkpoint",
+        "message": "this session has 1000 checkpoints, the most it keeps",
+    });
+    let restore = json!({ "type": "ch_error", "id": "y", "stage": "restore", "message": "no" });
+    for frame in [&full, &full, &restore, &full] {
+        say(&mut session, frame);
+    }
+    let stages: Vec<&str> = session
+        .warnings()
+        .iter()
+        .map(|w| w.stage.as_str())
+        .collect();
+    assert_eq!(stages, ["checkpoint", "restore"]);
+}
+
+#[test]
 fn a_turn_diff_starts_at_the_checkpoint_before_it() {
     let list = [
         checkpoint(1, CheckpointKind::Run),

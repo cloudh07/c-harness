@@ -82,6 +82,8 @@ pub struct SessionView {
     review_open: bool,
     leftovers: Leftovers,
     scroll: ScrollHandle,
+    /// Minutes since the Unix epoch at the last tick, so ages on screen move on with the clock.
+    minute: u64,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -158,6 +160,7 @@ impl SessionView {
             review_open: true,
             leftovers,
             scroll: ScrollHandle::new(),
+            minute: driver::epoch_ms() / 60_000,
             _ticker: ticker,
             _subscriptions: subscriptions,
         }
@@ -254,7 +257,10 @@ impl SessionView {
             Phase::Empty | Phase::LaunchFailed { .. } => false,
         };
         let swept = self.leftovers.poll();
-        if changed || swept {
+        let minute = driver::epoch_ms() / 60_000;
+        let new_minute = minute != self.minute;
+        self.minute = minute;
+        if changed || swept || new_minute {
             cx.notify();
         }
     }
@@ -476,7 +482,7 @@ impl SessionView {
                 mut ledger,
                 ..
             } = *live;
-            problem = ledger.sync(driver.usage().rows());
+            problem = ledger.flush(driver.usage().rows());
             let landed = driver.session().state() == SessionState::Landed;
             driver.close();
             if let Some(runner) = runner {

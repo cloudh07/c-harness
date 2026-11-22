@@ -375,7 +375,10 @@ impl Session {
                 // not replace why omp ended.
                 let after_omp = self.omp_gone && stage == PROTOCOL_STAGE;
                 if after_omp || NON_FATAL_STAGES.contains(&stage.as_str()) {
-                    self.warnings.push(problem);
+                    // A save that fails the same way after every run is shown once.
+                    if !self.warnings.contains(&problem) {
+                        self.warnings.push(problem);
+                    }
                 } else {
                     self.fail_with(problem);
                 }

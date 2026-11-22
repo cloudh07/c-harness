@@ -115,7 +115,7 @@ fn a_runner_that_lists_no_checkpoints_is_never_asked_for_them() {
 }
 
 #[test]
-fn a_failed_save_is_not_tried_again() {
+fn a_failed_save_is_tried_again_after_the_next_run() {
     let mut rig = Rig::new();
     first_run(&mut rig, true);
     let id = saves(&rig)[0]["id"].clone();
@@ -126,8 +126,7 @@ fn a_failed_save_is_not_tried_again() {
 
     assert!(rig.driver.prompt("again"));
     end_run(&mut rig);
-    flush(&mut rig);
-    assert_eq!(saves(&rig).len(), 1, "a save went out after one failed");
+    assert_eq!(wait_sent(&mut rig, "ch_checkpoint", 2).len(), 2);
 }
 
 static NOW: AtomicU64 = AtomicU64::new(1);

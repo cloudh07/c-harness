@@ -7,6 +7,9 @@ use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
 
 use crate::settings::{Location, Settings};
 
+mod labels;
+pub use labels::{age_label, context_near_full, live_title};
+
 /// Git's own advice for a commit subject line.
 const SUBJECT_LIMIT: usize = 72;
 /// About what fits in the session header next to its buttons.
@@ -330,7 +333,7 @@ fn compact(n: u64) -> String {
 }
 
 /// The header's context line, or `None` before omp first answered. "≈" because omp estimates
-/// what came after its last reply.
+/// what came after its last reply; "<1%" says that already.
 pub fn context_label(state: ContextState) -> Option<String> {
     match state {
         ContextState::NotRead => None,
@@ -340,13 +343,13 @@ pub fn context_label(state: ContextState) -> Option<String> {
             tokens,
             window: Some(window),
         }) => {
-            let percent = tokens.saturating_mul(100).saturating_add(window / 2) / window;
+            let percent = labels::context_percent(tokens, window);
             let shown = if percent == 0 && tokens > 0 {
                 "<1".to_string()
             } else {
-                percent.to_string()
+                format!("≈{percent}")
             };
-            Some(format!("Context ≈{shown}% of {}", compact(window)))
+            Some(format!("Context {shown}% of {}", compact(window)))
         }
         ContextState::Known(ContextReading {
             tokens,
@@ -646,7 +649,7 @@ mod tests {
             (ContextState::Unknown, Some("Context unknown")),
             (known(18_003, Some(200_000)), Some("Context ≈9% of 200k")),
             (known(18_003, Some(1_050_000)), Some("Context ≈2% of 1M")),
-            (known(100, Some(200_000)), Some("Context ≈<1% of 200k")),
+            (known(100, Some(200_000)), Some("Context <1% of 200k")),
             (known(0, Some(200_000)), Some("Context ≈0% of 200k")),
             (known(210_000, Some(200_000)), Some("Context ≈105% of 200k")),
             (known(18_003, None), Some("Context ≈18k tokens")),

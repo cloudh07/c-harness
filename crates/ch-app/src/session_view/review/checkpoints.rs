@@ -6,7 +6,9 @@ use gpui_kit::{ClickEvent, Context, Div, ParentElement, Styled, div, px};
 
 use super::{ROW_ICON, section};
 use crate::assets::{Icon, icon};
+use crate::driver;
 use crate::session_view::{Live, Phase, SessionView};
+use crate::view_model::age_label;
 use crate::widgets::{Tone, button, icon_button, muted};
 
 /// Enough to pick a recent one. Older ones stay in the list the runner keeps.
@@ -25,9 +27,10 @@ impl SessionView {
         let can_review = driver.can_review();
         let can_restore = driver.can_restore();
         let (shown, hidden) = newest_first(session.checkpoints(), SHOWN_CHECKPOINTS);
+        let now = driver::epoch_ms() / 1_000;
         let rows: Vec<Div> = shown
             .into_iter()
-            .map(|c| self.checkpoint_row(c, can_review, can_restore, cx))
+            .map(|c| self.checkpoint_row(c, now, can_review, can_restore, cx))
             .collect();
         Some(
             section(p, "Checkpoints")
@@ -39,15 +42,22 @@ impl SessionView {
         )
     }
 
+    /// `now` in seconds since the Unix epoch, like `checkpoint.at`.
     fn checkpoint_row(
         &self,
         checkpoint: &Checkpoint,
+        now: u64,
         can_review: bool,
         can_restore: bool,
         cx: &mut Context<Self>,
     ) -> Div {
         let p = self.palette;
         let turn = checkpoint.turn;
+        let note = format!(
+            "{} · {}",
+            kind_note(checkpoint.kind),
+            age_label(now, checkpoint.at)
+        );
         div()
             .flex()
             .items_center()
@@ -60,7 +70,7 @@ impl SessionView {
                     .flex_1()
                     .min_w_0()
                     .child(div().text_xs().child(format!("Checkpoint {turn}")))
-                    .child(muted(p, kind_note(checkpoint.kind))),
+                    .child(muted(p, note)),
             )
             .child(
                 icon_button(

@@ -13,8 +13,6 @@ const SAVE_WAIT_MS: u64 = 15_000;
 pub(super) struct Saves {
     /// The save that holds prompts, by request id, and when it went out.
     waiting: Option<(String, u64)>,
-    /// A save failed, so this runner is not asked again.
-    failed: bool,
 }
 
 impl Driver {
@@ -64,10 +62,11 @@ impl Driver {
         self.open.values().any(|kind| *kind == Request::Restore)
     }
 
-    /// Saves a checkpoint when the state change `before` to now ended a run.
+    /// Saves a checkpoint when the state change `before` to now ended a run. A save that
+    /// failed is not repeated; the next run's save holds its changes too.
     pub(super) fn save_after_run(&mut self, before: SessionState) {
         let ended = run_ended(before, self.session.state());
-        if !ended || self.closed || self.saves.failed || !self.session.checkpoints_on() {
+        if !ended || self.closed || !self.session.checkpoints_on() {
             return;
         }
         let id = self.next_id();
@@ -81,10 +80,10 @@ impl Driver {
     pub(super) fn on_checkpoint_answer(&mut self, kind: Request, frame: &RunnerFrame) {
         match kind {
             Request::Checkpoint => {
-                let (id, failed) = match frame {
-                    RunnerFrame::Checkpointed { id, .. } => (id, false),
-                    RunnerFrame::Error { id: Some(id), .. } => (id, true),
-                    _ => return,
+                let (RunnerFrame::Checkpointed { id, .. }
+                | RunnerFrame::Error { id: Some(id), .. }) = frame
+                else {
+                    return;
                 };
                 if self
                     .saves
@@ -94,7 +93,6 @@ impl Driver {
                 {
                     self.saves.waiting = None;
                 }
-                self.saves.failed |= failed;
             }
             // Done or refused, the tree may have changed, so the diff on screen is stale.
             Request::Restore => {
