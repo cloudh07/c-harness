@@ -223,27 +223,33 @@ fn evidence_item(evidence: &[Evidence], verify: &str, land_refused: bool) -> Lan
         return LandItem::new(NAME, Mark::Unknown, reason, false);
     };
     let command = &run.command;
+    // Checks run only in review, and a refused land leaves review, so a block there would last.
+    let fail = |why: String, again: &str| {
+        if land_refused {
+            LandItem::new(
+                NAME,
+                Mark::Fail,
+                format!("{why} The pull request will say so."),
+                false,
+            )
+        } else {
+            LandItem::new(NAME, Mark::Fail, format!("{why} {again}"), true)
+        }
+    };
     if !check_passed(run) {
-        let reason = format!(
-            "`{command}` {}. Fix the work, then run the checks again.",
-            check_outcome(run)
+        return fail(
+            format!("`{command}` {}.", check_outcome(run)),
+            "Fix the work, then run the checks again.",
         );
-        return LandItem::new(NAME, Mark::Fail, reason, true);
     }
     match (&run.tree_before, &run.tree_after) {
-        (Some(before), Some(after)) if before != after => LandItem::new(
-            NAME,
-            Mark::Fail,
-            format!("The work changed while `{command}` ran. {AGAIN}"),
-            true,
-        ),
+        (Some(before), Some(after)) if before != after => {
+            fail(format!("The work changed while `{command}` ran."), AGAIN)
+        }
         (Some(_), Some(_)) if land_refused => LandItem::new(
             NAME,
             Mark::Unknown,
-            format!(
-                "`{command}` passed, but the runner refused the last land. If the work changed \
-                 since the check, run the checks again."
-            ),
+            format!("`{command}` passed before the runner refused the last land."),
             false,
         ),
         (Some(_), Some(_)) => LandItem::new(
@@ -255,11 +261,9 @@ fn evidence_item(evidence: &[Evidence], verify: &str, land_refused: bool) -> Lan
             ),
             false,
         ),
-        _ => LandItem::new(
-            NAME,
-            Mark::Fail,
-            format!("The runner could not record which work `{command}` ran on. {AGAIN}"),
-            true,
+        _ => fail(
+            format!("The runner could not record which work `{command}` ran on."),
+            AGAIN,
         ),
     }
 }

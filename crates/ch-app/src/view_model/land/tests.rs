@@ -307,6 +307,36 @@ fn a_pass_turns_unknown_after_the_runner_refused_a_land() {
     );
 }
 
+/// Checks run only while the session is in review, and a refused land leaves review, so a check
+/// that blocked there would lock the session for good.
+#[test]
+fn a_bad_check_stops_blocking_after_the_runner_refused_a_land() {
+    let refused = land_failure(None);
+    for run in [
+        run(Some(1), Some("t1"), Some("t1")),
+        run(Some(0), Some("t1"), Some("t2")),
+        run(Some(0), None, None),
+    ] {
+        let checks = item(
+            &checklist(
+                &ready_settings(),
+                "s1",
+                "Fix it",
+                &[run],
+                Some(&refused),
+                None,
+            ),
+            "Checks",
+        );
+        assert_eq!(checks.mark, Mark::Fail, "{checks:?}");
+        assert!(!checks.blocks, "{checks:?}");
+        assert!(
+            checks.reason.ends_with("The pull request will say so."),
+            "{checks:?}"
+        );
+    }
+}
+
 #[test]
 fn failures_outside_the_land_do_not_touch_the_checklist() {
     let prompt = Failure {

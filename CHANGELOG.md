@@ -171,7 +171,10 @@ Notable changes to C-Harness. The format follows
   the work changed while the check ran, the runner never recorded which work it checked, the
   runner is too old to scan, the branch name is one git refuses or is the base branch, or the
   Landing settings are not finished. A session where no check has run still lands, and its pull
-  request says so. A refused secret scan still leaves Land anyway.
+  request says so. A refused secret scan still leaves Land anyway. Once the runner has refused a
+  land, a bad check no longer blocks the next try, since checks only run in review; the pull
+  request says what the check found. While the agent still works, the section says Land waits
+  for review.
 
 - `ch-runtime`: local worktrees are created locked, with the reason
   `c-harness session <session>`, at the commit their record names. `git worktree prune` no

@@ -178,6 +178,9 @@ impl SessionView {
             Some("Landing. The agent is stopped first, then the runner commits and pushes.")
         } else if driver.stopping() {
             Some("Stopping the agent.")
+        } else if !driver.closed() && !driver.can_land() && driver.runner_block().is_none() {
+            // The checklist can pass while the agent still works, so say why Land waits.
+            Some("Land is off until the session is ready for review.")
         } else {
             None
         };
