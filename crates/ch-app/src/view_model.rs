@@ -1,21 +1,17 @@
 //! What the views show, worked out without a window so it can be tested.
 
-use std::fmt::Write as _;
-
 use ch_core::{ContextReading, ContextState, SessionState, UsageTotals};
-use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
-
-use crate::settings::Settings;
+use ch_protocol::runner::Evidence;
 
 mod failure;
 mod labels;
+mod land;
 mod place;
 pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text, secret_rows};
 pub use labels::{age_label, context_near_full, live_title};
+pub use land::{Checklist, LAND_STAGE, LandItem, Mark, checklist, land_request, pr_link_allowed};
 pub use place::{Place, Sandbox, elide_middle};
 
-/// Git's own advice for a commit subject line.
-const SUBJECT_LIMIT: usize = 72;
 /// About what fits in the session header next to its buttons.
 const TITLE_LIMIT: usize = 80;
 
@@ -64,23 +60,6 @@ pub fn state_label(state: SessionState) -> &'static str {
     }
 }
 
-/// The first line of the first prompt, cut to fit a commit subject.
-pub fn commit_message(first_prompt: &str, session: &str) -> String {
-    let line = first_prompt
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or_default();
-    if line.is_empty() {
-        return format!("C-Harness session {session}");
-    }
-    if line.chars().count() <= SUBJECT_LIMIT {
-        return line.to_string();
-    }
-    let cut: String = line.chars().take(SUBJECT_LIMIT - 3).collect();
-    format!("{}...", cut.trim_end())
-}
-
 /// How a check ended and how long it took, such as `passed in 1.5s`.
 pub fn check_outcome(run: &Evidence) -> String {
     let outcome = match (run.timed_out, run.exit_code) {
@@ -95,31 +74,6 @@ pub fn check_outcome(run: &Evidence) -> String {
 
 pub fn check_passed(run: &Evidence) -> bool {
     !run.timed_out && run.exit_code == Some(0)
-}
-
-pub fn pr_body(session: &str, evidence: &[Evidence]) -> String {
-    let mut body = format!("Opened by C-Harness from session `{session}`.\n");
-    if evidence.is_empty() {
-        body.push_str("\nNo checks were run before landing.\n");
-        return body;
-    }
-    body.push_str("\nChecks run before landing:\n\n");
-    // Land holds the work to the last check, so a run on another tree checked earlier work.
-    let landed = evidence.last().and_then(still_tree);
-    for run in evidence {
-        let earlier = landed.is_some_and(|tree| still_tree(run) != Some(tree));
-        let note = if earlier { " (on earlier work)" } else { "" };
-        let _ = writeln!(body, "- `{}`: {}{note}", run.command, check_outcome(run));
-    }
-    body
-}
-
-/// The tree a check ran on, when the work stood still while it ran.
-fn still_tree(run: &Evidence) -> Option<&str> {
-    match (&run.tree_before, &run.tree_after) {
-        (Some(before), Some(after)) if before == after => Some(before),
-        _ => None,
-    }
 }
 
 /// An empty port means the SSH default.
@@ -153,58 +107,6 @@ pub fn last_chars(text: &str, max: usize) -> (&str, bool) {
         Some((0, _)) | None => (text, false),
         Some((start, _)) => (&text[start..], true),
     }
-}
-
-pub fn land_request(
-    settings: &Settings,
-    session: &str,
-    first_prompt: &str,
-    token: String,
-    evidence: &[Evidence],
-    acknowledged_tree: Option<String>,
-) -> LandRequest {
-    let repo = settings.github_repo.trim().to_string();
-    let message = commit_message(first_prompt, session);
-    LandRequest {
-        id: String::new(),
-        branch: branch_for(session),
-        message: message.clone(),
-        author: GitAuthor {
-            name: settings.author_name.trim().to_string(),
-            email: settings.author_email.trim().to_string(),
-        },
-        remote_url: format!("https://github.com/{repo}.git"),
-        token: Some(token),
-        pull_request: Some(PullRequestSpec {
-            repo,
-            base: settings.base_branch.trim().to_string(),
-            title: message,
-            body: pr_body(session, evidence),
-        }),
-        acknowledged_tree,
-    }
-}
-
-/// Whether a pull request link from the runner is safe to open: a pull request page in the
-/// repository these settings land into, and nothing else.
-pub fn pr_link_allowed(url: &str, github_repo: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://github.com/") else {
-        return false;
-    };
-    let mut parts = rest.split('/');
-    let (Some(owner), Some(name), Some("pull"), Some(number), None) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return false;
-    };
-    let repo = format!("{owner}/{name}");
-    repo.eq_ignore_ascii_case(github_repo.trim())
-        && !number.is_empty()
-        && number.bytes().all(|b| b.is_ascii_digit())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,89 +315,6 @@ mod tests {
     }
 
     #[test]
-    fn commit_subject_is_the_first_line_cut_on_a_char_boundary() {
-        assert_eq!(
-            commit_message("\n  Fix the parser  \nmore", "s1"),
-            "Fix the parser"
-        );
-        assert_eq!(commit_message("   \n", "s1"), "C-Harness session s1");
-
-        let long = "Sửa lỗi ".repeat(20);
-        let subject = commit_message(&long, "s1");
-        assert!(subject.chars().count() <= SUBJECT_LIMIT, "{subject}");
-        assert!(subject.ends_with("..."));
-    }
-
-    #[test]
-    fn pr_body_lists_each_check_and_its_outcome() {
-        let body = pr_body(
-            "s1",
-            &[
-                evidence("cargo test", Some(0), false),
-                evidence("cargo clippy", Some(101), false),
-                evidence("npm test", None, true),
-            ],
-        );
-        assert!(body.contains("- `cargo test`: passed in 1.5s"), "{body}");
-        assert!(body.contains("failed with exit code 101"), "{body}");
-        assert!(body.contains("- `npm test`: timed out"), "{body}");
-        assert!(pr_body("s1", &[]).contains("No checks were run"));
-    }
-
-    #[test]
-    fn pr_body_marks_checks_that_ran_on_earlier_work() {
-        let on = |command: &str, tree: &str| Evidence {
-            tree_before: Some(tree.into()),
-            tree_after: Some(tree.into()),
-            ..evidence(command, Some(0), false)
-        };
-        let body = pr_body("s1", &[on("cargo test", "t1"), on("cargo clippy", "t2")]);
-        assert!(
-            body.contains("- `cargo test`: passed in 1.5s (on earlier work)\n"),
-            "{body}"
-        );
-        assert!(
-            body.contains("- `cargo clippy`: passed in 1.5s\n"),
-            "{body}"
-        );
-    }
-
-    #[test]
-    fn land_request_targets_the_configured_repository() {
-        let settings = Settings {
-            author_name: " Ada ".into(),
-            author_email: "ada@example.com".into(),
-            github_repo: "example/demo".into(),
-            base_branch: "trunk".into(),
-            ..Settings::default()
-        };
-        let request = land_request(&settings, "s1", "Fix it", "tok".into(), &[], None);
-        assert_eq!(request.acknowledged_tree, None, "a plain land is scanned");
-        assert_eq!(request.branch, "ch/s1");
-        assert_eq!(request.message, "Fix it");
-        assert_eq!(request.author.name, "Ada");
-        assert_eq!(request.remote_url, "https://github.com/example/demo.git");
-        assert_eq!(request.token.as_deref(), Some("tok"));
-        let pr = request.pull_request.unwrap();
-        assert_eq!(pr.repo, "example/demo");
-        assert_eq!(pr.base, "trunk");
-        assert_eq!(pr.title, "Fix it");
-    }
-
-    #[test]
-    fn land_anyway_carries_the_tree_the_person_looked_at() {
-        let request = land_request(
-            &Settings::default(),
-            "s1",
-            "Fix it",
-            "tok".into(),
-            &[],
-            Some("4b825dc".into()),
-        );
-        assert_eq!(request.acknowledged_tree.as_deref(), Some("4b825dc"));
-    }
-
-    #[test]
     fn check_outcome_reads_like_a_sentence() {
         assert_eq!(
             check_outcome(&evidence("t", Some(0), false)),
@@ -523,43 +342,6 @@ mod tests {
         assert_eq!(last_chars("ăâđ", 2), ("âđ", true));
         assert_eq!(last_chars("abc", 0), ("", true));
         assert_eq!(last_chars("", 0), ("", false));
-    }
-
-    #[test]
-    fn only_pull_request_pages_of_the_target_repo_open() {
-        let repo = "Example/Demo";
-        assert!(pr_link_allowed(
-            "https://github.com/example/demo/pull/12",
-            repo
-        ));
-        assert!(!pr_link_allowed(
-            "https://github.com/example/other/pull/12",
-            repo
-        ));
-        assert!(!pr_link_allowed(
-            "http://github.com/example/demo/pull/12",
-            repo
-        ));
-        assert!(!pr_link_allowed(
-            "https://github.com.evil.io/example/demo/pull/1",
-            repo
-        ));
-        assert!(!pr_link_allowed(
-            "https://github.com/example/demo/pull/12/files",
-            repo
-        ));
-        assert!(!pr_link_allowed(
-            "https://github.com/example/demo/pull/",
-            repo
-        ));
-        assert!(!pr_link_allowed(
-            "https://github.com/example/demo/pull/1?x=y",
-            repo
-        ));
-        assert!(!pr_link_allowed(
-            "https://github.com/example/demo/issues/1",
-            repo
-        ));
     }
 
     const STAT: &str = " src/main.rs  | 12 ++++++++----\n README.md    |  3 +++\n logo.png     | Bin 0 -> 1234 bytes\n 3 files changed, 11 insertions(+), 4 deletions(-)\n";

@@ -159,8 +159,19 @@ Notable changes to C-Harness. The format follows
 - `ch-protocol`: `ch_land` takes `acknowledged_tree`, and `ch_error` can carry `secret_scan`:
   the tree that was scanned, up to 50 findings, how many more there were, and whether the
   change was too large to read.
+- `ch-app`: the Land section opens with a checklist: Checks, Secret scan, Branch and Pull
+  request. Each reads pass, fail or unknown with the reason in words, and a screen reader reads
+  the same. The secret scan reads unknown until you press Land, because the runner scans during
+  the land. Below the list are the pull request title and description as they will be sent.
+  They are not edited in the app; edit them on GitHub once the pull request is open.
 
 ### Changed
+
+- `ch-app`: Land is off while a checklist item blocks it: the last check failed or timed out,
+  the work changed while the check ran, the runner never recorded which work it checked, the
+  runner is too old to scan, the branch name is one git refuses or is the base branch, or the
+  Landing settings are not finished. A session where no check has run still lands, and its pull
+  request says so. A refused secret scan still leaves Land anyway.
 
 - `ch-runtime`: local worktrees are created locked, with the reason
   `c-harness session <session>`, at the commit their record names. `git worktree prune` no
