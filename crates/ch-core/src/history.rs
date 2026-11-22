@@ -297,6 +297,13 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_of_exactly_the_limit_is_kept_whole() {
+        let full = "é".repeat(MAX_TURN_CHARS);
+        let messages = [user(json!(full.clone())), assistant(json!(full.clone()))];
+        assert_eq!(turns(&messages), [pair(&full, &full)]);
+    }
+
+    #[test]
     fn keeps_only_the_latest_turns() {
         let mut history = History::default();
         for n in 0..MAX_HISTORY_TURNS + 3 {

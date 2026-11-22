@@ -134,10 +134,14 @@ impl Usage {
             ..UsageTotals::default()
         };
         for row in &self.rows {
-            totals.input += row.input.unwrap_or(0);
-            totals.output += row.output.unwrap_or(0);
-            totals.cache_read += row.cache_read.unwrap_or(0);
-            totals.cache_write += row.cache_write.unwrap_or(0);
+            totals.input = totals.input.saturating_add(row.input.unwrap_or(0));
+            totals.output = totals.output.saturating_add(row.output.unwrap_or(0));
+            totals.cache_read = totals
+                .cache_read
+                .saturating_add(row.cache_read.unwrap_or(0));
+            totals.cache_write = totals
+                .cache_write
+                .saturating_add(row.cache_write.unwrap_or(0));
             if let Some(cost) = row.cost_usd {
                 totals.cost_usd = Some(totals.cost_usd.unwrap_or(0.0) + cost);
             }
@@ -318,6 +322,21 @@ mod tests {
         assert_eq!(gaps.cost_usd, Some(0.25));
         assert!(!gaps.tokens_complete);
         assert!(!gaps.cost_complete);
+    }
+
+    #[test]
+    fn totals_stop_at_the_largest_count_instead_of_overflowing() {
+        let mut row = UsageRow::from_turn_end(1, 1, &turn_end("stop", &priced(1, 1, 0.0)));
+        row.input = Some(u64::MAX);
+        row.output = Some(u64::MAX);
+        row.cache_read = Some(u64::MAX);
+        row.cache_write = Some(u64::MAX);
+        let totals = Usage::with_rows(vec![row.clone(), row]).totals();
+        assert_eq!((totals.input, totals.output), (u64::MAX, u64::MAX));
+        assert_eq!(
+            (totals.cache_read, totals.cache_write),
+            (u64::MAX, u64::MAX)
+        );
     }
 
     #[test]

@@ -63,6 +63,11 @@ impl ContextMeter {
         }
     }
 
+    /// omp is gone, so no `auto_compaction_end` will come.
+    pub fn omp_ended(&mut self) {
+        self.compacting = false;
+    }
+
     /// Folds in one omp frame. Returns `true` when the app should send `get_session_stats` now:
     /// once omp is ready, after each turn and after a compaction.
     pub fn on_omp(&mut self, frame: &Value) -> bool {
@@ -140,7 +145,7 @@ pub fn compaction_notice(frame: &Value) -> Option<Notice> {
                 "Context compaction was stopped.".to_string()
             } else if let Some(error) = text("errorMessage") {
                 format!(
-                    "Context compaction failed: {}",
+                    "Context compaction failed ({}).",
                     clip(&redact_secrets(error))
                 )
             } else if flag("skipped") {
@@ -321,6 +326,21 @@ mod tests {
     }
 
     #[test]
+    fn omp_ending_mid_compaction_stops_showing_compacting() {
+        let mut meter = ContextMeter::default();
+        meter.on_omp(&stats(&json!({ "tokens": 9 })));
+        meter.on_omp(&json!({ "type": "auto_compaction_start" }));
+        meter.omp_ended();
+        assert_eq!(
+            meter.state(),
+            ContextState::Known(ContextReading {
+                tokens: 9,
+                window: None,
+            })
+        );
+    }
+
+    #[test]
     fn compaction_notices_say_what_happened() {
         let cases = [
             (
@@ -348,7 +368,7 @@ mod tests {
                     "type": "auto_compaction_end", "aborted": false, "willRetry": true,
                     "errorMessage": "rate limited",
                 }),
-                "Context compaction failed: rate limited omp will retry.",
+                "Context compaction failed (rate limited). omp will retry.",
             ),
         ];
         for (frame, message) in cases {
@@ -371,7 +391,7 @@ mod tests {
             "{}",
             notice.message
         );
-        assert!(notice.message.ends_with('…'));
+        assert!(notice.message.ends_with("…)."), "{}", notice.message);
 
         let key = format!("sk-ant-api03-{}", "A".repeat(40));
         let notice = compaction_notice(&json!({

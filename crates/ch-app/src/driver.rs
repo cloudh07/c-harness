@@ -369,6 +369,7 @@ impl Driver {
             RunnerLine::Runner(RunnerFrame::Stopped { .. } | RunnerFrame::OmpExited { .. }) => {
                 self.omp = OmpState::Ended;
                 self.queued_prompt = None;
+                self.context.omp_ended();
             }
             RunnerLine::Omp(frame) => {
                 self.usage.on_omp((self.clock)(), frame);

@@ -77,7 +77,8 @@ Notable changes to C-Harness. The format follows
   writing it.
 - `ch-app`: the session header shows how full omp's context window is, as a share of the
   window, read with `get_session_stats` after each turn and after each compaction. Right after
-  a compaction omp has no count yet, which is shown as "Context unknown", never as zero.
+  a compaction omp has no count yet, which is shown as "Context unknown", never as zero. When
+  omp ends in the middle of a compaction, the header stops saying it is compacting.
 - `ch-core`: omp's automatic compaction shows as a notice that says whether it finished, was
   stopped, was skipped or failed, and whether omp will retry. A newer compaction notice replaces
   the older one. The transcript keeps the compaction outcome but not omp's summary of the

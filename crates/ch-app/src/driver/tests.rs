@@ -153,6 +153,16 @@ fn each_turn_end_reads_the_context_and_keeps_it_out_of_the_transcript() {
 }
 
 #[test]
+fn omp_exiting_mid_compaction_stops_showing_compacting() {
+    let mut rig = Rig::new();
+    rig.say(&json!({"type":"auto_compaction_start"}));
+    rig.pump_until("compacting", |d, _| d.context() == ContextState::Compacting);
+    rig.say(&json!({"type":"ch_omp_exited","exit_code":1,"stderr_tail":[]}));
+    rig.pump_until("omp gone", |d, _| d.context() != ContextState::Compacting);
+    assert_eq!(rig.driver.context(), ContextState::NotRead);
+}
+
+#[test]
 fn no_stats_request_once_omp_is_asked_to_stop() {
     let mut rig = Rig::new();
     assert!(rig.driver.stop());
