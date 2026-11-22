@@ -71,8 +71,8 @@ fn row(p: Palette, item: &LandItem) -> AnimationElement<Stateful<Div>> {
         )
 }
 
-/// The title and description exactly as the land sends them. They come from the session, so
-/// they are shown rather than edited here; GitHub edits them once the pull request is open.
+/// The title as the land sends it and the start of the description. They come from the session,
+/// so they are shown rather than edited here; GitHub edits them once the pull request is open.
 pub(super) fn pr_preview(p: Palette, list: &Checklist) -> Div {
     let (body, cut) = first_chars(&list.body, SHOWN_BODY);
     let body = if cut {
@@ -86,7 +86,8 @@ pub(super) fn pr_preview(p: Palette, list: &Checklist) -> Div {
         .gap_1()
         .child(muted(
             p,
-            "The pull request opens with this text. Edit it on GitHub once it is open.",
+            "The pull request opens with this title, and its description starts like this. \
+             Edit them on GitHub once it is open.",
         ))
         .child(
             div()

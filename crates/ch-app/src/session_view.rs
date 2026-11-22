@@ -483,13 +483,7 @@ impl SessionView {
         if !live.driver.can_land() {
             return Ok(());
         }
-        let problems = self.settings.land_problems();
-        if !problems.is_empty() {
-            return Err(format!(
-                "Finish the Landing settings first. {}",
-                list(&problems)
-            ));
-        }
+        // Unfinished Landing settings block here too, through the Pull request row.
         let session = live.driver.session();
         let blocked = checklist(
             &self.settings,

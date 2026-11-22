@@ -193,11 +193,7 @@ pub fn checklist(
     let branch = branch_for(session);
     let title = commit_message(first_prompt, session);
     let items = vec![
-        evidence_item(
-            evidence,
-            &settings.verify,
-            failure.is_some() && scan.is_none(),
-        ),
+        evidence_item(evidence, &settings.verify, failure.is_some()),
         scan_item(runner, scan),
         branch_item(&branch, &settings.base_branch),
         pr_item(settings, &title),
@@ -210,8 +206,8 @@ pub fn checklist(
     }
 }
 
-/// The last check stands for the work. The runner holds a land to it too, but only while the
-/// runner that ran it is alive, so a pass here never promises the work is unchanged.
+/// The last check stands for the work. The app never sees the work itself, so a passed check
+/// reads unknown: it says what ran, not what the land will carry.
 fn evidence_item(evidence: &[Evidence], verify: &str, land_refused: bool) -> LandItem {
     const NAME: &str = "Checks";
     let Some(run) = evidence.last() else {
@@ -254,9 +250,10 @@ fn evidence_item(evidence: &[Evidence], verify: &str, land_refused: bool) -> Lan
         ),
         (Some(_), Some(_)) => LandItem::new(
             NAME,
-            Mark::Pass,
+            Mark::Unknown,
             format!(
-                "`{command}` {}. If the work changed since, run the checks again.",
+                "`{command}` {} on the work as it was then. If the work changed since, run the \
+                 checks again.",
                 check_outcome(run)
             ),
             false,
@@ -342,7 +339,12 @@ fn branch_item(branch: &str, base: &str) -> LandItem {
             true,
         );
     }
-    LandItem::new(NAME, Mark::Pass, format!("Pushes `{branch}`."), false)
+    LandItem::new(
+        NAME,
+        Mark::Pass,
+        format!("`{branch}` is a name git accepts, and it is not the base branch."),
+        false,
+    )
 }
 
 /// Why `git check-ref-format --branch` would refuse `name`, or a name it allows that is never
@@ -399,7 +401,8 @@ fn pr_item(settings: &Settings, title: &str) -> LandItem {
         NAME,
         Mark::Pass,
         format!(
-            "Opens into `{}` on {}, committed as {}.",
+            "Opens into `{}` on {}, committed as {}. The GitHub token is checked when you press \
+             Land.",
             settings.base_branch.trim(),
             settings.github_repo.trim(),
             settings.author_name.trim()

@@ -200,9 +200,25 @@ fn a_clean_land_has_no_blockers() {
     let marks: Vec<Mark> = list.items.iter().map(|item| item.mark).collect();
     assert_eq!(
         marks,
-        [Mark::Pass, Mark::Unknown, Mark::Pass, Mark::Pass],
-        "the scan stays unknown until Land runs it"
+        [Mark::Unknown, Mark::Unknown, Mark::Pass, Mark::Pass],
+        "the app sees neither the work nor the scan before Land"
     );
+}
+
+/// The app keeps the tree a check ran on but never the tree the land will carry, so it cannot
+/// prove a passed check still holds.
+#[test]
+fn a_passed_check_reads_unknown_and_does_not_block() {
+    let list = checklist(&ready_settings(), "s1", "Fix it", &[passed()], None, None);
+    let checks = item(&list, "Checks");
+    assert_eq!(checks.mark, Mark::Unknown);
+    assert!(!checks.blocks);
+    assert_eq!(
+        checks.reason,
+        "`cargo test` passed in 1.5s on the work as it was then. If the work changed since, run \
+         the checks again."
+    );
+    assert_eq!(list.blocked(), None);
 }
 
 #[test]
@@ -254,7 +270,9 @@ fn only_the_last_check_counts() {
         None,
         None,
     );
-    assert_eq!(item(&list, "Checks").mark, Mark::Pass);
+    let checks = item(&list, "Checks");
+    assert_eq!(checks.mark, Mark::Unknown);
+    assert!(!checks.blocks);
 }
 
 #[test]
@@ -308,32 +326,33 @@ fn a_pass_turns_unknown_after_the_runner_refused_a_land() {
 }
 
 /// Checks run only while the session is in review, and a refused land leaves review, so a check
-/// that blocked there would lock the session for good.
+/// that blocked there would lock the session for good. A scan refusal counts too: a push refusal
+/// lets a bad check through, and the retry can then stop on the scan.
 #[test]
 fn a_bad_check_stops_blocking_after_the_runner_refused_a_land() {
-    let refused = land_failure(None);
-    for run in [
-        run(Some(1), Some("t1"), Some("t1")),
-        run(Some(0), Some("t1"), Some("t2")),
-        run(Some(0), None, None),
-    ] {
-        let checks = item(
-            &checklist(
+    for refused in [land_failure(None), land_failure(Some(scan(1, 0, false)))] {
+        for run in [
+            run(Some(1), Some("t1"), Some("t1")),
+            run(Some(0), Some("t1"), Some("t2")),
+            run(Some(0), None, None),
+        ] {
+            let list = checklist(
                 &ready_settings(),
                 "s1",
                 "Fix it",
                 &[run],
                 Some(&refused),
                 None,
-            ),
-            "Checks",
-        );
-        assert_eq!(checks.mark, Mark::Fail, "{checks:?}");
-        assert!(!checks.blocks, "{checks:?}");
-        assert!(
-            checks.reason.ends_with("The pull request will say so."),
-            "{checks:?}"
-        );
+            );
+            let checks = item(&list, "Checks");
+            assert_eq!(checks.mark, Mark::Fail, "{checks:?}");
+            assert!(!checks.blocks, "{checks:?}");
+            assert!(
+                checks.reason.ends_with("The pull request will say so."),
+                "{checks:?}"
+            );
+            assert_eq!(list.blocked(), None, "{refused:?}");
+        }
     }
 }
 
@@ -351,7 +370,11 @@ fn failures_outside_the_land_do_not_touch_the_checklist() {
         Some(&prompt),
         None,
     );
-    assert_eq!(item(&list, "Checks").mark, Mark::Pass);
+    let checks = item(&list, "Checks");
+    assert!(
+        checks.reason.contains("on the work as it was then"),
+        "{checks:?}"
+    );
     assert_eq!(item(&list, "Secret scan").mark, Mark::Unknown);
 }
 
@@ -412,11 +435,9 @@ fn a_refused_scan_fails_but_leaves_land_anyway_open() {
         assert_eq!(scan.mark, Mark::Fail);
         assert!(!scan.blocks);
         assert!(scan.reason.contains(expected), "{scan:?}");
-        assert_eq!(
-            item(&list, "Checks").mark,
-            Mark::Pass,
-            "a scan refusal says nothing about the checks"
-        );
+        let checks = item(&list, "Checks");
+        assert_eq!(checks.mark, Mark::Unknown, "{checks:?}");
+        assert!(!checks.blocks);
         assert_eq!(list.blocked(), None);
     }
 }
@@ -435,9 +456,14 @@ fn the_session_branch_passes() {
         "Branch",
     );
     assert_eq!(branch.mark, Mark::Pass);
-    assert!(branch.reason.contains("`ch/s1700000000000`"), "{branch:?}");
+    assert_eq!(
+        branch.reason,
+        "`ch/s1700000000000` is a name git accepts, and it is not the base branch."
+    );
 }
 
+/// Each name below was run through `git check-ref-format --branch` (git 2.56). `@` passes there
+/// only because git reads it as the current branch, which the runner refuses too.
 #[test]
 fn bad_branch_names_fail_before_git_sees_them() {
     for bad in [
@@ -447,6 +473,7 @@ fn bad_branch_names_fail_before_git_sees_them() {
         "@",
         "ch/a b",
         "ch/a\tb",
+        "ch/a\u{1}",
         "ch/a\u{7f}",
         "ch/a~1",
         "ch/a^",
@@ -461,14 +488,25 @@ fn bad_branch_names_fail_before_git_sees_them() {
         "/ch",
         "ch/",
         "ch.",
+        ".ch",
         "ch/.hidden",
         "ch/a.lock",
+        "ch/a.lock/b",
     ] {
         let branch = branch_item(bad, "main");
         assert_eq!(branch.mark, Mark::Fail, "{bad:?}");
         assert!(branch.blocks, "{bad:?}");
     }
-    for good in ["ch/s1", "feature/a.b", "ch/s1-retry", "ch/sửa"] {
+    for good in [
+        "ch/s1",
+        "c-harness/abc123",
+        "feature/a.b",
+        "ch/s1-retry",
+        "a-b_c",
+        "v1.2",
+        "a@b",
+        "ch/sửa",
+    ] {
         assert_eq!(branch_item(good, "main").mark, Mark::Pass, "{good:?}");
     }
 }
@@ -508,7 +546,8 @@ fn a_ready_pull_request_names_where_it_goes() {
     assert_eq!(pr.mark, Mark::Pass);
     assert_eq!(
         pr.reason,
-        "Opens into `main` on example/demo, committed as Ada."
+        "Opens into `main` on example/demo, committed as Ada. The GitHub token is checked when \
+         you press Land."
     );
 }
 
@@ -533,7 +572,8 @@ fn each_row_reads_as_name_word_and_reason() {
     let pr = pr_item(&ready_settings(), "Fix it");
     assert_eq!(
         pr.spoken(),
-        "Pull request: Pass. Opens into `main` on example/demo, committed as Ada."
+        "Pull request: Pass. Opens into `main` on example/demo, committed as Ada. The GitHub \
+         token is checked when you press Land."
     );
     assert_eq!(Mark::Fail.word(), "Fail");
     assert_eq!(Mark::Unknown.word(), "Unknown");
