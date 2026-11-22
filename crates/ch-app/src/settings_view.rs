@@ -532,7 +532,7 @@ impl SettingsView {
             .child(field(
                 p,
                 "Cost cap per session",
-                Some("In dollars. Once a session's priced turns reach it, the run is aborted. Turns omp cannot price are not counted. Leave empty for no cap."),
+                Some("In dollars. Checked when a turn ends, so one long turn can go past it. Once a session's priced turns reach it, an abort goes to the running prompt and no new prompt goes out until you raise or clear it. Turns omp cannot price are not counted. Leave empty for no cap."),
                 Input::new(&f.cost_cap),
             ))
     }

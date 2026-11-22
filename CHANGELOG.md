@@ -159,19 +159,20 @@ Notable changes to C-Harness. The format follows
 - `ch-protocol`: `ch_land` takes `acknowledged_tree`, and `ch_error` can carry `secret_scan`:
   the tree that was scanned, up to 50 findings, how many more there were, and whether the
   change was too large to read.
-- `ch-app`: an optional cost cap per session in Settings, in dollars and off by default. Once
-  the turns omp priced reach it, the running prompt is aborted, the session says why, and no
-  new prompt goes out until you raise or clear the cap. Turns omp could not price are not
-  counted, and the header says how many there are.
+- `ch-app`: an optional cost cap per session in Settings, in dollars and off by default. It is
+  checked when a turn ends, so one long turn can go past it. Once the turns omp priced reach
+  it, an abort goes to the running prompt, the session says why, and no new prompt goes out
+  until you raise or clear the cap; the line under the prompt says so while the cap alone holds
+  it back. Turns omp could not price are not counted, and the header says how many there are.
 - `ch-app`: the session header shows the cost as its own item. A session with no priced turn
   reads "Cost unknown", never $0, and turns omp could not price are named beside the sum
   ("$0.12 + 2 unpriced turns"). With a cap set it reads "$1.50 of $5.00 cap", in the warning
   color once the cap is reached.
 - `ch-app`: the usage file also keeps omp's own session totals after each turn and a line for
   each passing Verify the app asked for. A check result the app did not ask for is not kept.
-- `ch-core`: the usage file read back as totals by token kind and by model, the cost per
-  passing Verify, and a check of the summed turns against omp's totals that names each turn
-  where they differ. `cargo run -p ch-core --example usage_report -- <usage folder>` prints
+- `ch-core`: the usage file read back as totals by token kind and by model, the cost up to each
+  session's last passing Verify (averaged over those sessions), and a check of the summed turns
+  against omp's totals that names each turn where they differ, without guessing why. `cargo run -p ch-core --example usage_report -- <usage folder>` prints
   the report, or says it was not run when no file holds a turn.
 
 ### Changed

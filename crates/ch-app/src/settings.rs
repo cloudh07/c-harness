@@ -572,6 +572,12 @@ mod tests {
     }
 
     #[test]
+    fn a_file_from_before_the_cost_cap_has_no_cap() {
+        let old: Settings = serde_json::from_str(r#"{"repo": "/work/app"}"#).expect("parses");
+        assert_eq!(old.cost_cap_cents, None);
+    }
+
+    #[test]
     fn a_file_from_before_themes_follows_the_system() {
         let old: Settings = serde_json::from_str(r#"{"repo": "/work/app"}"#).expect("parses");
         assert_eq!(old.theme, ThemePref::System);

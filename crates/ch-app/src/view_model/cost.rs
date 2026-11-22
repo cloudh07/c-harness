@@ -2,6 +2,8 @@
 
 use ch_core::{UsageTotals, dollars};
 
+use crate::driver::CapReached;
+
 const CAP_FORMAT: &str =
     "Write the cost cap in dollars, like 5 or 2.50. Leave it empty for no cap.";
 
@@ -44,11 +46,24 @@ pub fn cap_text(cents: u32) -> String {
     format!("${}.{:02}", cents / 100, cents % 100)
 }
 
-/// What the session says when its priced turns reach the cap.
-pub fn cap_stopped(cents: u32) -> String {
+/// What the session says when its priced turns reach the cap. It claims only what was sent.
+pub fn cap_stopped(reached: CapReached) -> String {
+    let abort = if reached.abort_sent {
+        " Sent an abort to the running prompt."
+    } else {
+        ""
+    };
     format!(
-        "This session reached its {} cost cap. A running prompt is aborted and no new one is \
-         sent until you raise or clear the cap in Settings.",
+        "This session reached its {} cost cap.{abort} No new prompt is sent until you raise or \
+         clear the cap in Settings.",
+        cap_text(reached.cents)
+    )
+}
+
+/// The composer's lasting note while the session is held at its cap.
+pub fn cap_hint(cents: u32) -> String {
+    format!(
+        "At the {} cost cap: raise or clear it in Settings to send a prompt.",
         cap_text(cents)
     )
 }
@@ -187,11 +202,21 @@ mod tests {
 
     #[test]
     fn the_cap_message_names_the_cap_and_the_way_on() {
-        let text = cap_stopped(500);
-        assert!(text.contains("$5.00 cost cap"), "{text}");
-        assert!(
-            text.contains("raise or clear the cap in Settings"),
-            "{text}"
-        );
+        for abort_sent in [true, false] {
+            let text = cap_stopped(CapReached {
+                cents: 500,
+                abort_sent,
+            });
+            assert!(text.contains("$5.00 cost cap"), "{text}");
+            assert!(
+                text.contains("raise or clear the cap in Settings"),
+                "{text}"
+            );
+            assert_eq!(text.contains("Sent an abort"), abort_sent, "{text}");
+            assert!(!text.contains("Aborted"), "{text}");
+        }
+        let hint = cap_hint(1250);
+        assert!(hint.starts_with("At the $12.50 cost cap"), "{hint}");
+        assert!(hint.contains("Settings"), "{hint}");
     }
 }

@@ -28,7 +28,8 @@ pub use history::{
     read_page,
 };
 pub use ledger_report::{
-    Gap, LedgerLine, LedgerMark, OmpTotals, Reading, SessionLedger, dollars, reconcile, report,
+    COST_TOLERANCE_USD, Gap, LedgerLine, LedgerMark, OmpTotals, Reading, SessionLedger, dollars,
+    reconcile, report,
 };
 pub use redact::{MASK, redact_secrets};
 pub use risk::{Assessment, Risk, classify};

@@ -23,6 +23,7 @@ mod cost;
 mod first_reply;
 mod history;
 
+pub use cost::CapReached;
 pub use first_reply::FIRST_REPLY_MS;
 use history::Earlier;
 pub use history::EarlierTurns;
@@ -196,10 +197,15 @@ impl Driver {
     /// Whether a prompt sent now would start a run. A restore or the save of the last run
     /// must finish first, or the agent would work on a tree that is about to change.
     pub fn can_prompt(&self) -> bool {
+        self.cap_hit.is_none() && self.ready_for_prompt()
+    }
+
+    /// Whether a prompt could go out if the session were not held at its cost cap.
+    fn ready_for_prompt(&self) -> bool {
         if self.closed || self.omp != OmpState::Running || self.loading_history() {
             return false;
         }
-        if self.restoring() || self.saving_checkpoint() || self.cap_hit.is_some() {
+        if self.restoring() || self.saving_checkpoint() {
             return false;
         }
         match self.session.state() {

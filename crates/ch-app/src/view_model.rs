@@ -11,7 +11,7 @@ mod cost;
 mod failure;
 mod labels;
 mod place;
-pub use cost::{cap_stopped, cap_text, cost_label, parse_cap};
+pub use cost::{cap_hint, cap_stopped, cap_text, cost_label, parse_cap};
 pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text, secret_rows};
 pub use labels::{age_label, context_near_full, live_title};
 pub use place::{Place, Sandbox, elide_middle};

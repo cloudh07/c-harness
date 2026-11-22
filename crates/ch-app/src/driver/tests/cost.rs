@@ -32,6 +32,10 @@ fn turn(rig: &mut Rig, cost: Option<f64>) {
     rig.pump_until("the turn", |d, _| d.usage().rows().len() == count + 1);
 }
 
+fn hit(cents: u32, abort_sent: bool) -> CapReached {
+    CapReached { cents, abort_sent }
+}
+
 fn aborts(rig: &Rig) -> usize {
     of_type(&rig.sent(), "abort").len()
 }
@@ -53,13 +57,22 @@ fn reaching_the_cap_aborts_once_and_holds_prompts_until_it_is_raised() {
 
     assert_eq!(
         rig.driver.enforce_cost_cap(Some(29)),
-        Some(29),
+        Some(hit(29, true)),
         "at the cap"
     );
     rig.pump_until("the abort", |_, sent| !of_type(sent, "abort").is_empty());
     assert_eq!(rig.driver.enforce_cost_cap(Some(29)), None, "said once");
     assert_eq!(rig.driver.cap_hit(), Some(29));
-    assert!(rig.driver.log().any(|line| line.contains("cost cap")));
+    assert_eq!(
+        rig.driver.held_at_cap(),
+        None,
+        "the run, not the cap, holds prompts"
+    );
+    assert!(
+        rig.driver
+            .log()
+            .any(|line| line.contains("Sent an abort") && line.contains("cost cap"))
+    );
 
     rig.say(&json!({"type":"session_settled"}));
     rig.pump_until("review", |d, _| {
@@ -67,15 +80,17 @@ fn reaching_the_cap_aborts_once_and_holds_prompts_until_it_is_raised() {
     });
     assert_eq!(rig.driver.enforce_cost_cap(Some(29)), None);
     assert!(!rig.driver.can_prompt(), "held at the cap");
+    assert_eq!(rig.driver.held_at_cap(), Some(29));
     assert_eq!(aborts(&rig), 1, "{:?}", rig.sent());
 
     assert_eq!(rig.driver.enforce_cost_cap(Some(30)), None, "raised");
     assert_eq!(rig.driver.cap_hit(), None);
+    assert_eq!(rig.driver.held_at_cap(), None);
     assert!(rig.driver.can_prompt());
     assert_eq!(
         rig.driver.enforce_cost_cap(Some(29)),
-        Some(29),
-        "lowered again"
+        Some(hit(29, false)),
+        "lowered again, with no run to abort"
     );
     assert!(!rig.driver.can_prompt());
     assert_eq!(rig.driver.enforce_cost_cap(None), None, "cleared");
@@ -101,6 +116,59 @@ fn below_the_cap_nothing_is_aborted() {
 }
 
 #[test]
+fn turns_that_add_up_to_the_cap_reach_it() {
+    // Summed as f64, 0.7 + 0.1 falls just short of 0.8 and 0.1 + 0.2 lands just past 0.3.
+    for (costs, cents) in [([0.7, 0.1], 80), ([0.1, 0.2], 30)] {
+        let mut rig = Rig::new();
+        running(&mut rig);
+        for cost in costs {
+            turn(&mut rig, Some(cost));
+        }
+        assert_eq!(
+            rig.driver.enforce_cost_cap(Some(cents)),
+            Some(hit(cents, true)),
+            "{costs:?}"
+        );
+    }
+}
+
+#[test]
+fn a_sent_stop_gets_no_abort_on_top() {
+    let mut rig = Rig::new();
+    running(&mut rig);
+    turn(&mut rig, Some(0.3));
+    assert!(rig.driver.stop());
+    assert!(rig.driver.stopping());
+    assert_eq!(rig.driver.session().state(), SessionState::Running);
+
+    assert_eq!(rig.driver.enforce_cost_cap(Some(30)), Some(hit(30, false)));
+    assert_eq!(rig.driver.cap_hit(), Some(30), "held all the same");
+    flush(&mut rig);
+    assert_eq!(aborts(&rig), 0, "{:?}", rig.sent());
+}
+
+#[test]
+fn a_queued_land_gets_no_abort_on_top() {
+    let mut rig = Rig::new();
+    running(&mut rig);
+    turn(&mut rig, Some(0.3));
+    rig.say(&json!({"type":"session_settled"}));
+    rig.pump_until("review", |d, _| {
+        d.session().state() == SessionState::NeedsReview
+    });
+    assert!(rig.driver.land(land_request()));
+    assert!(rig.driver.landing() && rig.driver.stopping());
+    rig.say(&json!({"type":"agent_start"}));
+    rig.pump_until("a late run", |d, _| {
+        d.session().state() == SessionState::Running
+    });
+
+    assert_eq!(rig.driver.enforce_cost_cap(Some(30)), Some(hit(30, false)));
+    flush(&mut rig);
+    assert_eq!(aborts(&rig), 0, "{:?}", rig.sent());
+}
+
+#[test]
 fn turns_omp_cannot_price_do_not_count_toward_the_cap() {
     let mut rig = Rig::new();
     running(&mut rig);
@@ -115,7 +183,7 @@ fn turns_omp_cannot_price_do_not_count_toward_the_cap() {
         "less than a cent priced"
     );
     turn(&mut rig, Some(0.006));
-    assert_eq!(rig.driver.enforce_cost_cap(Some(1)), Some(1));
+    assert_eq!(rig.driver.enforce_cost_cap(Some(1)), Some(hit(1, true)));
     rig.pump_until("the abort", |_, sent| !of_type(sent, "abort").is_empty());
 }
 

@@ -208,8 +208,6 @@ fn reconcile_names_every_count_that_differs() {
             },
         ]
     );
-    assert!(gaps[0].likely_cause().contains("subagent"));
-    assert!(gaps[1].likely_cause().contains("compaction"));
 }
 
 #[test]
@@ -278,7 +276,7 @@ fn the_report_holds_totals_models_verified_cost_and_mismatches() {
             },
         ],
     };
-    let compacted = SessionLedger {
+    let mismatched = SessionLedger {
         rows: vec![row(1, Some("haiku"), 300, 30, Some(1.5))],
         marks: vec![LedgerMark::OmpTotals {
             turn: 1,
@@ -286,7 +284,7 @@ fn the_report_holds_totals_models_verified_cost_and_mismatches() {
             totals: omp(10, 30, 900, 10, 1.5),
         }],
     };
-    let text = report(&[("a".into(), checked), ("b".into(), compacted)]);
+    let text = report(&[("a".into(), checked), ("b".into(), mismatched)]);
     for expected in [
         "Sessions: 2. Turns: 3, 1 without a cost.",
         "Tokens: input 500, output 50, cache read 1500, cache write 30.",
@@ -297,7 +295,7 @@ fn the_report_holds_totals_models_verified_cost_and_mismatches() {
         "  Verified tasks: 1. Average $0.50, total $0.50.",
         "  Of these, 1 had turns without a cost, so the real cost is higher.",
         "  Readings: 2, matching: 1.",
-        "  b after turn 1: input ledger 300, omp 10. Likely: omp counts only messages still in context",
+        "  b after turn 1: input ledger 300, omp 10. Unexplained.",
     ] {
         assert!(text.contains(expected), "missing {expected:?} in\n{text}");
     }

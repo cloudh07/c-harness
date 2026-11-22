@@ -14,7 +14,7 @@ use crate::usage::{UsageRow, UsageTotals};
 
 /// Cost sums that differ by less than this, in US dollars, are the same sum added in a
 /// different order.
-const COST_TOLERANCE_USD: f64 = 1e-6;
+pub const COST_TOLERANCE_USD: f64 = 1e-6;
 /// Mismatches the report lists before it only counts the rest.
 const SHOWN_MISMATCHES: usize = 10;
 const UNKNOWN_MODEL: &str = "unknown model";
@@ -68,6 +68,14 @@ pub enum LedgerMark {
     Verified { turn: u32, at_ms: u64 },
 }
 
+impl LedgerMark {
+    pub fn turn(&self) -> u32 {
+        match *self {
+            Self::OmpTotals { turn, .. } | Self::Verified { turn, .. } => turn,
+        }
+    }
+}
+
 /// One line of a ledger file.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LedgerLine {
@@ -103,23 +111,6 @@ pub enum Gap {
 }
 
 impl Gap {
-    /// omp counted more than the ledger.
-    pub fn omp_higher(&self) -> bool {
-        match *self {
-            Self::Tokens { ledger, omp, .. } => omp > ledger,
-            Self::Cost { ledger, omp } => omp > ledger,
-        }
-    }
-
-    /// The likely reason, from which side counted more.
-    pub fn likely_cause(&self) -> &'static str {
-        if self.omp_higher() {
-            "omp also counts subagent (task) turns and cache warming, which turn rows do not carry"
-        } else {
-            "omp counts only messages still in context, so a compaction drops earlier turns"
-        }
-    }
-
     fn describe(&self) -> String {
         match *self {
             Self::Tokens { kind, ledger, omp } => format!("{kind} ledger {ledger}, omp {omp}"),
@@ -359,10 +350,9 @@ fn checks(sessions: &[(String, SessionLedger)]) -> Vec<String> {
     for (id, reading) in off.iter().take(SHOWN_MISMATCHES) {
         for gap in &reading.gaps {
             lines.push(format!(
-                "  {id} after turn {}: {}. Likely: {}.",
+                "  {id} after turn {}: {}. Unexplained.",
                 reading.turn,
-                gap.describe(),
-                gap.likely_cause()
+                gap.describe()
             ));
         }
     }
