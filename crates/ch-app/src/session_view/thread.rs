@@ -10,7 +10,7 @@ use super::{CONTENT_WIDTH, Live, OpenSettings, Phase, SessionView, list};
 use crate::assets::{Icon, icon};
 use crate::brand;
 use crate::panels;
-use crate::view_model::last_chars;
+use crate::view_model::{EMPTY_RUN_NOTE, last_chars};
 use crate::widgets::{Tone, banner, button, card, muted};
 
 const MARK_SIZE: f32 = 48.0;
@@ -142,6 +142,12 @@ impl SessionView {
                     .map(|(i, (prompt, reply))| turn(p, format!("turn-{i}"), prompt, reply, false)),
             )
             .children(current_turn(p, live, waiting))
+            .children(
+                (session.run_was_empty() && session.checkpoints_on())
+                    .then(|| muted(p, EMPTY_RUN_NOTE)),
+            )
+            .children(panels::retrying(p, session.retrying()))
+            .children(panels::first_reply(p, live.driver.first_reply_late()))
             .children(panels::failure(p, session.failure()))
             .children(panels::warnings(p, session.warnings()))
             .children(panels::notices(p, session.notices()))

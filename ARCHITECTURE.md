@@ -61,17 +61,26 @@ them, or names one of another kind.
 1. The app reads the model key from the keychain and asks `ch-runtime` for a sandbox: a
    detached, locked git worktree of your repository with a session record on disk, or a
    checkout you prepared on a machine you reach over SSH. A local session holds a lock file
-   for as long as its window has it open.
+   for as long as its window has it open. The session's header keeps the machine and folder
+   it got here, so changing Settings later does not relabel it.
 2. `ch-runtime` starts `ch-runner` there. The model key travels in `ch_start` over stdin and
    lands in omp's environment only. It never appears on a command line.
-3. `ch-runner` checks the working tree for project omp config (`.omp`, `.claude`, `.codex`,
-   `.gemini`) and warns. It asks omp whether a Claude subscription login is stored and which
-   providers the user already turned off, then starts `omp --mode rpc` with a config overlay
+3. `ch-runner` checks that it was started at the top of a git working tree and reads the
+   commit the session starts from. Each git command of this check has 30 seconds; a failure
+   or a hang ends the start with the `repo` stage, kept apart from `start` so a damaged
+   repository is not mistaken for a provider. It checks the working tree for project omp
+   config (`.omp`, `.claude`, `.codex`, `.gemini`) and warns. It asks omp whether a Claude
+   subscription login is stored and which providers the user already turned off, then starts `omp --mode rpc` with a config overlay
    that keeps those off and adds `google-antigravity`, plus `anthropic` while a login is
    stored or the answer was not recognised.
 4. omp events stream back. `ch-core` folds them into the session state. An approval request
    becomes a card with a risk hint; an answer the app cannot map to an option is sent as a
-   cancel, which omp treats as deny.
+   cancel, which omp treats as deny. omp retries a failed model call itself; the session shows
+   its count and, once omp gives up, whether a person has to act. The app adds no retries.
+   The app times the model's first text, thinking or tool call against its own clock and
+   says so after 90 seconds of silence; omp has no event for the provider connection, so
+   that wait covers both. A run that ends with no reply and no tool calls saves no
+   checkpoint.
 5. Verify runs in `ch-runner`, not in the agent, so the exit code is measured.
 6. Land stops omp and waits for it, then commits through a temporary index (your checkout is
    never touched), pushes from a scratch repository with system and global git config ignored,
@@ -82,6 +91,15 @@ When the app starts it looks for local sessions an earlier run left behind: reco
 worktrees locked as `c-harness session <session>` or sitting in its worktrees folder. Sessions
 another window holds are skipped. Discard deletes only a worktree git lists for that session,
 never runs `git worktree prune`, and keeps the `ch/<session>` branch.
+
+Approvals live only in omp's process: `ch-core` fills its pending list from omp's
+`extension_ui_request` frames and empties it when omp ends, and Resume never refills it. So a
+request cannot outlive omp, and nothing can answer it after a restart. What survives is a
+`needs_you` flag on the session record. The app writes it when the session state crosses into
+or out of Needs you, on the same tick that shows or removes the OS notification. A resumed
+session starts with the flag as it was saved, and the first tick clears it once omp is running
+with nothing to answer. Leftovers with the flag sort first, count under Needs you, and say
+their request expired.
 
 [SECURITY.md](SECURITY.md) lists what this design does not protect against.
 

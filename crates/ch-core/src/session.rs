@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::approval::{ApprovalRequest, withdrawn_approval};
 use crate::checkpoints;
 use crate::context::note_compaction;
+use crate::failure::{FailureKind, Retrying, prompt_error_kind};
 
 const PROMPT_STAGE: &str = "prompt";
 const OMP_STAGE: &str = "omp";
@@ -73,10 +74,12 @@ pub struct ToolCall {
 /// What went wrong and where.
 ///
 /// `stage` is the runner's `ch_error` stage, or one of two set here: `prompt` when omp rejected
-/// or failed a prompt, and `omp` when omp exited without being asked to.
+/// or failed a prompt, and `omp` when omp exited without being asked to. Only a prompt omp
+/// failed gets a `kind` other than [`FailureKind::Permanent`], read from omp's error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     pub stage: String,
+    pub kind: FailureKind,
     pub message: String,
 }
 
@@ -114,6 +117,16 @@ pub struct Landing {
     pub pull_request_url: Option<String>,
 }
 
+/// A run waiting for the model's first word, after a prompt or after one of omp's retries.
+///
+/// `epoch` changes whenever the wait starts over, so the app can restart its timer. omp waits
+/// `delay_ms` before it sends a retry, which the app's deadline should not count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplyWait {
+    pub epoch: u32,
+    pub delay_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Phase {
     #[default]
@@ -141,6 +154,17 @@ pub struct Session {
     warnings: Vec<Failure>,
     failure: Option<Failure>,
     landing: Option<Landing>,
+    retrying: Option<Retrying>,
+    // Where the reply stood when the last message that did not fail ended, so a retry can drop
+    // the text of the attempt that failed.
+    reply_mark: usize,
+    // How many tool calls the session had when the latest prompt went out; `None` before any
+    // prompt, when there is no run to judge.
+    run_tools: Option<usize>,
+    // The model said something in the current attempt: text, thinking or a tool call.
+    heard: bool,
+    wait_epoch: u32,
+    wait_delay_ms: u64,
     // Set by `ch_stop` or `ch_land`, so omp exiting afterwards is not a crash.
     exit_expected: bool,
     // Set only by the runner saying omp ended. Nothing more comes from it, so a prompt sent after
@@ -221,8 +245,28 @@ impl Session {
         self.landing.as_ref()
     }
 
+    /// omp's retry in progress, only while it is working.
+    pub fn retrying(&self) -> Option<&Retrying> {
+        self.retrying.as_ref()
+    }
+
     pub fn pull_request_url(&self) -> Option<&str> {
         self.landing.as_ref()?.pull_request_url.as_deref()
+    }
+
+    /// The wait for the model's first word, while omp works and the model has said nothing.
+    pub fn reply_wait(&self) -> Option<ReplyWait> {
+        (self.state() == SessionState::Running && !self.heard).then_some(ReplyWait {
+            epoch: self.wait_epoch,
+            delay_ms: self.wait_delay_ms,
+        })
+    }
+
+    /// The latest run finished with no reply text and no tool calls.
+    pub fn run_was_empty(&self) -> bool {
+        self.run_tools == Some(self.tool_calls.len())
+            && self.state() == SessionState::NeedsReview
+            && self.reply.trim().is_empty()
     }
 
     /// Folds in a frame the app wrote.
@@ -244,13 +288,20 @@ impl Session {
                 }
                 self.clear_failure(PROMPT_STAGE);
                 self.clear_failure(LAND_STAGE);
+                self.retrying = None;
                 if self.is_live() {
                     self.phase = Phase::Running;
                     self.reply.clear();
+                    self.reply_mark = 0;
+                    self.run_tools = Some(self.tool_calls.len());
+                    self.restart_wait(0);
                 }
             }
             ClientAction::ApprovalAnswered { id } => self.pending.retain(|r| r.id() != id),
-            ClientAction::StopSent => self.exit_expected = true,
+            ClientAction::StopSent => {
+                self.exit_expected = true;
+                self.retrying = None;
+            }
             ClientAction::LandSent => {
                 self.exit_expected = true;
                 self.clear_failure(LAND_STAGE);
@@ -275,14 +326,26 @@ impl Session {
             "ready" if self.phase == Phase::Starting => self.phase = Phase::Idle,
             "response" => self.on_response(frame),
             "agent_start" => self.run(),
+            "message_start" => self.reply_mark = self.reply.len(),
             "message_update" => self.on_message(frame),
+            "message_end" => self.on_message_end(frame),
+            "auto_retry_start" if self.phase == Phase::Running => self.on_retry(frame),
+            "auto_retry_end" => self.retrying = None,
             "tool_execution_start" => self.on_tool_start(frame),
             "tool_execution_end" => self.on_tool_end(frame),
             "prompt_result" => self.on_prompt_result(frame),
-            "session_settled" if self.phase == Phase::Running => self.phase = Phase::Review,
+            "session_settled" => {
+                self.retrying = None;
+                if self.phase == Phase::Running {
+                    self.phase = Phase::Review;
+                }
+            }
             "extension_ui_request" => self.on_ui_request(frame),
             "auto_compaction_start" | "auto_compaction_end" => {
                 note_compaction(&mut self.notices, frame);
+                // Compacting is a model call of its own, and the reply comes after it.
+                self.wait_epoch = self.wait_epoch.wrapping_add(1);
+                self.wait_delay_ms = 0;
             }
             _ => {}
         }
@@ -348,7 +411,8 @@ impl Session {
                 let expected = self.exit_expected;
                 self.omp_ended();
                 if !expected {
-                    self.fail(OMP_STAGE, exit_message(*exit_code, stderr_tail));
+                    let message = exit_message(*exit_code, stderr_tail);
+                    self.fail(OMP_STAGE, FailureKind::Permanent, message);
                 }
             }
             RunnerFrame::Landed {
@@ -369,6 +433,7 @@ impl Session {
             RunnerFrame::Error { stage, message, .. } => {
                 let problem = Failure {
                     stage: stage.clone(),
+                    kind: FailureKind::Permanent,
                     message: message.clone(),
                 };
                 // A line sent just before omp died is dropped, which says nothing new and must
@@ -395,11 +460,12 @@ impl Session {
             self.run();
         } else {
             let message = omp_error(frame.get("error"), "omp rejected the prompt");
-            self.fail(PROMPT_STAGE, message);
+            self.fail(PROMPT_STAGE, FailureKind::Permanent, message);
         }
     }
 
     fn on_message(&mut self, frame: &Value) {
+        self.heard = true;
         let event = &frame["assistantMessageEvent"];
         if event["type"] == "text_delta"
             && let Some(delta) = event["delta"].as_str()
@@ -408,7 +474,35 @@ impl Session {
         }
     }
 
+    // omp sends the failed attempt's `message_end`, with `stopReason: "error"`, before it says it
+    // will retry, so that text is not kept.
+    fn on_message_end(&mut self, frame: &Value) {
+        let message = &frame["message"];
+        if message["stopReason"] != "error" {
+            self.reply_mark = self.reply.len();
+            // omp also ends the prompt's own message, which is not the model speaking.
+            if message["role"] == "assistant" {
+                self.heard = true;
+            }
+        }
+    }
+
+    fn on_retry(&mut self, frame: &Value) {
+        if self.reply.is_char_boundary(self.reply_mark) {
+            self.reply.truncate(self.reply_mark);
+        }
+        self.retrying = Some(Retrying::from_frame(frame));
+        self.restart_wait(frame["delayMs"].as_u64().unwrap_or(0));
+    }
+
+    fn restart_wait(&mut self, delay_ms: u64) {
+        self.heard = false;
+        self.wait_epoch = self.wait_epoch.wrapping_add(1);
+        self.wait_delay_ms = delay_ms;
+    }
+
     fn on_tool_start(&mut self, frame: &Value) {
+        self.heard = true;
         let Some(id) = frame["toolCallId"].as_str() else {
             return;
         };
@@ -441,6 +535,7 @@ impl Session {
     }
 
     fn on_prompt_result(&mut self, frame: &Value) {
+        self.retrying = None;
         if !self.is_live() {
             return;
         }
@@ -452,13 +547,14 @@ impl Session {
                 }
             }
             Some("error") => {
-                let message = omp_error(frame.get("error"), "the prompt failed");
-                self.fail(PROMPT_STAGE, message);
+                let error = frame.get("error");
+                let message = omp_error(error, "the prompt failed");
+                self.fail(PROMPT_STAGE, prompt_error_kind(error), message);
             }
             other => {
                 let status = other.unwrap_or("none");
                 let message = format!("omp ended the prompt with an unknown status: {status}");
-                self.fail(PROMPT_STAGE, message);
+                self.fail(PROMPT_STAGE, FailureKind::Permanent, message);
             }
         }
     }
@@ -484,6 +580,7 @@ impl Session {
 
     fn omp_ended(&mut self) {
         self.omp_gone = true;
+        self.retrying = None;
         // omp is gone, so nothing is waiting for these answers any more.
         self.pending.clear();
         if self.is_live() {
@@ -491,14 +588,16 @@ impl Session {
         }
     }
 
-    fn fail(&mut self, stage: &str, message: String) {
+    fn fail(&mut self, stage: &str, kind: FailureKind, message: String) {
         self.fail_with(Failure {
             stage: stage.to_owned(),
+            kind,
             message,
         });
     }
 
     fn fail_with(&mut self, failure: Failure) {
+        self.retrying = None;
         if self.phase != Phase::Landed {
             self.phase = Phase::Failed;
             self.failure = Some(failure);

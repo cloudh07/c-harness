@@ -35,7 +35,10 @@ use crate::verify::{self, Checked, Job};
 mod checkpoints;
 
 // The `ch_error` stages the client tells apart; `verify`, `diff`, `checkpoint` and
-// `restore` failures leave the session usable, every other stage ends it.
+// `restore` failures leave the session usable, every other stage ends it. `repo` is the
+// repository check before omp starts, kept apart from `start` so a damaged or hung repository
+// is never mistaken for a provider that does not answer.
+const REPO: &str = "repo";
 const START: &str = "start";
 const VERIFY: &str = "verify";
 const DIFF: &str = "diff";
@@ -287,29 +290,29 @@ impl Session {
             ));
             return;
         }
-        if let Err(e) = self.git.pin() {
-            self.out.frame(&error(None, START, e));
-            return;
-        }
+        let scrubber = Scrubber::for_env(start.env.values());
+        let base = match self.git.pin().and_then(|()| self.git.base()) {
+            Ok(base) => base,
+            Err(e) => {
+                self.out.frame(&error(None, REPO, scrubber.scrub(&e)));
+                return;
+            }
+        };
         match self.start_omp(start) {
-            Ok((omp, base)) => {
+            Ok(omp) => {
                 self.omp = OmpState::Running(omp);
                 self.base = Some(base);
                 self.open_checkpoints(&start.session);
             }
-            Err(e) => {
-                let scrubber = Scrubber::for_env(start.env.values());
-                self.out.frame(&error(None, START, scrubber.scrub(&e)));
-            }
+            Err(e) => self.out.frame(&error(None, START, scrubber.scrub(&e))),
         }
     }
 
-    fn start_omp(&self, start: &StartSession) -> Result<(Omp, Base), String> {
+    fn start_omp(&self, start: &StartSession) -> Result<Omp, String> {
         let mode = omp::check_start(start)?;
         check_approval_mode_version(mode, || {
             omp::probe_version(&self.omp_program, self.git.workdir(), &start.env)
         })?;
-        let base = self.git.base()?;
         let write = |stem: &str, text: &str| {
             self.dir
                 .write_file(stem, text.as_bytes())
@@ -346,8 +349,7 @@ impl Session {
             env: &start.env,
             overlays: client.into_iter().chain([host]).collect(),
         };
-        let omp = Omp::spawn(launch, &self.out)?;
-        Ok((omp, base))
+        Omp::spawn(launch, &self.out)
     }
 
     fn verify(&mut self, id: String, command: String, timeout_secs: Option<u64>) {

@@ -84,6 +84,21 @@ impl LocalProvider {
         Ok(true)
     }
 
+    /// Stores whether `session` is waiting for an answer, so a restart can say so. Returns
+    /// whether the record changed; a missing record or an unchanged value leave it alone.
+    pub fn note_needs_you(&self, session: &str, waiting: bool) -> Result<bool, RuntimeError> {
+        validate_session(session)?;
+        let Some(mut record) = record::read(&self.sessions_dir, session)? else {
+            return Ok(false);
+        };
+        if record.needs_you == waiting {
+            return Ok(false);
+        }
+        record.needs_you = waiting;
+        record::write(&self.sessions_dir, &record)?;
+        Ok(true)
+    }
+
     /// The record of `session` when its worktree is whole and is where this provider would put
     /// it, so a resumed session lands and cleans up like a new one.
     fn resumable(&self, session: &str) -> Result<SessionRecord, RuntimeError> {
@@ -248,6 +263,27 @@ mod tests {
         assert_eq!(record.omp_session_file, Some(file));
         assert!(matches!(
             provider.note_omp_session_file("../x", Path::new("/a.jsonl")),
+            Err(RuntimeError::InvalidSession)
+        ));
+    }
+
+    #[test]
+    fn needs_you_is_written_only_when_it_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = repo_with_commit(root.path());
+        let provider = provider(root.path(), repo);
+        provider.create_worktree("s1").unwrap();
+        let waiting = |p: &LocalProvider| p.record("s1").unwrap().unwrap().needs_you;
+
+        assert!(!provider.note_needs_you("s1", false).unwrap());
+        assert!(provider.note_needs_you("s1", true).unwrap());
+        assert!(waiting(&provider));
+        assert!(!provider.note_needs_you("s1", true).unwrap());
+        assert!(provider.note_needs_you("s1", false).unwrap());
+        assert!(!waiting(&provider));
+        assert!(!provider.note_needs_you("s9", true).unwrap());
+        assert!(matches!(
+            provider.note_needs_you("../x", true),
             Err(RuntimeError::InvalidSession)
         ));
     }

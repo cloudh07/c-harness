@@ -5,10 +5,14 @@ use std::fmt::Write as _;
 use ch_core::{ContextReading, ContextState, SessionState, UsageTotals};
 use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
 
-use crate::settings::{Location, Settings};
+use crate::settings::Settings;
 
+mod failure;
 mod labels;
+mod place;
+pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text};
 pub use labels::{age_label, context_near_full, live_title};
+pub use place::{Place, Sandbox, elide_middle};
 
 /// Git's own advice for a commit subject line.
 const SUBJECT_LIMIT: usize = 72;
@@ -37,11 +41,14 @@ pub fn inbox_slot(state: SessionState) -> usize {
     }
 }
 
-pub fn inbox_counts(state: Option<SessionState>) -> [usize; 4] {
+/// The inbox rows: the open session in its row, plus sessions left over from before that were
+/// waiting for an answer when they stopped, under Needs you.
+pub fn inbox_counts(state: Option<SessionState>, waiting_leftovers: usize) -> [usize; 4] {
     let mut counts = [0; 4];
     if let Some(state) = state {
         counts[inbox_slot(state)] = 1;
     }
+    counts[0] += waiting_leftovers;
     counts
 }
 
@@ -262,21 +269,6 @@ pub fn session_title(prompt: &str) -> String {
     }
 }
 
-/// What the header calls the repository: its folder name, or the SSH host it runs on.
-pub fn repo_label(settings: &Settings) -> String {
-    match &settings.location {
-        Location::Ssh { host, .. } => host.trim().to_string(),
-        Location::Local => settings
-            .repo
-            .trim()
-            .trim_end_matches(['/', '\\'])
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or_default()
-            .to_string(),
-    }
-}
-
 /// The header's usage line, or `None` before the first turn ends. "≥" marks a sum that misses
 /// turns omp could not count; the cost is omp's own estimate.
 pub fn usage_label(totals: &UsageTotals) -> Option<String> {
@@ -400,12 +392,22 @@ mod tests {
 
     #[test]
     fn each_state_counts_under_one_inbox_row() {
-        assert_eq!(inbox_counts(None), [0, 0, 0, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::NeedsYou)), [1, 0, 0, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::Failed)), [1, 0, 0, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::Running)), [0, 1, 0, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::NeedsReview)), [0, 0, 1, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::Landed)), [0, 0, 0, 1]);
+        assert_eq!(inbox_counts(None, 0), [0, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::NeedsYou), 0), [1, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::Failed), 0), [1, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::Running), 0), [0, 1, 0, 0]);
+        assert_eq!(
+            inbox_counts(Some(SessionState::NeedsReview), 0),
+            [0, 0, 1, 0]
+        );
+        assert_eq!(inbox_counts(Some(SessionState::Landed), 0), [0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn sessions_left_waiting_count_under_needs_you() {
+        assert_eq!(inbox_counts(None, 2), [2, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::NeedsYou), 1), [2, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::Running), 1), [1, 1, 0, 0]);
     }
 
     #[test]
@@ -601,30 +603,6 @@ mod tests {
         let title = session_title(&"word ".repeat(40));
         assert!(title.ends_with('…'), "{title}");
         assert!(title.chars().count() <= TITLE_LIMIT + 1, "{title}");
-    }
-
-    #[test]
-    fn repo_label_names_the_folder_or_the_host() {
-        let windows = Settings {
-            repo: "D:\\code\\c-harness\\".to_string(),
-            ..Settings::default()
-        };
-        assert_eq!(repo_label(&windows), "c-harness");
-        let unix = Settings {
-            repo: "/home/dev/work/app/".to_string(),
-            ..Settings::default()
-        };
-        assert_eq!(repo_label(&unix), "app");
-        let remote = Settings {
-            location: Location::Ssh {
-                host: " devbox ".to_string(),
-                port: None,
-                remote_workdir: "/srv/app".to_string(),
-                remote_runner: "ch-runner".to_string(),
-            },
-            ..Settings::default()
-        };
-        assert_eq!(repo_label(&remote), "devbox");
     }
 
     fn used(input: u64, output: u64, cache_read: u64, cost: Option<f64>) -> UsageTotals {

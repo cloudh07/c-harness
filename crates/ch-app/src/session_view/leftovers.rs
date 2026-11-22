@@ -47,6 +47,20 @@ fn describe(kind: LeftoverKind) -> &'static str {
     }
 }
 
+/// Shown on a session that stopped while waiting. Resume starts omp again, and omp does not ask
+/// the old question again, so there is nothing left to approve.
+const EXPIRED: &str = "It was waiting for your answer when it stopped. That request has expired and cannot be \
+     answered.";
+
+/// Whether the session's record says it was waiting for an answer when it stopped.
+fn row_waiting(row: &Row) -> bool {
+    row.leftover.record.as_ref().is_some_and(|r| r.needs_you)
+}
+
+fn expired(row: &Row) -> Option<&'static str> {
+    row_waiting(row).then_some(EXPIRED)
+}
+
 /// What a second press of Discard deletes.
 fn warning(session: &str) -> String {
     format!(
@@ -95,6 +109,8 @@ impl Leftovers {
                         error: None,
                     })
                     .collect();
+                // Stable, so the scan's order holds within each group.
+                self.rows.sort_by_key(|row| !row_waiting(row));
                 self.scan_error = None;
             }
             Err(message) => self.scan_error = Some(message),
@@ -133,6 +149,11 @@ impl Leftovers {
             self.kept_folder = kept;
         }
         changed
+    }
+
+    /// How many listed sessions were waiting for an answer when they stopped.
+    pub(super) fn waiting(&self) -> usize {
+        self.rows.iter().filter(|row| row_waiting(row)).count()
     }
 
     fn row_mut(&mut self, session: &str) -> Option<&mut Row> {
@@ -291,6 +312,12 @@ fn leftover_row(
         .leftover
         .worktree()
         .map(|path| muted(p, path.display().to_string()));
+    let expired = expired(row).map(|text| {
+        div()
+            .text_xs()
+            .text_color(rgb(p.status(Status::NeedsYou)))
+            .child(text)
+    });
     // The warning before a delete reads at full contrast, not muted like the details above it.
     let note = row
         .confirming
@@ -335,6 +362,7 @@ fn leftover_row(
                         )
                         .child(muted(p, describe(row.leftover.kind)))
                         .children(started)
+                        .children(expired)
                         .children(path),
                 )
                 .child(row_actions(p, row, resumable, cx)),
@@ -406,6 +434,8 @@ fn row_actions(p: Palette, row: &Row, resumable: bool, cx: &mut Context<SessionV
 mod tests {
     use std::sync::mpsc;
 
+    use ch_runtime::SessionRecord;
+
     use super::*;
 
     fn leftover(session: &str, kind: LeftoverKind) -> Leftover {
@@ -417,16 +447,37 @@ mod tests {
         }
     }
 
-    fn found(sessions: &[&str]) -> Leftovers {
+    fn waiting_leftover(session: &str) -> Leftover {
+        Leftover {
+            record: Some(SessionRecord {
+                session: session.to_string(),
+                repo: PathBuf::from("/repo"),
+                worktree: PathBuf::from("/worktrees").join(session),
+                branch: format!("ch/{session}"),
+                base_commit: "abc".to_string(),
+                created_unix_secs: 0,
+                omp_session_file: None,
+                needs_you: true,
+            }),
+            ..leftover(session, LeftoverKind::Live)
+        }
+    }
+
+    fn scanned(leftovers: Vec<Leftover>) -> Leftovers {
         let (tx, rx) = mpsc::channel();
         let mut state = Leftovers::scanning(rx);
-        let leftovers = sessions
-            .iter()
-            .map(|s| leftover(s, LeftoverKind::Live))
-            .collect();
         tx.send(Ok(leftovers)).unwrap();
         assert!(state.poll());
         state
+    }
+
+    fn found(sessions: &[&str]) -> Leftovers {
+        scanned(
+            sessions
+                .iter()
+                .map(|s| leftover(s, LeftoverKind::Live))
+                .collect(),
+        )
     }
 
     fn sessions(state: &Leftovers) -> Vec<&str> {
@@ -470,6 +521,31 @@ mod tests {
         let mut state = found(&["s1", "s2"]);
         state.keep("s1");
         assert_eq!(sessions(&state), ["s2"]);
+    }
+
+    #[test]
+    fn sessions_left_waiting_come_first_and_are_counted() {
+        let mut state = scanned(vec![
+            leftover("s1", LeftoverKind::Live),
+            waiting_leftover("s2"),
+            leftover("s3", LeftoverKind::NoRecord),
+            waiting_leftover("s4"),
+        ]);
+        assert_eq!(sessions(&state), ["s2", "s4", "s1", "s3"]);
+        assert_eq!(state.waiting(), 2);
+        state.keep("s2");
+        assert_eq!(state.waiting(), 1);
+    }
+
+    #[test]
+    fn only_a_session_left_waiting_says_its_request_expired() {
+        let state = scanned(vec![
+            waiting_leftover("s1"),
+            leftover("s2", LeftoverKind::Live),
+        ]);
+        assert_eq!(expired(&state.rows[0]), Some(EXPIRED));
+        assert_eq!(expired(&state.rows[1]), None);
+        assert!(EXPIRED.contains("cannot be answered"));
     }
 
     #[test]

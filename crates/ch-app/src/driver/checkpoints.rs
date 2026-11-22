@@ -63,10 +63,12 @@ impl Driver {
     }
 
     /// Saves a checkpoint when the state change `before` to now ended a run. A save that
-    /// failed is not repeated; the next run's save holds its changes too.
+    /// failed is not repeated; the next run's save holds its changes too. A run with no
+    /// reply and no tool calls gets none, so the list holds only turns where the agent worked.
     pub(super) fn save_after_run(&mut self, before: SessionState) {
         let ended = run_ended(before, self.session.state());
-        if !ended || self.closed || !self.session.checkpoints_on() {
+        let skip = self.closed || self.session.run_was_empty();
+        if !ended || skip || !self.session.checkpoints_on() {
             return;
         }
         let id = self.next_id();

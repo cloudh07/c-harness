@@ -6,6 +6,7 @@
 mod approval;
 mod checkpoints;
 mod context;
+mod failure;
 mod history;
 mod redact;
 mod risk;
@@ -19,6 +20,7 @@ pub use context::{
     COMPACTION_NOTICE, ContextMeter, ContextReading, ContextState, STATS_COMMAND,
     compaction_notice, is_stats, session_file,
 };
+pub use failure::{FailureKind, Retrying};
 pub use history::{
     HISTORY_COMMAND, HISTORY_PAGE_LIMIT, History, HistoryPage, MAX_HISTORY_TURNS, history_request,
     read_page,
@@ -26,8 +28,8 @@ pub use history::{
 pub use redact::{MASK, holds_provider_secret, redact_secrets};
 pub use risk::{Assessment, Risk, classify};
 pub use session::{
-    ClientAction, Diff, Failure, Landing, Notice, Session, SessionState, ToolCall, ToolStatus,
-    TurnDiff,
+    ClientAction, Diff, Failure, Landing, Notice, ReplyWait, Session, SessionState, ToolCall,
+    ToolStatus, TurnDiff,
 };
 pub use transcript::Transcript;
 pub use usage::{Usage, UsageRow, UsageStatus, UsageTotals};

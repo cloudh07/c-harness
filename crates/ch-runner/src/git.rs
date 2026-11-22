@@ -7,12 +7,20 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
+use std::time::Duration;
 
 use crate::proc_tree;
 use crate::tail::{TailBuffer, cut_head, cut_tail};
 
 /// How much of a failing git command's stderr goes into the error message.
 const STDERR_TAIL_BYTES: usize = 2048;
+
+/// How long each git command of the repository check may take before a session starts. A
+/// healthy repository answers at once; a damaged pack or a stalled disk can hang git outright.
+const REPO_CHECK_LIMIT: Duration = Duration::from_secs(30);
+
+/// How long to wait for a timed command's output once git has exited.
+const OUTPUT_LINGER: Duration = Duration::from_secs(2);
 
 /// Inherited variables that would point git at another repository or index.
 const REPOSITORY_ENV: [&str; 6] = [
@@ -69,7 +77,8 @@ impl Git {
             "--absolute-git-dir",
             "--git-common-dir",
         ]);
-        let text = run_text(command, "rev-parse")
+        let text = finish_within(command, "rev-parse", REPO_CHECK_LIMIT)?
+            .into_text("rev-parse")
             .map_err(|e| format!("{} is not a git working tree: {e}", self.workdir.display()))?;
         let mut lines = text.lines().map(str::trim);
         let (Some(top), Some(git_dir), Some(common_dir), None) =
@@ -131,22 +140,27 @@ impl Git {
         command
     }
 
-    /// `HEAD` as a commit id, or the empty tree when the repository has no commits yet.
+    /// `HEAD` as a commit id, or the empty tree when the repository has no commits yet. Each
+    /// git command must finish within [`REPO_CHECK_LIMIT`].
     pub fn base(&self) -> Result<Base, String> {
         let mut check = self.command();
         check.args(["rev-parse", "--git-dir"]);
-        run(check, "rev-parse --git-dir")
+        finish_within(check, "rev-parse --git-dir", REPO_CHECK_LIMIT)?
+            .into_text("rev-parse --git-dir")
             .map_err(|e| format!("{} is not a git repository: {e}", self.workdir.display()))?;
-        if let Some(id) = self.head() {
+        let mut head = self.command();
+        head.args(["rev-parse", "--verify", "-q", "HEAD^{commit}"]);
+        let head = finish_within(head, "rev-parse HEAD", REPO_CHECK_LIMIT)?;
+        if head.success {
             return Ok(Base {
-                id,
+                id: head.into_text("rev-parse HEAD")?,
                 is_commit: true,
             });
         }
         // Asking git keeps this right in a SHA-256 repository.
         let mut empty = self.command();
         empty.args(["hash-object", "-t", "tree", "--stdin"]);
-        let id = run_text(empty, "hash-object")?;
+        let id = finish_within(empty, "hash-object", REPO_CHECK_LIMIT)?.into_text("hash-object")?;
         Ok(Base {
             id,
             is_commit: false,
@@ -401,6 +415,72 @@ fn read_capped(mut command: Command, what: &str, budget: usize) -> Result<Vec<u8
     Ok(stdout)
 }
 
+/// A timed git command that exited, with what it printed.
+struct Finished {
+    success: bool,
+    stdout: Vec<u8>,
+    stderr: String,
+}
+
+impl Finished {
+    /// Stdout as one trimmed line of text, or the error git gave.
+    fn into_text(self, what: &str) -> Result<String, String> {
+        if self.success {
+            Ok(String::from_utf8_lossy(&self.stdout).trim().to_owned())
+        } else {
+            Err(failure(what, self.stderr.as_bytes()))
+        }
+    }
+}
+
+/// Runs a git command that must exit within `limit`. One that does not is ended along with
+/// everything it started, and the error names the limit.
+fn finish_within(mut command: Command, what: &str, limit: Duration) -> Result<Finished, String> {
+    proc_tree::own_group(&mut command);
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run git {what}: {e}"))?;
+    let stdout = child.stdout.take().map(|mut out| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            out.read_to_end(&mut bytes).map(|_| bytes)
+        })
+    });
+    let stderr = child.stderr.take().map(|err| {
+        thread::spawn(move || {
+            let mut tail = TailBuffer::new(STDERR_TAIL_BYTES);
+            drain(err, &mut tail);
+            tail.text().0
+        })
+    });
+    let status = proc_tree::wait_for(&mut child, limit)
+        .map_err(|e| format!("git {what} did not finish: {e}"))?;
+    let Some(status) = status else {
+        // The readers end once the pipes close with the killed tree; nobody waits for them.
+        let _ = proc_tree::kill_tree(&mut child);
+        return Err(format!(
+            "git {what} did not finish within {} seconds. The repository may be damaged or on a \
+             slow disk; `git fsck` checks it.",
+            limit.as_secs()
+        ));
+    };
+    let stderr = stderr
+        .and_then(|handle| proc_tree::join_within(handle, OUTPUT_LINGER))
+        .unwrap_or_default();
+    let stdout = match stdout.and_then(|handle| proc_tree::join_within(handle, OUTPUT_LINGER)) {
+        Some(Ok(bytes)) => bytes,
+        Some(Err(e)) => return Err(format!("could not read git {what}: {e}")),
+        None => return Err(format!("could not read git {what}")),
+    };
+    Ok(Finished {
+        success: status.success(),
+        stdout,
+        stderr,
+    })
+}
+
 fn finish(child: &mut Child, what: &str) -> Result<std::process::ExitStatus, String> {
     child
         .wait()
@@ -416,5 +496,47 @@ fn drain(mut reader: impl Read, tail: &mut TailBuffer) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[test]
+    fn a_git_command_that_hangs_is_ended_at_its_limit() {
+        let started = Instant::now();
+        let Err(error) = finish_within(proc_tree::sleeper(), "rev-parse", Duration::from_secs(2))
+        else {
+            panic!("a command that runs for 30 seconds finished within 2");
+        };
+        assert!(
+            error.starts_with("git rev-parse did not finish within 2 seconds"),
+            "{error}"
+        );
+        assert!(error.contains("git fsck"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    #[test]
+    fn a_timed_git_command_gives_its_output_or_its_error() {
+        let mut version = proc_tree::command("git");
+        version.arg("--version");
+        let text = finish_within(version, "--version", REPO_CHECK_LIMIT)
+            .and_then(|done| done.into_text("--version"))
+            .unwrap();
+        assert!(text.starts_with("git version"), "{text}");
+
+        let mut bad = proc_tree::command("git");
+        bad.arg("no-such-subcommand");
+        let error = finish_within(bad, "no-such-subcommand", REPO_CHECK_LIMIT)
+            .and_then(|done| done.into_text("no-such-subcommand"))
+            .unwrap_err();
+        assert!(
+            error.starts_with("git no-such-subcommand failed: "),
+            "{error}"
+        );
     }
 }

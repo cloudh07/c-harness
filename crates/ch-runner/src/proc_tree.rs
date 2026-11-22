@@ -143,24 +143,26 @@ fn signal_tree(child: &mut Child) -> io::Result<()> {
     Ok(())
 }
 
+/// A command that runs for about 30 seconds and starts a child of its own.
+#[cfg(test)]
+pub(crate) fn sleeper() -> Command {
+    #[cfg(unix)]
+    {
+        let mut command = command("sh");
+        command.args(["-c", "sleep 30 & sleep 30"]);
+        command
+    }
+    #[cfg(windows)]
+    {
+        let mut command = command("cmd");
+        command.args(["/D", "/C", "ping -n 30 127.0.0.1 >NUL"]);
+        command
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sleeper() -> Command {
-        #[cfg(unix)]
-        {
-            let mut command = command("sh");
-            command.args(["-c", "sleep 30 & sleep 30"]);
-            command
-        }
-        #[cfg(windows)]
-        {
-            let mut command = command("cmd");
-            command.args(["/D", "/C", "ping -n 30 127.0.0.1 >NUL"]);
-            command
-        }
-    }
 
     #[test]
     fn ends_a_running_group() {

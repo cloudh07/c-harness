@@ -12,6 +12,7 @@ use crate::driver::{self, Driver, EarlierTurns};
 use crate::launch::{self, Launched, Resumed};
 use crate::ledger::Ledger;
 use crate::settings::{self, Location};
+use crate::view_model::Place;
 
 /// Only a leftover whose worktree is still there, run on this computer, can start again.
 pub(super) fn can_resume(kind: LeftoverKind, location: &Location) -> bool {
@@ -49,6 +50,7 @@ impl SessionView {
             self.message = None;
             self.phase = Phase::Resuming {
                 session: session.to_string(),
+                place: Place::of(&self.settings),
                 rx: launch::resume(self.settings.clone(), session.to_string()),
             };
         }
@@ -66,11 +68,12 @@ impl SessionView {
                 Err("The resume stopped without saying why.".to_string())
             }
         };
-        let Phase::Resuming { session, .. } = std::mem::replace(&mut self.phase, Phase::Empty)
+        let Phase::Resuming { session, place, .. } =
+            std::mem::replace(&mut self.phase, Phase::Empty)
         else {
             return false;
         };
-        match result.and_then(|resumed| go_live_resumed(&session, resumed)) {
+        match result.and_then(|resumed| go_live_resumed(&session, place, resumed)) {
             Ok(live) => {
                 self.leftovers.keep(&session);
                 self.phase = Phase::Live(Box::new(live));
@@ -81,7 +84,7 @@ impl SessionView {
     }
 }
 
-fn go_live_resumed(session: &str, resumed: Resumed) -> Result<Live, String> {
+fn go_live_resumed(session: &str, place: Place, resumed: Resumed) -> Result<Live, String> {
     let Resumed {
         launched:
             Launched {
@@ -91,6 +94,7 @@ fn go_live_resumed(session: &str, resumed: Resumed) -> Result<Live, String> {
                 env,
             },
         omp_args,
+        needs_you,
     } = resumed;
     let (ledger, rows) = Ledger::resumed(settings::usage_dir().as_deref(), session);
     let mut driver = Driver::new(link, driver::epoch_ms);
@@ -99,6 +103,7 @@ fn go_live_resumed(session: &str, resumed: Resumed) -> Result<Live, String> {
         return Err("The runner exited before the session could start again.".to_string());
     }
     Ok(Live {
+        place,
         worktree: runner.worktree(),
         ledger,
         session: session.to_string(),
@@ -110,6 +115,7 @@ fn go_live_resumed(session: &str, resumed: Resumed) -> Result<Live, String> {
         prompt: String::new(),
         hidden: 0,
         noted_file: None,
+        waiting: needs_you,
     })
 }
 

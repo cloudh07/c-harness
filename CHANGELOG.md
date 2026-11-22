@@ -120,6 +120,36 @@ Notable changes to C-Harness. The format follows
   checkpoints it had.
 - `ch-protocol`: `ch_checkpoint`, `ch_restore`, and `from` and `to` on `ch_diff`, answered by
   `ch_checkpoints`, `ch_checkpointed`, `ch_restored` and a `ch_diff_result` that names its range.
+- `ch-core`: a failed prompt now says whether trying again can help, read from omp's own error.
+  `retryable` makes it transient, a cost cap or HTTP 401, 402 or 403 means a person has to act,
+  and anything else is permanent. Failures from the runner or from omp exiting are permanent.
+- `ch-app`: while omp retries a model call, the session shows "Retrying 2/3" with omp's error and
+  drops the text of the failed attempt. After a failure the banner says "Gave up: <error>" when
+  a later try may work, or what to check when a person has to act. The app never retries on its
+  own; omp's `retry.maxRetries` setting is the budget.
+- `ch-app`: when the model has sent no text, thinking or tool call 90 seconds after a prompt,
+  the thread says so and suggests waiting or stopping the agent. omp reports no event for the
+  provider connection, so the 90 seconds cover the connection and the first token together.
+  After omp's retry delay the wait starts again. It stops while an approval card waits for you
+  and starts again from zero once you answer.
+- `ch-runner`: each git command of the repository check before omp starts has 30 seconds to
+  finish. A check that fails or hangs ends the start with its own `repo` stage, which the
+  banner calls "the repository check", so it is never taken for a provider that does not
+  answer. A timeout suggests `git fsck`.
+- `ch-app`: the session header has a second line that says where the session runs: "local", or
+  the SSH host with the port Settings name, then the folder the agent writes in. That folder is
+  the session's worktree once the runner has made it, or the checkout on the host. A long path
+  drops its middle, so the drive and the session's own folder stay in view.
+- `ch-app`: while a session waits for your answer, the OS shows the notification "C-Harness
+  needs you". It never names the session or what it asks, because notifications show on the
+  lock screen. It goes away once the session stops waiting, closes or the app quits, and
+  clicking it brings the window forward. A local session's record notes that it is waiting,
+  so after a restart that session is listed first under "Left from earlier sessions", counts
+  under Needs you, and says its request expired. Resume starts it again; there is nothing to approve, because omp
+  does not ask the old question again. On Windows the app registers the name its
+  notifications show under `HKCU\Software\Classes\AppUserModelId\c-harness`. macOS shows no
+  notification for a build that is not an app bundle. An SSH session keeps no record, so a
+  restart forgets that it was waiting.
 
 ### Changed
 
@@ -141,6 +171,12 @@ Notable changes to C-Harness. The format follows
   their answers.
 - `ch-core`: a warning the session already shows is not added again, so a checkpoint save that
   fails the same way after every run shows one warning.
+- `ch-app`: a run that ends with no reply text and no tool calls saves no checkpoint, and the
+  thread says so under the run. Any edit you made in the worktree meanwhile goes into the next
+  checkpoint.
+- `ch-app`: the header names an SSH session after the folder of its remote checkout instead of
+  the host, which moved to the new line. A session keeps the host and folder it started with
+  when you change Settings.
 
 ### Security
 
@@ -162,6 +198,9 @@ Notable changes to C-Harness. The format follows
   other variables that point git at another repository.
 - Approval dialogs the app cannot answer (`confirm`, `input`, `editor`, `ask`) are cancelled,
   which omp treats as a refusal.
+- `ch-app`: the session itself refuses a land while the agent works or waits on you, not only
+  the Land button. Tests pin down that no button grants anything on its own: an answer goes
+  out only for an approval omp still holds open, once, and with a choice omp offered.
 - A runner frame that arrives inside omp's `rpc_chunk` sequence is dropped, so omp cannot forge
   verify evidence, a diff, a stop or a landed branch.
 - `ch-app` drops a runner reply that names no open request of its kind: evidence must answer a
