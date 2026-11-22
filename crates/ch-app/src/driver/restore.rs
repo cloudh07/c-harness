@@ -631,7 +631,10 @@ impl Driver {
                      have changed. The conversation was left unchanged."
                 ),
                 Step::Persist { .. } => omp_stopped_after_code(turn),
-                _ => format!("The runner closed during the restore. {UNCHANGED}"),
+                // omp's move is held in memory only, so it ends with the runner.
+                Step::Read | Step::Navigate | Step::Back(_) => {
+                    format!("The runner closed during the restore. {UNCHANGED}")
+                }
             };
             self.note(&text);
             return None;
@@ -643,7 +646,9 @@ impl Driver {
         if self.omp != OmpState::Running {
             let text = match restore.step {
                 Step::Persist { .. } => omp_stopped_after_code(turn),
-                _ => format!("omp stopped during the restore. {UNCHANGED}"),
+                Step::Read | Step::Navigate | Step::Code | Step::Back(_) => {
+                    format!("omp stopped during the restore. {UNCHANGED}")
+                }
             };
             self.note(&text);
             return None;
