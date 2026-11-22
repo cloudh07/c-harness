@@ -87,6 +87,8 @@ pub struct Settings {
     pub github_repo: String,
     pub base_branch: String,
     pub theme: ThemePref,
+    /// Aborts the run once the priced turns of a session cost this many cents. `None` is off.
+    pub cost_cap_cents: Option<u32>,
 }
 
 impl Default for Settings {
@@ -105,6 +107,7 @@ impl Default for Settings {
             github_repo: String::new(),
             base_branch: "main".to_string(),
             theme: ThemePref::System,
+            cost_cap_cents: None,
         }
     }
 }

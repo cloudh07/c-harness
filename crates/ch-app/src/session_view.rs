@@ -262,9 +262,15 @@ impl SessionView {
             Phase::Live(live) => {
                 let pumped = live.driver.pump();
                 let (caught_up, history_problem) = live.catch_up();
+                let capped = live
+                    .driver
+                    .enforce_cost_cap(self.settings.cost_cap_cents)
+                    .map(crate::view_model::cap_stopped);
                 let problems: Vec<String> = [
                     live.ledger.sync(live.driver.usage().rows()),
+                    live.ledger.sync_marks(live.driver.marks()),
                     history_problem,
+                    capped,
                 ]
                 .into_iter()
                 .flatten()

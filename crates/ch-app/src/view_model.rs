@@ -7,9 +7,11 @@ use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
 
 use crate::settings::Settings;
 
+mod cost;
 mod failure;
 mod labels;
 mod place;
+pub use cost::{cap_stopped, cap_text, cost_label, parse_cap};
 pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text, secret_rows};
 pub use labels::{age_label, context_near_full, live_title};
 pub use place::{Place, Sandbox, elide_middle};
@@ -271,8 +273,8 @@ pub fn session_title(prompt: &str) -> String {
     }
 }
 
-/// The header's usage line, or `None` before the first turn ends. "≥" marks a sum that misses
-/// turns omp could not count; the cost is omp's own estimate.
+/// The header's token line, or `None` before the first turn ends. "≥" marks a sum that misses
+/// turns omp could not count. The cost has its own line, [`cost_label`].
 pub fn usage_label(totals: &UsageTotals) -> Option<String> {
     if totals.turns == 0 {
         return None;
@@ -291,24 +293,7 @@ pub fn usage_label(totals: &UsageTotals) -> Option<String> {
         format!("{at_least}{} in", compact(totals.input)),
         format!("{at_least}{} out", compact(totals.output)),
     ];
-    if totals.cache_read > 0 {
-        parts.push(format!("{at_least}{} cached", compact(totals.cache_read)));
-    }
-    if let Some(cost) = totals.cost_usd {
-        if totals.cost_complete {
-            parts.push(if cost < 0.01 {
-                "<$0.01".into()
-            } else {
-                format!("${cost:.2}")
-            });
-        } else {
-            // A lower bound must not round up, so whole cents only.
-            let floor = (cost * 100.0).floor() / 100.0;
-            if floor >= 0.01 {
-                parts.push(format!("≥${floor:.2}"));
-            }
-        }
-    }
+    parts.extend(cost::cache_share(totals));
     Some(parts.join(" · "))
 }
 
@@ -631,6 +616,7 @@ mod tests {
             cost_usd: cost,
             tokens_complete: true,
             cost_complete: cost.is_some(),
+            unpriced_turns: if cost.is_some() { 0 } else { 2 },
         }
     }
 
@@ -659,19 +645,22 @@ mod tests {
     }
 
     #[test]
-    fn usage_label_shows_counts_cache_and_cost() {
+    fn usage_label_shows_counts_and_cache_share() {
         let full = used(12_345, 4_567, 1_250_000, Some(0.126));
         assert_eq!(
             usage_label(&full).as_deref(),
-            Some("12.3k in · 4.5k out · 1.2M cached · $0.13")
+            Some("12.3k in · 4.5k out · 99% cached")
         );
         let small = used(950, 40, 0, Some(0.004));
         assert_eq!(
             usage_label(&small).as_deref(),
-            Some("950 in · 40 out · <$0.01")
+            Some("950 in · 40 out · 0% cached")
         );
         let round = used(2_000, 7, 0, None);
-        assert_eq!(usage_label(&round).as_deref(), Some("2k in · 7 out"));
+        assert_eq!(
+            usage_label(&round).as_deref(),
+            Some("2k in · 7 out · 0% cached")
+        );
     }
 
     #[test]
@@ -683,13 +672,16 @@ mod tests {
         };
         assert_eq!(
             usage_label(&gaps).as_deref(),
-            Some("≥1.5k in · ≥20 out · ≥$0.12")
+            Some("≥1.5k in · ≥20 out · ~0% cached")
         );
         let tiny = UsageTotals {
             cost_complete: false,
             ..used(10, 1, 0, Some(0.001))
         };
-        assert_eq!(usage_label(&tiny).as_deref(), Some("10 in · 1 out"));
+        assert_eq!(
+            usage_label(&tiny).as_deref(),
+            Some("10 in · 1 out · 0% cached")
+        );
     }
 
     #[test]

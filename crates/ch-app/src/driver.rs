@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use crate::link::{Link, LinkEvent};
 
 mod checkpoints;
+mod cost;
 mod first_reply;
 mod history;
 
@@ -123,6 +124,9 @@ pub struct Driver {
     first_reply: first_reply::FirstReply,
     /// The protocol the runner announced in its first hello. A later hello changes nothing.
     runner_protocol: Option<u32>,
+    /// The cost cap, in cents, the session reached and is held at.
+    cap_hit: Option<u32>,
+    marks: Vec<ch_core::LedgerMark>,
 }
 
 impl Driver {
@@ -149,6 +153,8 @@ impl Driver {
             saves: checkpoints::Saves::default(),
             first_reply: first_reply::FirstReply::default(),
             runner_protocol: None,
+            cap_hit: None,
+            marks: Vec::new(),
         }
     }
 
@@ -193,7 +199,7 @@ impl Driver {
         if self.closed || self.omp != OmpState::Running || self.loading_history() {
             return false;
         }
-        if self.restoring() || self.saving_checkpoint() {
+        if self.restoring() || self.saving_checkpoint() || self.cap_hit.is_some() {
             return false;
         }
         match self.session.state() {
@@ -433,6 +439,7 @@ impl Driver {
             }
             RunnerLine::Runner(_) => {}
         }
+        self.mark_ledger(line);
         if let (Some(kind), RunnerLine::Runner(frame)) = (answered, line) {
             match kind {
                 Request::Land => self.land_in_flight = false,
