@@ -5,12 +5,14 @@ use std::fmt::Write as _;
 use ch_core::{ContextReading, ContextState, SessionState, UsageTotals};
 use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
 
-use crate::settings::{Location, Settings};
+use crate::settings::Settings;
 
 mod failure;
 mod labels;
+mod place;
 pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text};
 pub use labels::{age_label, context_near_full, live_title};
+pub use place::{Place, Sandbox, elide_middle};
 
 /// Git's own advice for a commit subject line.
 const SUBJECT_LIMIT: usize = 72;
@@ -261,21 +263,6 @@ pub fn session_title(prompt: &str) -> String {
     match first_chars(line, TITLE_LIMIT) {
         (shown, true) => format!("{}…", shown.trim_end()),
         (shown, false) => shown.to_string(),
-    }
-}
-
-/// What the header calls the repository: its folder name, or the SSH host it runs on.
-pub fn repo_label(settings: &Settings) -> String {
-    match &settings.location {
-        Location::Ssh { host, .. } => host.trim().to_string(),
-        Location::Local => settings
-            .repo
-            .trim()
-            .trim_end_matches(['/', '\\'])
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or_default()
-            .to_string(),
     }
 }
 
@@ -603,30 +590,6 @@ mod tests {
         let title = session_title(&"word ".repeat(40));
         assert!(title.ends_with('…'), "{title}");
         assert!(title.chars().count() <= TITLE_LIMIT + 1, "{title}");
-    }
-
-    #[test]
-    fn repo_label_names_the_folder_or_the_host() {
-        let windows = Settings {
-            repo: "D:\\code\\c-harness\\".to_string(),
-            ..Settings::default()
-        };
-        assert_eq!(repo_label(&windows), "c-harness");
-        let unix = Settings {
-            repo: "/home/dev/work/app/".to_string(),
-            ..Settings::default()
-        };
-        assert_eq!(repo_label(&unix), "app");
-        let remote = Settings {
-            location: Location::Ssh {
-                host: " devbox ".to_string(),
-                port: None,
-                remote_workdir: "/srv/app".to_string(),
-                remote_runner: "ch-runner".to_string(),
-            },
-            ..Settings::default()
-        };
-        assert_eq!(repo_label(&remote), "devbox");
     }
 
     fn used(input: u64, output: u64, cache_read: u64, cost: Option<f64>) -> UsageTotals {

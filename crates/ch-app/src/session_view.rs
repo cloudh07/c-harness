@@ -27,7 +27,7 @@ use crate::driver::{self, Driver};
 use crate::launch::{self, Launched, Resumed, Runner};
 use crate::ledger::Ledger;
 use crate::settings::{self, Problem, Settings};
-use crate::view_model::{land_request, session_id, transcript_file_name};
+use crate::view_model::{Place, land_request, session_id, transcript_file_name};
 use crate::widgets::{Tone, banner, icon_button};
 use leftovers::Leftovers;
 
@@ -42,11 +42,13 @@ enum Phase {
     Launching {
         session: String,
         prompt: String,
+        place: Place,
         rx: Receiver<Result<Launched, String>>,
     },
     /// A leftover session is starting again in its worktree.
     Resuming {
         session: String,
+        place: Place,
         rx: Receiver<Result<Resumed, String>>,
     },
     Live(Box<Live>),
@@ -61,6 +63,7 @@ struct Live {
     driver: Driver,
     runner: Option<Runner>,
     version: String,
+    place: Place,
     worktree: Option<PathBuf>,
     first_prompt: String,
     /// Earlier prompts and the full reply each one got.
@@ -277,19 +280,22 @@ impl SessionView {
             }
         };
         let Phase::Launching {
-            session, prompt, ..
+            session,
+            prompt,
+            place,
+            ..
         } = std::mem::replace(&mut self.phase, Phase::Empty)
         else {
             return false;
         };
         self.phase = match result {
-            Ok(launched) => self.go_live(session, prompt, launched),
+            Ok(launched) => self.go_live(session, prompt, place, launched),
             Err(message) => Phase::LaunchFailed { prompt, message },
         };
         true
     }
 
-    fn go_live(&self, session: String, prompt: String, launched: Launched) -> Phase {
+    fn go_live(&self, session: String, prompt: String, place: Place, launched: Launched) -> Phase {
         let Launched {
             link,
             runner,
@@ -305,6 +311,7 @@ impl SessionView {
             };
         }
         Phase::Live(Box::new(Live {
+            place,
             worktree: runner.worktree(),
             ledger: Ledger::new(settings::usage_dir().as_deref(), &session),
             session,
@@ -367,11 +374,13 @@ impl SessionView {
             return false;
         }
         let session = session_id(driver::epoch_ms());
+        let place = Place::of(&self.settings);
         let rx = launch::spawn(self.settings.clone(), session.clone());
         self.message = None;
         self.phase = Phase::Launching {
             session,
             prompt,
+            place,
             rx,
         };
         true

@@ -35,7 +35,8 @@ A session goes like this:
 
 1. You pick a repository and write a prompt.
 2. `ch-runner` starts the omp agent in a separate git worktree (local) or in a checkout you
-   prepared on an SSH host.
+   prepared on an SSH host. The session header names the branch, the machine ("local" or the
+   host) and that folder.
 3. The agent's text and tool calls stream into the window. Commands omp wants approved stop at
    a card that shows the command and a risk hint. Nothing runs until you choose.
 4. When the agent is done, you run your own verify command. `ch-runner` runs it and records

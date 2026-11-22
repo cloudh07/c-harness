@@ -61,15 +61,16 @@ them, or names one of another kind.
 1. The app reads the model key from the keychain and asks `ch-runtime` for a sandbox: a
    detached, locked git worktree of your repository with a session record on disk, or a
    checkout you prepared on a machine you reach over SSH. A local session holds a lock file
-   for as long as its window has it open.
+   for as long as its window has it open. The session's header keeps the machine and folder
+   it got here, so changing Settings later does not relabel it.
 2. `ch-runtime` starts `ch-runner` there. The model key travels in `ch_start` over stdin and
    lands in omp's environment only. It never appears on a command line.
 3. `ch-runner` checks that it was started at the top of a git working tree and reads the
    commit the session starts from. Each git command of this check has 30 seconds; a failure
    or a hang ends the start with the `repo` stage, kept apart from `start` so a damaged
-   repository is not mistaken for a provider. It checks the working tree for project omp config (`.omp`, `.claude`,
-   `.codex`, `.gemini`) and warns. It asks omp whether a Claude subscription login is stored and which
-   providers the user already turned off, then starts `omp --mode rpc` with a config overlay
+   repository is not mistaken for a provider. It checks the working tree for project omp
+   config (`.omp`, `.claude`, `.codex`, `.gemini`) and warns. It asks omp whether a Claude
+   subscription login is stored and which providers the user already turned off, then starts `omp --mode rpc` with a config overlay
    that keeps those off and adds `google-antigravity`, plus `anthropic` while a login is
    stored or the answer was not recognised.
 4. omp events stream back. `ch-core` folds them into the session state. An approval request

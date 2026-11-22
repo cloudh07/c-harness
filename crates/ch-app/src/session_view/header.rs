@@ -1,5 +1,7 @@
 //! The bar above the thread: what the session is, where it works, and its own actions.
 
+use std::path::Path;
+
 use ch_ui::Status;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
@@ -9,13 +11,15 @@ use gpui_kit::{
 use super::{Phase, SessionView, status_for};
 use crate::assets::{Icon, icon, status_icon};
 use crate::view_model::{
-    branch_for, context_label, context_near_full, live_title, repo_label, session_title,
-    state_label, usage_label,
+    Place, Sandbox, branch_for, context_label, context_near_full, elide_middle, live_title,
+    session_title, state_label, usage_label,
 };
 use crate::widgets::{MONO, Tone, icon_button};
 
 const STATUS_ICON: f32 = 16.0;
 const META_ICON: f32 = 12.0;
+/// Characters of the worktree path the header shows before it drops the middle.
+const PATH_LIMIT: usize = 64;
 
 impl SessionView {
     pub(super) fn header(&self, cx: &mut Context<Self>) -> Div {
@@ -46,7 +50,9 @@ impl SessionView {
             ),
         };
         let live = matches!(self.phase, Phase::Live(_));
-        let meta = self.meta(color, label, branch);
+        let (place, worktree) = self.place();
+        let meta = self.meta(color, label, &place.repo, branch);
+        let where_row = self.where_row(&place, worktree);
 
         div()
             .flex()
@@ -72,7 +78,8 @@ impl SessionView {
                             .truncate()
                             .child(title),
                     )
-                    .child(meta),
+                    .child(meta)
+                    .child(where_row),
             )
             .when(live, |bar| {
                 bar.child(
@@ -103,11 +110,20 @@ impl SessionView {
 }
 
 impl SessionView {
+    /// Where the session works. A session that started keeps the place it started in; before
+    /// that, the header shows where the next one would run.
+    fn place(&self) -> (Place, Option<&Path>) {
+        match &self.phase {
+            Phase::Launching { place, .. } | Phase::Resuming { place, .. } => (place.clone(), None),
+            Phase::Live(live) => (live.place.clone(), live.worktree.as_deref()),
+            Phase::Empty | Phase::LaunchFailed { .. } => (Place::of(&self.settings), None),
+        }
+    }
+
     /// The line under the title: state, repository, branch and, once a turn ends, usage and
     /// context, the context drawn as a warning when the window is nearly full.
-    fn meta(&self, color: u32, label: &'static str, branch: Option<String>) -> Div {
+    fn meta(&self, color: u32, label: &'static str, repo: &str, branch: Option<String>) -> Div {
         let p = self.palette;
-        let repo = repo_label(&self.settings);
         let (usage, context, near_full) = match &self.phase {
             Phase::Live(live) => (
                 usage_label(&live.driver.usage().totals()),
@@ -125,8 +141,12 @@ impl SessionView {
             .text_color(rgb(p.text_muted))
             .child(div().flex_none().text_color(rgb(color)).child(label))
             .when(!repo.is_empty(), |row| {
-                row.child(dot(p.text_faint))
-                    .child(meta_item(p, Icon::FolderGit, repo, None))
+                row.child(dot(p.text_faint)).child(meta_item(
+                    p,
+                    Icon::FolderGit,
+                    repo.to_string(),
+                    None,
+                ))
             })
             .children(branch.map(|branch| {
                 div()
@@ -147,6 +167,39 @@ impl SessionView {
                         item.text_color(rgb(p.status(Status::NearCap)))
                     }),
                 )
+            })
+    }
+
+    /// The second line: this computer or the SSH host, then the folder the agent writes in. The
+    /// path keeps its start and its end, where the session's own folder is.
+    fn where_row(&self, place: &Place, worktree: Option<&Path>) -> Div {
+        let p = self.palette;
+        let glyph = match place.sandbox {
+            Sandbox::Local => Icon::Monitor,
+            Sandbox::Ssh { .. } => Icon::Globe,
+        };
+        let sandbox = place.sandbox_label();
+        let has_sandbox = !sandbox.is_empty();
+        let folder = place.folder(worktree);
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .text_xs()
+            .text_color(rgb(p.text_muted))
+            .when(has_sandbox, |row| {
+                row.child(div().flex_none().child(meta_item(p, glyph, sandbox, None)))
+            })
+            .when_some(folder, |row, folder| {
+                row.when(has_sandbox, |row| row.child(dot(p.text_faint)))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(MONO)
+                            .child(elide_middle(&folder, PATH_LIMIT)),
+                    )
             })
     }
 }

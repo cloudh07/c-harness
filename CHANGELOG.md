@@ -136,6 +136,10 @@ Notable changes to C-Harness. The format follows
   finish. A check that fails or hangs ends the start with its own `repo` stage, which the
   banner calls "the repository check", so it is never taken for a provider that does not
   answer. A timeout suggests `git fsck`.
+- `ch-app`: the session header has a second line that says where the session runs: "local", or
+  the SSH host with the port Settings name, then the folder the agent writes in. That folder is
+  the session's worktree once the runner has made it, or the checkout on the host. A long path
+  drops its middle, so the drive and the session's own folder stay in view.
 
 ### Changed
 
@@ -160,6 +164,9 @@ Notable changes to C-Harness. The format follows
 - `ch-app`: a run that ends with no reply text and no tool calls saves no checkpoint, and the
   thread says so under the run. Any edit you made in the worktree meanwhile goes into the next
   checkpoint.
+- `ch-app`: the header names an SSH session after the folder of its remote checkout instead of
+  the host, which moved to the new line. A session keeps the host and folder it started with
+  when you change Settings.
 
 ### Security
 
