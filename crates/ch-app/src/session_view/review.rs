@@ -16,6 +16,7 @@ use gpui_kit::{
 
 use super::{Live, OpenSettings, SessionView, list};
 use crate::assets::{Icon, icon};
+use crate::driver::RunnerBlock;
 use crate::view_model::{
     branch_for, check_outcome, check_passed, diff_files, diff_totals, elide_middle, first_chars,
     pr_link_allowed, secret_rows,
@@ -200,19 +201,25 @@ impl SessionView {
                         .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(OpenSettings))),
                 )
         };
-        let outdated = driver.runner_predates_secret_scan().then(|| {
+        let runner_note = driver.runner_block().map(|block| {
+            let why = match block {
+                RunnerBlock::Outdated => "This ch-runner is too old to scan a land for secrets",
+                RunnerBlock::Silent => {
+                    "This ch-runner never said which version it is and may not scan a land for \
+                     secrets"
+                }
+            };
             muted(
                 p,
                 format!(
-                    "This ch-runner is too old to scan a land for secrets, so landing is off. \
-                     Reinstall it where the session runs with `{RUNNER_INSTALL_COMMAND} --force`, \
-                     then start the session again."
+                    "{why}, so landing is off. Reinstall it where the session runs with \
+                     `{RUNNER_INSTALL_COMMAND} --force`, then start the session again."
                 ),
             )
         });
         section
             .children(refused.map(|scan| self.secret_findings(scan, can_land, cx)))
-            .children(outdated)
+            .children(runner_note)
             .child(
                 icon_text_button(
                     p,

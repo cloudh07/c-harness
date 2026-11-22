@@ -103,7 +103,8 @@ is not reported. A diff over 32 MiB is refused unread. Land anyway lands the ref
 unscanned; any later edit makes a new tree, and that one is scanned. The scan runs in
 `ch-runner`, so the app lands only through a runner that announced protocol 3 or later in its
 hello. A runner installed before the scan existed would commit and push unscanned, so the app
-turns Land off for it and says to reinstall; a runner that never said hello cannot land either.
+turns Land off for it and says to reinstall. A runner that never said hello is treated the same
+way.
 The protocol number is the runner's own claim: it guards against an old install, not a forged
 runner. Read the diff before you land.
 

@@ -90,6 +90,15 @@ impl Request {
     }
 }
 
+/// Why the runner keeps land off when nothing else would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunnerBlock {
+    /// Its hello named a protocol older than the secret scan.
+    Outdated,
+    /// It never said hello, or said it in a shape this app cannot read.
+    Silent,
+}
+
 pub struct Driver {
     link: Link,
     session: Session,
@@ -209,13 +218,23 @@ impl Driver {
     /// that failed, since a rejected push is fixed by changing settings and trying again. Only
     /// through a runner that announced the secret scan; one that never said hello is refused too.
     pub fn can_land(&self) -> bool {
-        if self.closed || self.landing() || self.restoring() {
-            return false;
+        self.runner_protocol
+            .is_some_and(|protocol| protocol >= SECRET_SCAN_PROTOCOL)
+            && self.land_ready()
+    }
+
+    /// Why the runner alone keeps land off. Silence is reported only once everything else would
+    /// allow a land: the hello comes before omp is ready, so until then it may still be on its way.
+    pub fn runner_block(&self) -> Option<RunnerBlock> {
+        match self.runner_protocol {
+            Some(protocol) if protocol < SECRET_SCAN_PROTOCOL => Some(RunnerBlock::Outdated),
+            Some(_) => None,
+            None => self.land_ready().then_some(RunnerBlock::Silent),
         }
-        if self
-            .runner_protocol
-            .is_none_or(|protocol| protocol < SECRET_SCAN_PROTOCOL)
-        {
+    }
+
+    fn land_ready(&self) -> bool {
+        if self.closed || self.landing() || self.restoring() {
             return false;
         }
         match self.session.state() {
@@ -223,13 +242,6 @@ impl Driver {
             SessionState::Failed => self.session.failure().is_some_and(|f| f.stage == "land"),
             _ => false,
         }
-    }
-
-    /// The runner said hello with a protocol older than the secret scan, so it would land
-    /// unscanned. False before any hello: a runner that has not spoken is not called old.
-    pub fn runner_predates_secret_scan(&self) -> bool {
-        self.runner_protocol
-            .is_some_and(|protocol| protocol < SECRET_SCAN_PROTOCOL)
     }
 
     /// Starts omp. `prompt` is sent as soon as omp says it is ready.

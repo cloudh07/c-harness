@@ -195,7 +195,7 @@ fn a_runner_older_than_the_secret_scan_cannot_land() {
     rig.hello_at(SECRET_SCAN_PROTOCOL - 1);
     run_to_review(&mut rig);
 
-    assert!(rig.driver.runner_predates_secret_scan());
+    assert_eq!(rig.driver.runner_block(), Some(RunnerBlock::Outdated));
     assert!(!rig.driver.can_land());
     assert!(!rig.driver.land(land_request()));
     assert_nothing_landed(&mut rig);
@@ -208,7 +208,7 @@ fn a_later_hello_cannot_make_the_runner_newer() {
     rig.hello();
     run_to_review(&mut rig);
 
-    assert!(rig.driver.runner_predates_secret_scan());
+    assert_eq!(rig.driver.runner_block(), Some(RunnerBlock::Outdated));
     assert!(!rig.driver.land(land_request()));
     assert_nothing_landed(&mut rig);
 }
@@ -218,9 +218,10 @@ fn nothing_lands_through_a_runner_that_never_said_hello() {
     let mut rig = Rig::new();
     run_to_review(&mut rig);
 
-    assert!(
-        !rig.driver.runner_predates_secret_scan(),
-        "an unknown runner is not called old"
+    assert_eq!(
+        rig.driver.runner_block(),
+        Some(RunnerBlock::Silent),
+        "an unknown runner is named, not called old"
     );
     assert!(!rig.driver.can_land());
     assert!(!rig.driver.land(land_request()));
@@ -228,13 +229,31 @@ fn nothing_lands_through_a_runner_that_never_said_hello() {
 }
 
 #[test]
-fn a_runner_at_the_secret_scan_protocol_can_land() {
+fn a_missing_hello_is_not_named_while_the_session_starts() {
     let mut rig = Rig::new();
-    rig.hello_at(SECRET_SCAN_PROTOCOL);
-    run_to_review(&mut rig);
+    rig.driver
+        .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
 
-    assert!(!rig.driver.runner_predates_secret_scan());
-    assert!(rig.driver.can_land());
-    assert!(rig.driver.land(land_request()));
-    rig.pump_until("the stop", |_, sent| !of_type(sent, "ch_stop").is_empty());
+    assert_eq!(rig.driver.session().state(), SessionState::Starting);
+    assert_eq!(
+        rig.driver.runner_block(),
+        None,
+        "the hello may be on its way"
+    );
+}
+
+#[test]
+fn a_runner_at_or_past_the_secret_scan_protocol_lands() {
+    for protocol in [SECRET_SCAN_PROTOCOL, SECRET_SCAN_PROTOCOL + 1] {
+        let mut rig = Rig::new();
+        rig.hello_at(protocol);
+        run_to_review(&mut rig);
+
+        assert_eq!(rig.driver.runner_block(), None, "protocol {protocol}");
+        assert!(rig.driver.land(land_request()), "protocol {protocol}");
+        rig.pump_until("the stop", |_, sent| !of_type(sent, "ch_stop").is_empty());
+        let stop_id = of_type(&rig.sent(), "ch_stop")[0]["id"].clone();
+        rig.say(&json!({"type":"ch_stopped","id":stop_id,"exit_code":0}));
+        rig.pump_until("the land", |_, sent| !of_type(sent, "ch_land").is_empty());
+    }
 }
