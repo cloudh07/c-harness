@@ -10,7 +10,7 @@ use crate::settings::Settings;
 mod failure;
 mod labels;
 mod place;
-pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text};
+pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text, secret_rows};
 pub use labels::{age_label, context_near_full, live_title};
 pub use place::{Place, Sandbox, elide_middle};
 
@@ -161,6 +161,7 @@ pub fn land_request(
     first_prompt: &str,
     token: String,
     evidence: &[Evidence],
+    acknowledged_tree: Option<String>,
 ) -> LandRequest {
     let repo = settings.github_repo.trim().to_string();
     let message = commit_message(first_prompt, session);
@@ -180,6 +181,7 @@ pub fn land_request(
             title: message,
             body: pr_body(session, evidence),
         }),
+        acknowledged_tree,
     }
 }
 
@@ -467,7 +469,8 @@ mod tests {
             base_branch: "trunk".into(),
             ..Settings::default()
         };
-        let request = land_request(&settings, "s1", "Fix it", "tok".into(), &[]);
+        let request = land_request(&settings, "s1", "Fix it", "tok".into(), &[], None);
+        assert_eq!(request.acknowledged_tree, None, "a plain land is scanned");
         assert_eq!(request.branch, "ch/s1");
         assert_eq!(request.message, "Fix it");
         assert_eq!(request.author.name, "Ada");
@@ -477,6 +480,19 @@ mod tests {
         assert_eq!(pr.repo, "example/demo");
         assert_eq!(pr.base, "trunk");
         assert_eq!(pr.title, "Fix it");
+    }
+
+    #[test]
+    fn land_anyway_carries_the_tree_the_person_looked_at() {
+        let request = land_request(
+            &Settings::default(),
+            "s1",
+            "Fix it",
+            "tok".into(),
+            &[],
+            Some("4b825dc".into()),
+        );
+        assert_eq!(request.acknowledged_tree.as_deref(), Some("4b825dc"));
     }
 
     #[test]

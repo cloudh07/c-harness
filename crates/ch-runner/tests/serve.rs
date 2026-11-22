@@ -44,8 +44,10 @@ const WAIT: Duration = Duration::from_secs(60);
 mod approval;
 #[path = "serve/checkpoints.rs"]
 mod checkpoints;
+#[path = "serve/secret_scan.rs"]
+mod secret_scan;
 
-const SCENARIOS: [(&str, fn()); 10] = [
+const SCENARIOS: [(&str, fn()); 12] = [
     ("full_session", full_session),
     (
         "project_config_and_provider_notice",
@@ -70,6 +72,14 @@ const SCENARIOS: [(&str, fn()); 10] = [
     (
         "checkpoints_need_a_session_worktree",
         checkpoints::checkpoints_need_a_session_worktree,
+    ),
+    (
+        "a_secret_blocks_land_until_its_tree_is_acknowledged",
+        secret_scan::a_secret_blocks_land_until_its_tree_is_acknowledged,
+    ),
+    (
+        "a_private_key_blocks_land_and_a_removed_key_does_not",
+        secret_scan::a_private_key_blocks_land_and_a_removed_key_does_not,
     ),
 ];
 

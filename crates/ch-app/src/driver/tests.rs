@@ -186,6 +186,7 @@ fn land_request() -> LandRequest {
         remote_url: "https://github.com/example/demo.git".into(),
         token: Some(TOKEN.into()),
         pull_request: None,
+        acknowledged_tree: None,
     }
 }
 

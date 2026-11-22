@@ -6,13 +6,14 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use ch_protocol::runner::{GitAuthor, LandRequest};
+use ch_protocol::runner::{GitAuthor, LandRequest, SecretScan};
 
 use crate::base64;
 use crate::git::{self, Base, Git};
 use crate::pr::{PrOpener, PrRequest};
 use crate::proc_tree;
 use crate::scratch::PrivateDir;
+use crate::secret_scan;
 use crate::verify::Checked;
 
 /// The one place a land sends a token. Any other host, or a local path, lands without one.
@@ -28,6 +29,20 @@ pub struct Landed {
     pub pull_request_url: Option<String>,
 }
 
+/// Why nothing was landed.
+#[derive(Debug)]
+pub enum LandError {
+    /// The secret scan refused the change. Nothing was committed or pushed.
+    Secrets(SecretScan),
+    Failed(String),
+}
+
+impl From<String> for LandError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
 pub struct Lander<'a> {
     pub git: &'a Git,
     pub base: &'a Base,
@@ -40,15 +55,15 @@ pub struct Lander<'a> {
 }
 
 impl Lander<'_> {
-    pub fn land(&mut self, request: &LandRequest) -> Result<Landed, String> {
+    pub fn land(&mut self, request: &LandRequest) -> Result<Landed, LandError> {
         validate(request, self.opener.requires_token())?;
         check_branch_name(self.git, &request.branch)?;
         let reference = format!("refs/heads/{}", request.branch);
         if self.checked_out_branch().as_deref() == Some(reference.as_str()) {
-            return Err(format!(
+            return Err(LandError::Failed(format!(
                 "{} is the branch checked out in the working tree",
                 request.branch
-            ));
+            )));
         }
         let commit = self.commit(request, &reference)?;
         let scratch = PrivateDir::create("ch-runner-push")
@@ -91,14 +106,24 @@ impl Lander<'_> {
     }
 
     /// Commits the working tree on top of the base and points the branch at it.
-    fn commit(&mut self, request: &LandRequest, reference: &str) -> Result<String, String> {
+    fn commit(&mut self, request: &LandRequest, reference: &str) -> Result<String, LandError> {
         let index = self.session.unique_path("land-index");
         let tree = self.git.worktree_tree(self.base, &index)?;
-        if tree == self.git.base_tree(self.base)? {
-            return Err("nothing to land: the working tree has no changes".to_owned());
+        let base_tree = self.git.base_tree(self.base)?;
+        if tree == base_tree {
+            return Err(LandError::Failed(
+                "nothing to land: the working tree has no changes".to_owned(),
+            ));
         }
         if let Some(checked) = self.checked {
             checked.allows(&tree)?;
+        }
+        // An acknowledgement is bound to one tree, so any change made after the person looked
+        // is scanned again.
+        if request.acknowledged_tree.as_deref() != Some(tree.as_str())
+            && let Some(scan) = secret_scan::scan(self.git, &base_tree, &tree)?
+        {
+            return Err(LandError::Secrets(scan));
         }
         let previous = self.landed.get(&request.branch).cloned();
         if let Some(previous) = &previous
@@ -400,6 +425,7 @@ mod tests {
                 title: "Add a test".into(),
                 body: String::new(),
             }),
+            acknowledged_tree: None,
         }
     }
 

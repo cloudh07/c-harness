@@ -23,13 +23,14 @@ use serde_json::Value;
 
 use crate::checkpoint::Store;
 use crate::git::{Base, Git};
-use crate::land::Lander;
+use crate::land::{LandError, Lander};
 use crate::omp::{self, Launch, Omp};
 use crate::out::Out;
 use crate::pr::PrOpener;
 use crate::proc_tree;
 use crate::scratch::PrivateDir;
 use crate::scrub::Scrubber;
+use crate::secret_scan;
 use crate::verify::{self, Checked, Job};
 
 mod checkpoints;
@@ -206,6 +207,7 @@ fn error(id: Option<String>, stage: &str, message: impl Into<String>) -> RunnerF
         id,
         stage: stage.to_owned(),
         message: message.into(),
+        secret_scan: None,
     }
 }
 
@@ -501,7 +503,18 @@ impl Session {
                 commit: done.commit,
                 pull_request_url: done.pull_request_url.map(|url| scrubber.scrub(&url)),
             },
-            Err(e) => error(id, LAND, scrubber.scrub(&e)),
+            Err(LandError::Failed(e)) => error(id, LAND, scrubber.scrub(&e)),
+            Err(LandError::Secrets(mut scan)) => {
+                for finding in &mut scan.findings {
+                    finding.path = scrubber.scrub(&finding.path);
+                }
+                RunnerFrame::Error {
+                    id,
+                    stage: LAND.to_owned(),
+                    message: scrubber.scrub(&secret_scan::refusal(&scan)),
+                    secret_scan: Some(scan),
+                }
+            }
         };
         self.out.frame(&frame);
     }
@@ -556,7 +569,10 @@ mod tests {
     fn a_bad_runner_frame_keeps_its_id_and_hides_its_secrets() {
         let line = r#"{"type":"ch_land","id":"l1","token":"test-token-not-real","author":"test-token-not-real"}"#;
         let route = route_client_line(line).unwrap_err();
-        let RunnerFrame::Error { id, stage, message } = bad_line(line, &route) else {
+        let RunnerFrame::Error {
+            id, stage, message, ..
+        } = bad_line(line, &route)
+        else {
             panic!("expected an error");
         };
         assert_eq!(id.as_deref(), Some("l1"));

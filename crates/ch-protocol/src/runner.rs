@@ -25,6 +25,9 @@ pub const MAX_PATCH_BYTES: usize = 512 * 1024;
 /// The most checkpoints the runner lists in [`RunnerFrame::Checkpoints`].
 pub const MAX_CHECKPOINTS: usize = 1000;
 
+/// The most findings a refused land lists in [`SecretScan::findings`]; the rest are counted.
+pub const MAX_SECRET_FINDINGS: usize = 50;
+
 const MASKED: &str = "<hidden>";
 
 /// What the client sends the runner.
@@ -110,6 +113,10 @@ pub struct LandRequest {
     pub token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<PullRequestSpec>,
+    /// The [`SecretScan::tree`] of a land the person chose to make anyway. The runner skips
+    /// the secret scan only when the tree it is about to commit is this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledged_tree: Option<String>,
 }
 
 impl fmt::Debug for LandRequest {
@@ -122,8 +129,54 @@ impl fmt::Debug for LandRequest {
             .field("remote_url", &self.remote_url)
             .field("token", &self.token.as_ref().map(|_| MASKED))
             .field("pull_request", &self.pull_request)
+            .field("acknowledged_tree", &self.acknowledged_tree)
             .finish()
     }
+}
+
+/// What kind of credential a line looks like it holds. The value itself is never sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretKind {
+    /// A token with a known provider prefix, such as a GitHub, cloud or model API key.
+    ProviderToken,
+    /// A PEM private key.
+    PrivateKey,
+}
+
+impl SecretKind {
+    /// How a person reads the kind, in a refusal and in the app.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ProviderToken => "provider token",
+            Self::PrivateKey => "private key",
+        }
+    }
+}
+
+/// A line a land would add that looks like it holds a credential.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretFinding {
+    pub path: String,
+    /// 1-based, in the new version of the file.
+    pub line: u32,
+    pub kind: SecretKind,
+}
+
+/// Why the secret scan refused a land, carried on that land's `ch_error`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretScan {
+    /// The tree the scan read. A `ch_land` naming it as `acknowledged_tree` lands it unscanned.
+    pub tree: String,
+    /// The first [`MAX_SECRET_FINDINGS`] lines that matched.
+    pub findings: Vec<SecretFinding>,
+    /// How many more lines matched than are listed.
+    #[serde(default)]
+    pub more: u32,
+    /// The change was too large to read whole, so none of it was scanned.
+    #[serde(default)]
+    pub too_large: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,7 +254,11 @@ pub enum RunnerFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
         stage: String,
+        /// Complete on its own, for a client that does not read `secret_scan`.
         message: String,
+        /// Set when the secret scan refused a land.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secret_scan: Option<SecretScan>,
     },
 }
 
@@ -377,6 +434,20 @@ mod tests {
                 title: "Add a test".into(),
                 body: String::new(),
             }),
+            acknowledged_tree: None,
+        }
+    }
+
+    fn refused_scan() -> SecretScan {
+        SecretScan {
+            tree: "t1".into(),
+            findings: vec![SecretFinding {
+                path: "src/config.rs".into(),
+                line: 12,
+                kind: SecretKind::ProviderToken,
+            }],
+            more: 3,
+            too_large: false,
         }
     }
 
@@ -415,6 +486,10 @@ mod tests {
             },
             ClientFrame::Stop { id: "x1".into() },
             ClientFrame::Land(land()),
+            ClientFrame::Land(LandRequest {
+                acknowledged_tree: Some("t1".into()),
+                ..land()
+            }),
         ];
         for frame in frames {
             let line = frame.to_line();
@@ -472,6 +547,13 @@ mod tests {
                 id: None,
                 stage: "start".into(),
                 message: "omp not found".into(),
+                secret_scan: None,
+            },
+            RunnerFrame::Error {
+                id: Some("l1".into()),
+                stage: "land".into(),
+                message: "nothing was landed".into(),
+                secret_scan: Some(refused_scan()),
             },
         ];
         for frame in frames {
@@ -583,6 +665,65 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_scan_is_optional_on_both_sides_and_names_its_kind() {
+        let old_error = r#"{"type":"ch_error","id":"l1","stage":"land","message":"no"}"#;
+        match route_runner_line(old_error) {
+            Ok(RunnerLine::Runner(RunnerFrame::Error { secret_scan, .. })) => {
+                assert_eq!(secret_scan, None);
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
+        let plain = RunnerFrame::Error {
+            id: None,
+            stage: "land".into(),
+            message: "no".into(),
+            secret_scan: None,
+        }
+        .to_line();
+        assert!(!plain.contains("secret_scan"), "{plain}");
+        let refused = RunnerFrame::Error {
+            id: Some("l1".into()),
+            stage: "land".into(),
+            message: "no".into(),
+            secret_scan: Some(refused_scan()),
+        }
+        .to_line();
+        assert!(refused.contains(r#""kind":"provider_token""#), "{refused}");
+        let sparse = r#"{"type":"ch_error","stage":"land","message":"no",
+            "secret_scan":{"tree":"t1","findings":[]}}"#;
+        match route_runner_line(sparse) {
+            Ok(RunnerLine::Runner(RunnerFrame::Error {
+                secret_scan: Some(scan),
+                ..
+            })) => assert_eq!((scan.more, scan.too_large), (0, false)),
+            other => panic!("expected a refused scan, got {other:?}"),
+        }
+
+        let plain_land = ClientFrame::Land(land()).to_line();
+        assert!(!plain_land.contains("acknowledged_tree"), "{plain_land}");
+        let old_land = r#"{"type":"ch_land","id":"l1","branch":"b","message":"m",
+            "author":{"name":"n","email":"e"},"remote_url":"/r"}"#;
+        match route_client_line(old_land) {
+            Ok(ClientLine::Runner(ClientFrame::Land(request))) => {
+                assert_eq!(request.acknowledged_tree, None);
+            }
+            other => panic!("expected a land, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn debug_output_shows_the_acknowledged_tree() {
+        let land = format!(
+            "{:?}",
+            LandRequest {
+                acknowledged_tree: Some("t1".into()),
+                ..land()
+            }
+        );
+        assert!(land.contains(r#"acknowledged_tree: Some("t1")"#), "{land}");
+    }
+
+    #[test]
     fn evidence_passes_only_on_zero_without_timeout() {
         let mut evidence = Evidence {
             id: "v".into(),
@@ -604,5 +745,11 @@ mod tests {
         evidence.timed_out = false;
         evidence.exit_code = None;
         assert!(!evidence.passed());
+    }
+
+    #[test]
+    fn a_secret_kind_reads_as_words() {
+        assert_eq!(SecretKind::ProviderToken.label(), "provider token");
+        assert_eq!(SecretKind::PrivateKey.label(), "private key");
     }
 }
