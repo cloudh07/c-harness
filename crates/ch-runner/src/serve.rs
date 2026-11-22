@@ -188,7 +188,8 @@ struct Session {
     landed: HashMap<String, String>,
     /// Checks, diffs and restores: land waits for these.
     workers: Vec<JoinHandle<()>>,
-    /// Checkpoint saves: land does not wait for these, they only read the working tree.
+    /// Checkpoint saves: land does not wait for these, they only read the working tree. A
+    /// restore is refused while one runs.
     side_workers: Vec<JoinHandle<()>>,
     /// Set by a start in a worktree that keeps checkpoints.
     checkpoints: Option<Arc<Mutex<Store>>>,

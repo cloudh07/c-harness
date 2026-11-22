@@ -15,6 +15,7 @@ pub(crate) fn clear_git_location(command: &mut Command) {
         "GIT_WORK_TREE",
         "GIT_INDEX_FILE",
         "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_COMMON_DIR",
     ] {
         command.env_remove(var);
@@ -108,5 +109,31 @@ fn finish(action: &'static str, output: &Output) -> Result<String, RuntimeError>
             action,
             stderr: stderr_tail(&output.stderr),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_forgets_every_variable_that_points_at_another_repository() {
+        let mut command = Command::new("git");
+        clear_git_location(&mut command);
+        let cleared: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+        ] {
+            assert!(cleared.iter().any(|name| name == var), "{var} is kept");
+        }
     }
 }

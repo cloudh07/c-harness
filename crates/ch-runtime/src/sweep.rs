@@ -119,7 +119,10 @@ impl LocalProvider {
         only: Option<&str>,
         also: Option<&Path>,
     ) -> Result<Vec<Leftover>, RuntimeError> {
-        let records = self.read_records(only)?;
+        let Records {
+            read: records,
+            unread,
+        } = self.read_records(only)?;
         let mut repos = Vec::new();
         if !self.repo.as_os_str().is_empty() {
             repos.push(self.repo.clone());
@@ -154,7 +157,12 @@ impl LocalProvider {
             }
         }
 
-        let ids: BTreeSet<String> = records.keys().chain(entries.keys()).cloned().collect();
+        let ids: BTreeSet<String> = records
+            .keys()
+            .chain(entries.keys())
+            .filter(|session| !unread.contains(*session))
+            .cloned()
+            .collect();
         let mut leftovers = Vec::new();
         for session in ids {
             // A lock that cannot be checked is treated as held: better hidden than discarded.
@@ -174,29 +182,43 @@ impl LocalProvider {
         Ok(leftovers)
     }
 
-    /// Every record by session id; `None` for one that cannot be read.
-    fn read_records(
-        &self,
-        only: Option<&str>,
-    ) -> Result<BTreeMap<String, Option<SessionRecord>>, RuntimeError> {
+    /// Every record by session id, `None` for a damaged one, and the sessions whose record
+    /// could not be read at all. Those are hidden, and a discard of one is refused: a file
+    /// another program holds open is not damaged.
+    fn read_records(&self, only: Option<&str>) -> Result<Records, RuntimeError> {
         let ids = match only {
             Some(session) => vec![session.to_owned()],
             None => record_ids(&self.sessions_dir)?,
         };
-        let mut records = BTreeMap::new();
+        let mut records = Records::default();
         for session in ids {
             match record::read(&self.sessions_dir, &session) {
                 Ok(None) => {}
                 Ok(Some(record)) if record.session == session => {
-                    records.insert(session, Some(record));
+                    records.read.insert(session, Some(record));
                 }
-                _ => {
-                    records.insert(session, None);
+                Ok(Some(_)) => {
+                    records.read.insert(session, None);
+                }
+                Err(RuntimeError::Io { source, .. })
+                    if source.kind() == io::ErrorKind::InvalidData =>
+                {
+                    records.read.insert(session, None);
+                }
+                Err(error) if only.is_some() => return Err(error),
+                Err(_) => {
+                    records.unread.insert(session);
                 }
             }
         }
         Ok(records)
     }
+}
+
+#[derive(Default)]
+struct Records {
+    read: BTreeMap<String, Option<SessionRecord>>,
+    unread: BTreeSet<String>,
 }
 
 fn kind_of(
@@ -576,6 +598,25 @@ mod tests {
         assert!(!refs(&repo).contains("refs/c-harness/s1/"));
         let ran = fs::read_to_string(&marker).unwrap_or_default();
         assert_eq!(ran, "", "a repository hook ran");
+    }
+
+    #[test]
+    fn a_record_that_cannot_be_read_is_hidden_and_not_discarded() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = repo_with_commit(root.path());
+        let provider = provider(root.path(), repo.clone());
+        provider.create_worktree("s1").unwrap();
+        provider.create_worktree("s2").unwrap();
+        // Reading a folder fails with an I/O error, not with bad content.
+        record::remove(&provider.sessions_dir, "s1").unwrap();
+        fs::create_dir(provider.sessions_dir.join("s1.json")).unwrap();
+
+        assert_eq!(kinds(&provider), [("s2".to_owned(), LeftoverKind::Live)]);
+        assert!(matches!(
+            provider.discard("s1", None),
+            Err(RuntimeError::Io { .. })
+        ));
+        assert_eq!(worktree_count(&repo), 3);
     }
 
     #[test]

@@ -63,9 +63,11 @@ Notable changes to C-Harness. The format follows
   reused.
 - `ch-app`: the empty session screen lists local sessions an earlier run left behind, with
   what is left of each: a live worktree, a worktree whose folder is gone, a record only, a
-  record whose repository moved, a worktree with no record, or a damaged record. Keep hides one
-  until the next start. Discard, pressed twice, deletes its worktree with any uncommitted
-  changes, its checkpoint refs and its record, and keeps its `ch/<session>` branch. Only a
+  record whose repository moved, a worktree with no record, or a damaged record. A record that
+  cannot be read at all, such as one another program holds open, is left off the list and
+  cannot be discarded. Keep hides one until the next start. Discard, pressed twice, deletes its
+  worktree with any uncommitted changes, its checkpoint refs and its record, and keeps its
+  `ch/<session>` branch. Only a
   folder git lists as that session's worktree is deleted; any other is named and left alone.
 - `ch-runtime`: an open local session holds `c-harness/sessions/<session>.lock`, so a second
   window cannot start or discard it. The lock is released after the worktree is removed.
@@ -137,7 +139,7 @@ Notable changes to C-Harness. The format follows
 - The GitHub token is only ever sent to `https://github.com/`: a land that carries a token is
   refused for any other remote. UNC paths are refused as remotes.
 - Land is refused while a verify, diff or restore is still running. A restore is refused while
-  any of them runs.
+  any of them runs, or while a checkpoint is still being saved.
 - Checkpoints are kept only in a worktree locked for the session, so a restore never rewrites a
   checkout C-Harness did not make. The agent can rewrite these refs, so they are never used as
   evidence. They are deleted with the worktree, and land pushes only the session branch. A
@@ -146,7 +148,8 @@ Notable changes to C-Harness. The format follows
   it can check (16 MiB of names) is refused.
 - `ch-runtime` runs git with hooks and `fsmonitor` turned off, as `ch-runner` already did, so
   creating or removing a worktree, or deleting its checkpoints, runs no program the repository
-  names.
+  names. It also drops `GIT_ALTERNATE_OBJECT_DIRECTORIES` from git's environment, like the
+  other variables that point git at another repository.
 - Approval dialogs the app cannot answer (`confirm`, `input`, `editor`, `ask`) are cancelled,
   which omp treats as a refusal.
 - A runner frame that arrives inside omp's `rpc_chunk` sequence is dropped, so omp cannot forge

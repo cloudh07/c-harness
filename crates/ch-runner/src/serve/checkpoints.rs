@@ -61,12 +61,16 @@ impl Session {
     /// Saves the working tree, then puts back checkpoint `turn`. Land waits for it.
     pub(super) fn restore(&mut self, id: String, turn: u32) {
         self.workers.retain(|worker| !worker.is_finished());
+        self.side_workers.retain(|worker| !worker.is_finished());
         let refusal = if self.base.is_none() {
             Some("send ch_start before ch_restore")
         } else if matches!(self.omp, OmpState::Lost) {
             Some("omp could not be ended, so the working tree may still be changing")
         } else if !self.workers.is_empty() {
             Some("refused while a check, diff or restore is still running: wait for its result")
+        } else if !self.side_workers.is_empty() {
+            // The store lock is not fair, so a restore could take its turn number first.
+            Some("refused while a checkpoint is still being saved: wait for its result")
         } else {
             None
         };
@@ -163,5 +167,95 @@ impl Range<'_> {
             Some(store) => store.resolve(self.git, self.base, turn),
             None => Err(NO_CHECKPOINTS.to_owned()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::io::{self, Write};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+
+    use serde_json::Value;
+
+    use super::*;
+    use crate::out::Out;
+    use crate::pr::CurlPrOpener;
+    use crate::scratch::PrivateDir;
+
+    #[derive(Clone, Default)]
+    struct Written(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Written {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Written {
+        fn messages(&self) -> Vec<String> {
+            let bytes = self.0.lock().unwrap();
+            String::from_utf8_lossy(&bytes)
+                .lines()
+                .map(|line| {
+                    let frame: Value = serde_json::from_str(line).unwrap();
+                    frame["message"].as_str().unwrap_or_default().to_owned()
+                })
+                .collect()
+        }
+    }
+
+    fn started(out: &Written, dir: &PrivateDir) -> Session {
+        Session {
+            out: Out::new(out.clone()),
+            git: Git::new(dir.path(), dir.path().join("no-hooks")),
+            dir: PrivateDir::create("ch-runner-test").unwrap(),
+            omp_program: "omp".into(),
+            opener: Box::new(CurlPrOpener),
+            base: Some(Base {
+                id: "0".repeat(40),
+                is_commit: true,
+            }),
+            omp: OmpState::NotStarted,
+            landed: HashMap::new(),
+            workers: Vec::new(),
+            side_workers: Vec::new(),
+            checkpoints: None,
+            shutdown: Arc::new(AtomicBool::new(false)),
+            checked: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    #[test]
+    fn a_restore_waits_for_a_checkpoint_save_in_flight() {
+        let written = Written::default();
+        let dir = PrivateDir::create("ch-runner-test").unwrap();
+        let mut session = started(&written, &dir);
+        let (release, held) = mpsc::channel::<()>();
+        session.side_workers.push(thread::spawn(move || {
+            let _ = held.recv();
+        }));
+
+        session.restore("r1".to_owned(), 1);
+        drop(release);
+        for save in session.side_workers.drain(..) {
+            save.join().unwrap();
+        }
+        // The save is done, so the next refusal is only that this tree keeps none.
+        session.restore("r2".to_owned(), 1);
+
+        assert_eq!(
+            written.messages(),
+            [
+                "refused while a checkpoint is still being saved: wait for its result",
+                NO_CHECKPOINTS
+            ]
+        );
     }
 }
