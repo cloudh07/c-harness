@@ -121,6 +121,12 @@ commit the session began from.
 - Files come back with your repository's line-ending settings, as `git checkout` writes them.
 - Restore waits while the agent works and while a check, diff or another restore runs. A new
   prompt waits for a restore, and up to 15 seconds for the save of the last run.
+- Restore also moves the agent's conversation back to the same checkpoint, so code and
+  conversation agree. This needs omp 18.13.2 or newer. With an older omp, or for a checkpoint
+  saved before it, Restore is refused and neither changes. The conversation moves first: if omp
+  will not move it, the code is left alone, and if the runner then refuses the code, the
+  conversation is moved back. Turns after the checkpoint stay on screen, and usage is not
+  rewound.
 - A run that ends with no reply and no tool calls saves no checkpoint, and the thread says so.
 - A session keeps at most 1000 checkpoints. Only a worktree C-Harness made for the session
   keeps them, so an SSH session has none.
