@@ -2,6 +2,7 @@
 //! and the review panel that ends in a pull request.
 
 mod composer;
+mod exit;
 mod header;
 mod leftovers;
 mod resume;
@@ -147,10 +148,8 @@ impl SessionView {
                 .auto_grow(2, 8)
                 .submit_on_enter(true)
         });
-        let subscriptions = vec![
-            cx.subscribe_in(&prompt, window, Self::on_prompt_event),
-            waiting::dismiss_on_quit(cx),
-        ];
+        let mut subscriptions = vec![cx.subscribe_in(&prompt, window, Self::on_prompt_event)];
+        subscriptions.extend(exit::save_on_exit(cx));
         let ticker = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
@@ -497,19 +496,11 @@ impl SessionView {
 
     fn close_session(&mut self, cx: &mut Context<Self>) {
         let mut problem = None;
-        if let Phase::Live(live) = std::mem::replace(&mut self.phase, Phase::Empty) {
+        if let Phase::Live(mut live) = std::mem::replace(&mut self.phase, Phase::Empty) {
+            problem = live.leave(cx);
             let Live {
-                mut driver,
-                runner,
-                mut ledger,
-                session,
-                waiting,
-                ..
+                mut driver, runner, ..
             } = *live;
-            if waiting {
-                cx.dismiss_system_notification(&waiting::tag(&session));
-            }
-            problem = ledger.flush(driver.usage().rows());
             let landed = driver.session().state() == SessionState::Landed;
             driver.close();
             if let Some(runner) = runner {

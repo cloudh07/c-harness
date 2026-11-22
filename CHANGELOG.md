@@ -77,8 +77,10 @@ Notable changes to C-Harness. The format follows
   the counts are complete, partial or unavailable. omp's zero means "not reported", so it is
   written as `null`, never as a free turn. The session header sums the turns, and marks a sum
   that misses turns with "≥". If the file cannot be written, the app says so once and tries
-  the same lines again after the next turn and when you start a new session, and says so again
-  if that last try fails too. Lines still unsaved when the app quits are lost. A write after
+  the same lines again after the next turn, when you start a new session, and when you close
+  the window or quit. It says so again if the try at a new session fails too. If the try at
+  quit fails, those lines are lost, and only a terminal that started the app shows why (a
+  Windows release build has none). A write after
   one cut off mid-line, in this run or an earlier one, starts on a new line, and a turn a retry
   wrote twice is read back once.
 - `ch-app`: the session header shows how full omp's context window is, as a share of the
