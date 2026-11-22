@@ -33,5 +33,5 @@ pub use session::{
     ClientAction, Diff, Failure, Landing, Notice, ReplyWait, Session, SessionState, ToolCall,
     ToolStatus, TurnDiff,
 };
-pub use transcript::Transcript;
+pub use transcript::{ENTRIES_COMMAND, Transcript};
 pub use usage::{Usage, UsageRow, UsageStatus, UsageTotals};
