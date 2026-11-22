@@ -232,8 +232,8 @@ pub enum RunnerFrame {
         patch: String,
         truncated: bool,
         /// The working tree as a git tree, written the way [`Evidence`]'s trees are, when the
-        /// range ends at the working tree. `None` for a range between two checkpoints, and from
-        /// a runner older than protocol 4.
+        /// range ends at the working tree. `None` for a range between two checkpoints, when the
+        /// runner could not write the tree, and from a runner older than protocol 4.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tree: Option<String>,
     },

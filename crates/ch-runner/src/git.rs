@@ -236,17 +236,16 @@ impl Git {
         budgets: (usize, usize),
     ) -> Result<Diff, String> {
         let result = self.stage(base, index).and_then(|()| {
-            let tree = self.write_tree(index)?;
+            // Like verify's trees: a tree that cannot be written is sent as none, which reads as
+            // "not the checked tree", and the diff itself still goes out.
+            let tree = self.write_tree(index).ok();
             let diff = capped_diff(budgets, |stat| {
                 let mut command = self.with_index(index);
                 diff_args(&mut command, stat);
                 command.arg("--cached").arg(since).arg("--");
                 command
             })?;
-            Ok(Diff {
-                tree: Some(tree),
-                ..diff
-            })
+            Ok(Diff { tree, ..diff })
         });
         // The index is scratch; leaving it would only waste the temp dir until the session ends.
         let _ = fs::remove_file(index);

@@ -181,9 +181,10 @@ Notable changes to C-Harness. The format follows
 - `ch-protocol`: runner protocol 4, with `PreflightReport` and `ModelTestRequest` for
   `ch-runner preflight`. The request's `Debug` output hides the key.
 - `ch_diff_result` carries `tree`, the working tree as a git tree, for a diff that ends at the
-  working tree. It is written on a private index like the evidence trees, so the app can tell
-  whether the work still matches the last check before it lands. The user's index is untouched,
-  and a runner older than protocol 4 sends none.
+  working tree. It is written on a private index like the evidence trees, so it can be compared
+  with the last check's `tree_after` before Land. The app does not read it yet. The user's index
+  is untouched, and a runner older than protocol 4, or one that could not write the tree, sends
+  none.
 
 ### Changed
 
