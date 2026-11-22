@@ -30,6 +30,8 @@ const HERMETIC: &str = "CH_SERVE_TEST_HERMETIC";
 const FAKE_OMP: &str = "CH_FAKE_OMP";
 const FAKE_EXIT: &str = "CH_FAKE_OMP_EXIT";
 const FAKE_SPOOF: &str = "CH_FAKE_OMP_SPOOF";
+/// Where the fake omp finds its answers when it does not run in the repository.
+const FAKE_ANSWERS: &str = "CH_FAKE_OMP_ANSWERS";
 const MODEL_KEY_ENV: &str = "CH_TEST_MODEL_KEY";
 const MODEL_KEY: &str = "test-model-key-not-real";
 const OAUTH_VALUE: &str = "test-oauth-not-real";
@@ -44,10 +46,20 @@ const WAIT: Duration = Duration::from_secs(60);
 mod approval;
 #[path = "serve/checkpoints.rs"]
 mod checkpoints;
+#[path = "serve/preflight.rs"]
+mod preflight;
 #[path = "serve/secret_scan.rs"]
 mod secret_scan;
 
-const SCENARIOS: [(&str, fn()); 12] = [
+const SCENARIOS: [(&str, fn()); 14] = [
+    (
+        "preflight_reports_the_workdir",
+        preflight::preflight_reports_the_workdir,
+    ),
+    (
+        "preflight_tests_the_model_key",
+        preflight::preflight_tests_the_model_key,
+    ),
     ("full_session", full_session),
     (
         "project_config_and_provider_notice",
@@ -116,6 +128,7 @@ fn rerun_hermetic() -> ExitCode {
         FAKE_OMP,
         FAKE_EXIT,
         FAKE_SPOOF,
+        FAKE_ANSWERS,
         MODEL_KEY_ENV,
     ] {
         command.env_remove(name);
@@ -193,8 +206,10 @@ fn fake_omp(args: &[OsString]) -> ExitCode {
         .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
+    let answers =
+        std::env::var_os(FAKE_ANSWERS).map_or_else(|| PathBuf::from(".git"), PathBuf::from);
     let answer = |file: &str, otherwise: &str| {
-        fs::read_to_string(Path::new(".git").join(file)).unwrap_or_else(|_| otherwise.to_owned())
+        fs::read_to_string(answers.join(file)).unwrap_or_else(|_| otherwise.to_owned())
     };
     // Shapes measured from omp 18.13.1: an empty login store is an error on stderr.
     match args.first().map(String::as_str) {
@@ -211,12 +226,38 @@ fn fake_omp(args: &[OsString]) -> ExitCode {
             answer("fake-omp-disabled", "[]")
         ),
         // No version file plays an omp whose version cannot be read.
-        Some("--version") => match fs::read_to_string(Path::new(".git/fake-omp-version")) {
+        Some("--version") => match fs::read_to_string(answers.join("fake-omp-version")) {
             Ok(version) => print!("{version}"),
             Err(_) => return ExitCode::FAILURE,
         },
+        Some("-p") => return fake_print(&args, &answers),
         _ => return fake_session(&args),
     }
+    ExitCode::SUCCESS
+}
+
+/// omp's print mode: writes down how it was run, then answers or fails with the key in the
+/// error the way a provider might.
+fn fake_print(args: &[String], answers: &Path) -> ExitCode {
+    let oauth_env: Vec<&str> = SUBSCRIPTION_TOKEN_ENV
+        .into_iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .collect();
+    let cwd = std::env::current_dir().map(|dir| dir.to_string_lossy().into_owned());
+    let seen = json!({
+        "args": args,
+        "model_key": std::env::var(MODEL_KEY_ENV).ok(),
+        "oauth_env": oauth_env,
+        "cwd": cwd.unwrap_or_default(),
+    });
+    let _ = fs::write(answers.join("fake-omp-print-seen"), seen.to_string());
+    if answers.join("fake-omp-print-fail").exists() {
+        let key = std::env::var(MODEL_KEY_ENV).unwrap_or_default();
+        eprintln!("Warning: retrying");
+        eprintln!("Error: 401 invalid x-api-key {key}");
+        return ExitCode::FAILURE;
+    }
+    println!("ok");
     ExitCode::SUCCESS
 }
 
@@ -288,7 +329,7 @@ fn full_session() {
 
     let hello = client.expect("ch_runner_hello");
     assert_eq!(hello["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(hello["protocol"], 3);
+    assert_eq!(hello["protocol"], 4);
     assert_eq!(hello["workdir"], dir.to_string_lossy().as_ref());
 
     client.send(&start_frame(&[]));

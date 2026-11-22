@@ -159,6 +159,27 @@ Notable changes to C-Harness. The format follows
 - `ch-protocol`: `ch_land` takes `acknowledged_tree`, and `ch_error` can carry `secret_scan`:
   the tree that was scanned, up to 50 findings, how many more there were, and whether the
   change was too large to read.
+- `ch-app`: a first run in three steps, shown while setup is missing: the engine check, then
+  the repository and keys, then the verify command. Settings has "Run setup again".
+- The engine check runs `ch-runner preflight` where sessions run. It reports whether omp is on
+  the runner's `PATH` and new enough for `--approval-mode always-ask-cached`, and whether git
+  works in the folder. The app checks that the keychain can hold a key by writing and deleting
+  a throwaway entry, and that a model key is stored. Each check says pass, fail or not known,
+  and every failure has a one-line fix. A runner too old for the check says so and names the
+  install command with `--force`.
+- The model test sends one short prompt with tools off, through omp's print mode with
+  `--max-cost` set to $0.05. It runs only when you press its button, which states the cost
+  first; a request already sent can still cost more than the cap.
+- `ch-runner`: the verify command is guessed from the project files: `Cargo.toml` gives
+  `cargo test`, a `package.json` test script gives `npm test`, `pnpm test` or `yarn test` by
+  lockfile, `go.mod` gives `go test ./...`, and a `[tool.pytest]` table in `pyproject.toml`
+  gives `pytest`. Settings offers what it finds under the verify field. Picking one fills the
+  field only while it is empty, and a typed command is never replaced. The app drops any
+  suggestion that is not one of these six commands.
+- `ch-runner preflight` takes `--workdir` as optional. Without it only omp is checked, which
+  is how the engine check runs before a local repository is picked.
+- `ch-protocol`: runner protocol 4, with `PreflightReport` and `ModelTestRequest` for
+  `ch-runner preflight`. The request's `Debug` output hides the key.
 
 ### Changed
 

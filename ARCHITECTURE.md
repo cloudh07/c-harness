@@ -58,6 +58,24 @@ request fails. A land the secret scan refused also carries `secret_scan`: the tr
 and where the findings are, never what they matched. The app keeps the ids it is still waiting
 on and drops a reply that names none of them, or names one of another kind.
 
+## Before the first session
+
+The first run asks `ch-runtime` to start `ch-runner preflight --workdir <dir>` on the machine
+sessions use. The runner prints one `PreflightReport` and exits: omp's version, why git cannot
+work in the folder if it cannot, and the test commands the project files point to. Before a
+local repository is picked, the app leaves out `--workdir` and the runner checks omp alone. omp
+runs in a private temp directory, so the repository's own omp config is not loaded before
+anyone has looked at it. The app keeps only test commands from `VERIFY_COMMANDS`, the fixed
+list the runner can suggest, so a runner on another machine cannot fill the verify field with
+its own command. A runner older than protocol 4 answers "unknown command", which the app shows as
+a runner that needs reinstalling. The keychain checks stay in the app: one writes, reads back
+and deletes a throwaway entry, the other only looks at whether a model key is stored.
+
+With `--test-model`, the runner first reads a `ModelTestRequest` (the model key and model)
+from stdin and asks omp for one word in print mode, tools off, `--max-cost` set. The answer is
+scrubbed of the key before it goes back. The app sends this only when the person presses the
+button that states the cost.
+
 ## A session, end to end
 
 1. The app reads the model key from the keychain and asks `ch-runtime` for a sandbox: a

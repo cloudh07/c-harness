@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Bumped when a frame changes shape or a request gains a guarantee. The runner announces it
-/// in [`RunnerFrame::Hello`]. 3 added the secret scan to land.
-pub const RUNNER_PROTOCOL_VERSION: u32 = 3;
+/// in [`RunnerFrame::Hello`]. 3 added the secret scan to land; 4 added `ch-runner preflight`.
+pub const RUNNER_PROTOCOL_VERSION: u32 = 4;
 
 /// The oldest runner protocol whose land scans for secrets. The app refuses to land through an
 /// older runner, since one would commit and push without the scan and could not say so.
@@ -35,7 +35,7 @@ pub const MAX_CHECKPOINTS: usize = 1000;
 /// The most findings a refused land lists in [`SecretScan::findings`]; the rest are counted.
 pub const MAX_SECRET_FINDINGS: usize = 50;
 
-const MASKED: &str = "<hidden>";
+pub(crate) const MASKED: &str = "<hidden>";
 
 /// What the client sends the runner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

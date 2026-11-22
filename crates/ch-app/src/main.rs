@@ -5,10 +5,12 @@ mod approval_card;
 mod assets;
 mod brand;
 mod driver;
+mod first_run;
 mod launch;
 mod ledger;
 mod link;
 mod panels;
+mod preflight;
 mod session_view;
 mod settings;
 mod settings_view;
@@ -25,9 +27,10 @@ use gpui_kit::{
 };
 
 use crate::assets::{Icon, icon, status_glyph};
+use crate::first_run::{FirstRunView, SetupDone, UseVerify};
 use crate::session_view::{OpenSettings, SessionView};
 use crate::settings::{Settings, ThemePref};
-use crate::settings_view::{SettingsSaved, SettingsView};
+use crate::settings_view::{ReopenSetup, SettingsSaved, SettingsView};
 use crate::view_model::{inbox_counts, inbox_slot};
 use crate::widgets::{Tone, eyebrow, icon_text_button, sync_theme, tip};
 
@@ -84,10 +87,23 @@ fn main() {
     });
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
+    FirstRun,
     Session,
     Settings,
+}
+
+/// Where the window opens. A settings file that could not be read is fixed in Settings
+/// first; otherwise missing setup opens the first-run steps.
+fn first_screen(setup_missing: bool, load_failed: bool) -> Screen {
+    if load_failed {
+        Screen::Settings
+    } else if setup_missing {
+        Screen::FirstRun
+    } else {
+        Screen::Session
+    }
 }
 
 struct Shell {
@@ -95,6 +111,10 @@ struct Shell {
     screen: Screen,
     session: Entity<SessionView>,
     settings: Entity<SettingsView>,
+    /// Made the first time setup is shown, so a finished setup never runs the checks.
+    first_run: Option<(Entity<FirstRunView>, Vec<Subscription>)>,
+    /// Settings was opened from a setup step, so saving goes back to that step.
+    back_to_setup: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -140,21 +160,23 @@ impl Shell {
         let palette = palette_for(dark);
         sync_theme(palette, dark, cx);
 
-        let screen = if saved.problems().is_empty() && load_error.is_none() {
-            Screen::Session
-        } else {
-            Screen::Settings
-        };
+        let screen = first_screen(!saved.problems().is_empty(), load_error.is_some());
+        let first_run = (screen == Screen::FirstRun)
+            .then(|| Self::make_first_run(saved.clone(), palette, window, cx));
         let session = cx.new(|cx| SessionView::new(saved.clone(), palette, window, cx));
         let settings = cx.new(|cx| SettingsView::new(saved, load_error, palette, window, cx));
 
         let subscriptions = vec![
             cx.subscribe(&settings, |shell, _, event: &SettingsSaved, cx| {
-                let saved = event.0.clone();
-                shell
-                    .session
-                    .update(cx, |view, cx| view.set_settings(saved, cx));
+                shell.settings_saved(&event.0, cx);
             }),
+            cx.subscribe_in(
+                &settings,
+                window,
+                |shell, _, _: &ReopenSetup, window, cx| {
+                    shell.open_setup(window, cx);
+                },
+            ),
             cx.subscribe(&session, |shell, _, _: &OpenSettings, cx| {
                 shell.show(Screen::Settings, cx);
             }),
@@ -167,7 +189,62 @@ impl Shell {
             screen,
             session,
             settings,
+            first_run,
+            back_to_setup: false,
             _subscriptions: subscriptions,
+        }
+    }
+
+    fn make_first_run(
+        saved: Settings,
+        palette: Palette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<FirstRunView>, Vec<Subscription>) {
+        let view = cx.new(|cx| FirstRunView::new(saved, palette, cx));
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &view,
+                window,
+                |shell, view, event: &UseVerify, window, cx| {
+                    let saved = shell
+                        .settings
+                        .update(cx, |settings, cx| settings.set_verify(&event.0, window, cx));
+                    if let Err(why) = saved {
+                        view.update(cx, |view, cx| view.verify_failed(why, cx));
+                    }
+                },
+            ),
+            cx.subscribe(&view, |shell, _, _: &OpenSettings, cx| {
+                shell.show(Screen::Settings, cx);
+                shell.back_to_setup = true;
+            }),
+            cx.subscribe(&view, |shell, _, _: &SetupDone, cx| {
+                shell.show(Screen::Session, cx);
+            }),
+        ];
+        (view, subscriptions)
+    }
+
+    /// Shows the first-run steps from the start, with the free checks run again.
+    fn open_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((view, _)) = &self.first_run {
+            view.update(cx, FirstRunView::restart);
+        } else {
+            let saved = self.settings.read(cx).saved().clone();
+            self.first_run = Some(Self::make_first_run(saved, self.palette, window, cx));
+        }
+        self.show(Screen::FirstRun, cx);
+    }
+
+    fn settings_saved(&mut self, saved: &Settings, cx: &mut Context<Self>) {
+        self.session
+            .update(cx, |view, cx| view.set_settings(saved.clone(), cx));
+        if let Some((view, _)) = &self.first_run {
+            view.update(cx, |view, cx| view.set_settings(saved.clone(), cx));
+        }
+        if self.back_to_setup {
+            self.show(Screen::FirstRun, cx);
         }
     }
 
@@ -181,6 +258,9 @@ impl Shell {
             .update(cx, |view, cx| view.set_palette(palette, cx));
         self.settings
             .update(cx, |view, cx| view.set_palette(palette, cx));
+        if let Some((view, _)) = &self.first_run {
+            view.update(cx, |view, cx| view.set_palette(palette, cx));
+        }
         window.refresh();
     }
 
@@ -190,8 +270,10 @@ impl Shell {
         self.apply_theme(window, cx);
     }
 
+    /// Any move clears the way back to setup; opening Settings from a step sets it after.
     fn show(&mut self, screen: Screen, cx: &mut Context<Self>) {
         self.screen = screen;
+        self.back_to_setup = false;
         cx.notify();
     }
 
@@ -352,9 +434,12 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
-        let content = match self.screen {
-            Screen::Session => div().flex().flex_1().min_w_0().child(self.session.clone()),
-            Screen::Settings => div().flex().flex_1().min_w_0().child(self.settings.clone()),
+        let content = div().flex().flex_1().min_w_0();
+        let content = match (self.screen, &self.first_run) {
+            (Screen::FirstRun, Some((view, _))) => content.child(view.clone()),
+            (Screen::Settings, _) => content.child(self.settings.clone()),
+            // Setup is only shown once its view exists.
+            (Screen::Session | Screen::FirstRun, _) => content.child(self.session.clone()),
         };
         div()
             .flex()
@@ -385,6 +470,15 @@ mod tests {
         assert!(!is_dark(WindowAppearance::VibrantLight));
         assert_eq!(palette_for(true), DARK);
         assert_eq!(palette_for(false), LIGHT);
+    }
+
+    #[test]
+    fn the_window_opens_on_setup_only_while_setup_is_missing() {
+        assert_eq!(first_screen(false, false), Screen::Session);
+        assert_eq!(first_screen(true, false), Screen::FirstRun);
+        // A file that could not be read is fixed in Settings before anything else.
+        assert_eq!(first_screen(true, true), Screen::Settings);
+        assert_eq!(first_screen(false, true), Screen::Settings);
     }
 
     #[test]
