@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use ch_core::{Session, SessionState, ToolStatus};
 use gpui_kit::{
     Animation, AnimationExt, App, BoxShadow, ClickEvent, Context, Div, FocusHandle, Hsla,
     InteractiveElement, KeyDownEvent, ParentElement, ScrollEvent, ScrollHandle,
@@ -49,6 +50,56 @@ impl Mode {
             (mode, _) => mode,
         }
     }
+
+    fn after_pump(self, before: Shown, after: Shown) -> Mode {
+        if before == after {
+            self
+        } else {
+            self.next(Event::Output)
+        }
+    }
+}
+
+/// A cheap fingerprint of the agent output at the end of the thread. The late-reply note, the
+/// runner log and usage rows live on the driver, earlier turns load above the reader, and the
+/// working line and approvals are status rather than output, so none of them count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Shown {
+    review: bool,
+    reply: usize,
+    tools: usize,
+    tools_done: usize,
+    entries: usize,
+    failure: Option<usize>,
+    retry: Option<(Option<u32>, usize)>,
+    diff: Option<usize>,
+    turn_diff: Option<(u32, Option<u32>)>,
+    landing: Option<usize>,
+    empty_run: bool,
+}
+
+impl Shown {
+    pub(super) fn of(session: &Session) -> Self {
+        let tools = session.tool_calls();
+        Shown {
+            review: session.state() == SessionState::NeedsReview,
+            reply: session.reply().len(),
+            tools: tools.len(),
+            tools_done: tools
+                .iter()
+                .filter(|tool| tool.status != ToolStatus::Running)
+                .count(),
+            entries: session.warnings().len() + session.notices().len() + session.evidence().len(),
+            failure: session.failure().map(|failure| failure.message.len()),
+            retry: session
+                .retrying()
+                .map(|retry| (retry.attempt, retry.reason.len())),
+            diff: session.last_diff().map(|diff| diff.patch.len()),
+            turn_diff: session.turn_diff().map(|diff| (diff.from, diff.to)),
+            landing: session.landing().map(|landing| landing.commit.len()),
+            empty_run: session.run_was_empty() && session.checkpoints_on(),
+        }
+    }
 }
 
 /// GPUI has already moved the offset when a scroll listener runs, but clamps it only at the
@@ -84,8 +135,9 @@ impl Follow {
         }
     }
 
-    pub(super) fn output(&mut self) {
-        self.apply(Event::Output);
+    /// Called around a pump with what the thread showed before and after it.
+    pub(super) fn saw(&mut self, before: Shown, after: Shown) {
+        self.mode = self.mode.after_pump(before, after);
     }
 
     /// A session opened: start at its end.
@@ -201,12 +253,22 @@ impl SessionView {
 #[cfg(test)]
 mod tests {
     //! The rule as a table, then a replay of the approval fixture against a model of the
-    //! scroll area. Heights in the replay are rough; what matters is where new output lands
-    //! relative to the view.
+    //! scroll area, then pumps of a real driver. Heights in the replay are rough; what matters
+    //! is where new output lands relative to the view.
 
-    use super::{AT_END, Event, Mode, from_end, scrolled};
-    use ch_core::{ClientAction, Session};
+    use std::collections::BTreeMap;
+    use std::io::Read;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use super::{AT_END, Event, Mode, Shown, from_end, scrolled};
+    use crate::driver::{Driver, FIRST_REPLY_MS};
+    use crate::link::Link;
+    use ch_core::{ClientAction, Session, SessionState};
     use ch_protocol::runner::route_runner_line;
+    use serde_json::{Value, json};
 
     const FIXTURE: &str = include_str!("../../../../testdata/omp/approval-session.jsonl");
     const VIEWPORT: f32 = 100.0;
@@ -431,5 +493,136 @@ mod tests {
         let card_after = after.tools_at() - view.top;
         assert!(after.reply > before.reply);
         assert_eq!(card_after - card_before, after.reply - before.reply);
+    }
+
+    /// The runner's stdout, written by the test one line at a time.
+    struct Runner {
+        rx: Receiver<Vec<u8>>,
+        pending: Vec<u8>,
+    }
+
+    impl Read for Runner {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pending.is_empty() {
+                match self.rx.recv() {
+                    Ok(bytes) => self.pending = bytes,
+                    Err(_) => return Ok(0),
+                }
+            }
+            let n = buf.len().min(self.pending.len());
+            buf[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            Ok(n)
+        }
+    }
+
+    fn say(runner: &Sender<Vec<u8>>, line: &Value) {
+        let mut bytes = line.to_string().into_bytes();
+        bytes.push(b'\n');
+        runner.send(bytes).expect("the link is reading");
+    }
+
+    /// Pumps until `done` holds, and says whether any pump reported a change.
+    fn pump_until(driver: &mut Driver, done: impl Fn(&Driver) -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut pumped = false;
+        while Instant::now() < deadline {
+            pumped |= driver.pump();
+            if done(driver) {
+                return pumped;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        panic!("timed out pumping the driver");
+    }
+
+    /// A started session waiting for the model's first word.
+    fn waiting(clock: fn() -> u64) -> (Driver, Sender<Vec<u8>>) {
+        let (tx, rx) = mpsc::channel();
+        let runner = Runner {
+            rx,
+            pending: Vec::new(),
+        };
+        let link = Link::new(std::io::sink(), runner, None::<std::io::Empty>);
+        let mut driver = Driver::new(link, clock);
+        driver.start("s1", Vec::new(), BTreeMap::new(), "hello".into());
+        say(&tx, &json!({"type":"ready"}));
+        pump_until(&mut driver, |d| d.session().reply_wait().is_some());
+        (driver, tx)
+    }
+
+    #[test]
+    fn the_late_note_is_not_new_output() {
+        static NOW: AtomicU64 = AtomicU64::new(1);
+        fn now() -> u64 {
+            NOW.load(Ordering::SeqCst)
+        }
+        let (mut driver, _runner) = waiting(now);
+        let before = Shown::of(driver.session());
+        NOW.fetch_add(FIRST_REPLY_MS, Ordering::SeqCst);
+        assert!(driver.pump());
+        assert!(driver.first_reply_late());
+        let after = Shown::of(driver.session());
+        assert_eq!(READING.after_pump(before, after), READING);
+    }
+
+    #[test]
+    fn usage_and_checkpoint_frames_are_not_new_output() {
+        let (mut driver, runner) = waiting(|| 1);
+        let before = Shown::of(driver.session());
+        say(
+            &runner,
+            &json!({"type":"turn_end","turnIndex":0,"toolResults":[],
+                "message":{"role":"assistant","provider":"anthropic","model":"m",
+                "stopReason":"toolUse","usage":{"input":10,"output":2,"cacheRead":0,
+                "cacheWrite":0,"totalTokens":12,"cost":{"total":0.001}}}}),
+        );
+        say(
+            &runner,
+            &json!({"type":"ch_checkpoints","checkpoints":[
+                {"turn":1,"commit":"abc123","kind":"run","at":1}]}),
+        );
+        let pumped = pump_until(&mut driver, |d| {
+            !d.usage().rows().is_empty() && d.session().checkpoints_on()
+        });
+        assert!(pumped);
+        let after = Shown::of(driver.session());
+        assert_eq!(READING.after_pump(before, after), READING);
+    }
+
+    #[test]
+    fn an_approval_request_is_not_new_output() {
+        let (mut driver, runner) = waiting(|| 1);
+        say(&runner, &json!({"type":"agent_start"}));
+        pump_until(&mut driver, |d| {
+            d.session().state() == SessionState::Running
+        });
+        let before = Shown::of(driver.session());
+        say(
+            &runner,
+            &json!({"type":"extension_ui_request","id":"ui_1","method":"select",
+                "title":"Allow tool: bash\nArguments:\n  command: cargo test",
+                "options":["Approve","Deny"]}),
+        );
+        pump_until(&mut driver, |d| {
+            d.session().state() == SessionState::NeedsYou
+        });
+        let after = Shown::of(driver.session());
+        assert_eq!(READING.after_pump(before, after), READING);
+    }
+
+    #[test]
+    fn reply_text_is_new_output() {
+        let (mut driver, runner) = waiting(|| 1);
+        let before = Shown::of(driver.session());
+        say(
+            &runner,
+            &json!({"type":"message_update",
+                "assistantMessageEvent":{"type":"text_delta","delta":"Found it."}}),
+        );
+        pump_until(&mut driver, |d| !d.session().reply().is_empty());
+        let after = Shown::of(driver.session());
+        assert_eq!(READING.after_pump(before, after), BEHIND);
+        assert_eq!(Mode::Following.after_pump(before, after), Mode::Following);
     }
 }

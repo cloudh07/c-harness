@@ -260,11 +260,11 @@ impl SessionView {
             Phase::Launching { .. } => self.poll_launch(),
             Phase::Resuming { .. } => self.poll_resume(),
             Phase::Live(live) => {
+                let before = follow::Shown::of(live.driver.session());
                 let pumped = live.driver.pump();
                 let (caught_up, history_problem) = live.catch_up();
-                if pumped || caught_up {
-                    self.follow.output();
-                }
+                let after = follow::Shown::of(live.driver.session());
+                self.follow.saw(before, after);
                 let problems: Vec<String> = [
                     live.ledger.sync(live.driver.usage().rows()),
                     history_problem,
