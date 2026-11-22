@@ -120,6 +120,13 @@ Notable changes to C-Harness. The format follows
   checkpoints it had.
 - `ch-protocol`: `ch_checkpoint`, `ch_restore`, and `from` and `to` on `ch_diff`, answered by
   `ch_checkpoints`, `ch_checkpointed`, `ch_restored` and a `ch_diff_result` that names its range.
+- `ch-core`: a failed prompt now says whether trying again can help, read from omp's own error.
+  `retryable` makes it transient, a cost cap or HTTP 401, 402 or 403 means a person has to act,
+  and anything else is permanent. Failures from the runner or from omp exiting are permanent.
+- `ch-app`: while omp retries a model call, the session shows "Retrying 2/3" with omp's error and
+  drops the text of the failed attempt. After a failure the banner says "Gave up: <error>" when
+  a later try may work, or what to check when a person has to act. The app never retries on its
+  own; omp's `retry.maxRetries` setting is the budget.
 
 ### Changed
 

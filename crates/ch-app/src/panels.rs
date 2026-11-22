@@ -1,13 +1,16 @@
 //! Read-only parts of the session screen. Each returns `None` when it has nothing to show.
 
-use ch_core::{Diff, Failure, Landing, Notice, ToolCall, ToolStatus, TurnDiff};
+use ch_core::{
+    Diff, Failure, FailureKind, Landing, Notice, Retrying, ToolCall, ToolStatus, TurnDiff,
+};
 use ch_protocol::runner::Evidence;
 use ch_ui::{Palette, Status, ToolGroup};
 use gpui_kit::{App, ClickEvent, Div, FontWeight, ParentElement, Styled, Window, div, px, rgb};
 
 use crate::assets::{icon, tool_icon};
 use crate::view_model::{
-    check_outcome, check_passed, first_chars, last_chars, pr_link_allowed, turn_diff_title,
+    check_outcome, check_passed, failure_text, first_chars, last_chars, pr_link_allowed,
+    retry_text, turn_diff_title,
 };
 use crate::widgets::{MONO, Tone, banner, button, card, mono_block, muted};
 
@@ -27,12 +30,18 @@ fn title(text: impl Into<gpui_kit::SharedString>) -> Div {
 
 pub fn failure(p: Palette, failure: Option<&Failure>) -> Option<Div> {
     let failure = failure?;
-    Some(banner(
-        p,
-        p.status(Status::Error),
-        format!("Failed during {}", failure.stage),
-        failure.message.clone(),
-    ))
+    let color = match failure.kind {
+        FailureKind::NeedsHuman => p.status(Status::NeedsYou),
+        FailureKind::Transient | FailureKind::Permanent => p.status(Status::Error),
+    };
+    let text = failure_text(failure);
+    Some(banner(p, color, text.title, text.body).children(text.hint.map(|hint| muted(p, hint))))
+}
+
+/// omp is retrying a model call; the run is still going.
+pub fn retrying(p: Palette, retrying: Option<&Retrying>) -> Option<Div> {
+    let (title, body) = retry_text(retrying?);
+    Some(banner(p, p.status(Status::NearCap), title, body))
 }
 
 pub fn warnings(p: Palette, warnings: &[Failure]) -> Option<Div> {

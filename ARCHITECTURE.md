@@ -71,7 +71,8 @@ them, or names one of another kind.
    stored or the answer was not recognised.
 4. omp events stream back. `ch-core` folds them into the session state. An approval request
    becomes a card with a risk hint; an answer the app cannot map to an option is sent as a
-   cancel, which omp treats as deny.
+   cancel, which omp treats as deny. omp retries a failed model call itself; the session shows
+   its count and, once omp gives up, whether a person has to act. The app adds no retries.
 5. Verify runs in `ch-runner`, not in the agent, so the exit code is measured.
 6. Land stops omp and waits for it, then commits through a temporary index (your checkout is
    never touched), pushes from a scratch repository with system and global git config ignored,

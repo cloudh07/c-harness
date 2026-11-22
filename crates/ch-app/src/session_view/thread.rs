@@ -142,6 +142,7 @@ impl SessionView {
                     .map(|(i, (prompt, reply))| turn(p, format!("turn-{i}"), prompt, reply, false)),
             )
             .children(current_turn(p, live, waiting))
+            .children(panels::retrying(p, session.retrying()))
             .children(panels::failure(p, session.failure()))
             .children(panels::warnings(p, session.warnings()))
             .children(panels::notices(p, session.notices()))

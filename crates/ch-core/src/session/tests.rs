@@ -22,6 +22,7 @@ fn running() -> Session {
 fn failure(stage: &str, message: &str) -> Failure {
     Failure {
         stage: stage.to_owned(),
+        kind: FailureKind::Permanent,
         message: message.to_owned(),
     }
 }
@@ -158,7 +159,13 @@ fn a_rejected_or_failed_prompt_fails_until_the_next_prompt() {
         &mut session,
         r#"{"id":"req_2","type":"prompt_result","status":"error","error":{"message":"rate limited","retryable":true},"sessionSettled":true}"#,
     );
-    assert_eq!(session.failure(), Some(&failure("prompt", "rate limited")));
+    assert_eq!(
+        session.failure(),
+        Some(&Failure {
+            kind: FailureKind::Transient,
+            ..failure("prompt", "rate limited")
+        })
+    );
 
     session.apply_action(&ClientAction::PromptSent);
     feed(
@@ -423,3 +430,4 @@ fn a_land_refused_while_omp_runs_leaves_omp_usable() {
 }
 
 mod checkpoints;
+mod retry;

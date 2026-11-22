@@ -7,7 +7,9 @@ use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec};
 
 use crate::settings::{Location, Settings};
 
+mod failure;
 mod labels;
+pub use failure::{failure_text, retry_text};
 pub use labels::{age_label, context_near_full, live_title};
 
 /// Git's own advice for a commit subject line.
