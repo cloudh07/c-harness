@@ -226,8 +226,8 @@ impl Git {
         self.diff_since(base, &base.id, index, (stat_budget, patch_budget))
     }
 
-    /// The working tree's changes against `since`, a commit or tree id. `index` is scratch,
-    /// filled from `base`, and removed afterwards.
+    /// The working tree's changes against `since`, a commit or tree id, with the working tree's
+    /// own tree. `index` is scratch, filled from `base`, and removed afterwards.
     pub fn diff_since(
         &self,
         base: &Base,
@@ -236,11 +236,16 @@ impl Git {
         budgets: (usize, usize),
     ) -> Result<Diff, String> {
         let result = self.stage(base, index).and_then(|()| {
-            capped_diff(budgets, |stat| {
+            let tree = self.write_tree(index)?;
+            let diff = capped_diff(budgets, |stat| {
                 let mut command = self.with_index(index);
                 diff_args(&mut command, stat);
                 command.arg("--cached").arg(since).arg("--");
                 command
+            })?;
+            Ok(Diff {
+                tree: Some(tree),
+                ..diff
             })
         });
         // The index is scratch; leaving it would only waste the temp dir until the session ends.
@@ -275,6 +280,7 @@ fn capped_diff(
         stat,
         patch,
         truncated: stat_cut || patch_cut,
+        tree: None,
     })
 }
 
@@ -304,6 +310,8 @@ pub struct Diff {
     pub stat: String,
     pub patch: String,
     pub truncated: bool,
+    /// The working tree's tree, for a diff that ends at the working tree.
+    pub tree: Option<String>,
 }
 
 /// Runs a git command to completion and returns its stdout.

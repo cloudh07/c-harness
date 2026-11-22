@@ -231,6 +231,11 @@ pub enum RunnerFrame {
         stat: String,
         patch: String,
         truncated: bool,
+        /// The working tree as a git tree, written the way [`Evidence`]'s trees are, when the
+        /// range ends at the working tree. `None` for a range between two checkpoints, and from
+        /// a runner older than protocol 4.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tree: Option<String>,
     },
     /// Sent after a start when this working tree keeps checkpoints, with the ones it has.
     #[serde(rename = "ch_checkpoints")]
@@ -532,6 +537,7 @@ mod tests {
                 stat: String::new(),
                 patch: String::new(),
                 truncated: false,
+                tree: Some("t2".into()),
             },
             RunnerFrame::Checkpoints {
                 checkpoints: vec![checkpoint(1, CheckpointKind::Run)],
@@ -651,6 +657,18 @@ mod tests {
         match route_runner_line(result) {
             Ok(RunnerLine::Runner(RunnerFrame::DiffResult { from, to, .. })) => {
                 assert_eq!((from, to), (None, None));
+            }
+            other => panic!("expected a diff result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_diff_result_from_an_older_runner_has_no_tree() {
+        let line = r#"{"type":"ch_diff_result","id":"d1","base":"b","stat":"","patch":"",
+            "truncated":false}"#;
+        match route_runner_line(line) {
+            Ok(RunnerLine::Runner(RunnerFrame::DiffResult { tree, .. })) => {
+                assert_eq!(tree, None);
             }
             other => panic!("expected a diff result, got {other:?}"),
         }

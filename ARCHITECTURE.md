@@ -48,7 +48,7 @@ a new omp event costs the transport nothing.
 |---|---|
 | `ch_start` session id, omp arguments, environment | `ch_runner_hello` version, protocol and working directory |
 | `ch_verify` a command and a timeout | `ch_evidence` exit code, duration, commit, output tail |
-| `ch_diff` | `ch_diff_result` stat and capped patch |
+| `ch_diff` | `ch_diff_result` stat and capped patch, plus the working tree's `tree` when the range ends there |
 | `ch_stop` | `ch_stopped` |
 | `ch_land` branch, message, author, remote, token, pull request, acknowledged tree | `ch_landed` branch, commit, pull request URL |
 | any omp command | any omp event, `ch_notice`, `ch_omp_exited`, `ch_error` |

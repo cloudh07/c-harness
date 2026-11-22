@@ -180,6 +180,10 @@ Notable changes to C-Harness. The format follows
   is how the engine check runs before a local repository is picked.
 - `ch-protocol`: runner protocol 4, with `PreflightReport` and `ModelTestRequest` for
   `ch-runner preflight`. The request's `Debug` output hides the key.
+- `ch_diff_result` carries `tree`, the working tree as a git tree, for a diff that ends at the
+  working tree. It is written on a private index like the evidence trees, so the app can tell
+  whether the work still matches the last check before it lands. The user's index is untouched,
+  and a runner older than protocol 4 sends none.
 
 ### Changed
 
@@ -244,6 +248,9 @@ Notable changes to C-Harness. The format follows
   Settings does not offer that mode.
 - The host overlay turns omp's memory off (`memory.backend: "off"`), so omp keeps nothing of
   its own between sessions.
+- The host overlay pins omp's `ask.timeout` to 0, so a question from the agent waits for you.
+  With a timeout set in your own omp config, omp would pick the recommended answer after that
+  many seconds, and deny an approval nobody answered.
 - Verify evidence names the work it ran on: `ch-runner` writes the working tree as a git tree
   (on a private index) when the command starts and when it ends, and sends both as
   `tree_before` and `tree_after`. Land is refused, with the reason, when the work changed while

@@ -526,6 +526,10 @@ fn a_check_that_writes_blocks_land() {
 
     let steady = verify(&mut client, "v2", &helper_command(0, 0));
     assert_eq!(steady["tree_before"], steady["tree_after"]);
+    // Nothing moved since the check, so the diff's tree is the one it ran on.
+    client.send(&json!({ "type": "ch_diff", "id": "d1" }));
+    let diff = client.expect("ch_diff_result");
+    assert_eq!(diff["tree"], steady["tree_after"], "{diff}");
     client.send(&land_frame("l2", &remote.path, false));
     assert_eq!(client.expect("ch_landed")["id"], "l2");
     assert_eq!(client.finish(), Vec::<Value>::new());
@@ -610,6 +614,7 @@ fn project_config_and_provider_notice() {
         .expect("host overlay");
     assert_eq!(started["configs"][1]["path"].as_str(), args.last().copied());
     assert!(host.contains("memory:\n  backend: \"off\"\n"), "{host}");
+    assert!(host.contains("ask:\n  timeout: 0\n"), "{host}");
     assert!(host.contains("- \"anthropic\""), "{host}");
     assert!(host.contains("- \"openai\""), "{host}");
     for _ in fixture_lines() {

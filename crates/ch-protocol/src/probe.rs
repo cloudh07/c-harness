@@ -252,8 +252,14 @@ fn validate_choice(label: &str, value: &str, allowed: &[&str]) -> Result<(), Str
 ///
 /// `memory.backend` is off so omp keeps no memory of its own across sessions; the value is
 /// quoted because a bare `off` is a YAML boolean.
+///
+/// `ask.timeout` is 0 so a question from the agent waits for a person. omp's settings schema
+/// (18.13.1) says a non-zero value auto-selects the recommended option after that many
+/// seconds and denies an unanswered approval; the user's own config may set one.
 pub fn host_config_overlay(disabled_providers: &[String]) -> String {
-    let mut text = String::from("startup:\n  checkUpdate: false\nmemory:\n  backend: \"off\"\n");
+    let mut text = String::from(
+        "startup:\n  checkUpdate: false\nmemory:\n  backend: \"off\"\nask:\n  timeout: 0\n",
+    );
     if !disabled_providers.is_empty() {
         text.push_str("disabledProviders:\n");
         for id in disabled_providers {
@@ -569,10 +575,18 @@ mod tests {
         // Unquoted `off` is a YAML 1.1 boolean, not the string omp expects.
         assert_eq!(
             host_config_overlay(&[]),
-            "startup:\n  checkUpdate: false\nmemory:\n  backend: \"off\"\n"
+            "startup:\n  checkUpdate: false\nmemory:\n  backend: \"off\"\nask:\n  timeout: 0\n"
         );
         let text = host_config_overlay(&["openai".to_string()]);
         assert!(text.contains("memory:\n  backend: \"off\"\n"), "{text}");
+    }
+
+    #[test]
+    fn host_overlay_pins_the_ask_timeout_to_zero() {
+        // A non-zero ask.timeout lets omp answer the agent's question by itself.
+        assert!(host_config_overlay(&[]).contains("ask:\n  timeout: 0\n"));
+        let text = host_config_overlay(&["openai".to_string()]);
+        assert!(text.contains("ask:\n  timeout: 0\n"), "{text}");
     }
 
     #[test]

@@ -151,6 +151,11 @@ fn save_and_diff_a_turn(client: &mut Client, tree: &Path) {
         patch.contains("+second") && patch.contains("+kept"),
         "{turn}"
     );
+    assert_eq!(
+        turn.get("tree"),
+        None,
+        "a closed range has no working tree: {turn}"
+    );
 
     fs::write(tree.join("a.txt"), "third\n").expect("write");
     fs::write(tree.join("b.txt"), "new\n").expect("write");
@@ -165,6 +170,7 @@ fn save_and_diff_a_turn(client: &mut Client, tree: &Path) {
     for change in ["-second", "+third", "+new", "-kept"] {
         assert!(patch.contains(change), "no {change}: {since}");
     }
+    assert!(since["tree"].is_string(), "{since}");
 
     assert_eq!(verify(client, "v1", &helper_command(0, 0))["exit_code"], 0);
     client.send(&json!({ "type": "ch_stop", "id": "s1" }));
