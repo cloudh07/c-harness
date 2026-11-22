@@ -43,7 +43,10 @@ A session goes like this:
    the real exit code and the exact work it ran on.
 5. You read the diff, then land it: the agent is stopped, the work is committed to a new
    branch, pushed, and a pull request is opened. If the work changed after the last check,
-   land is refused until you verify again.
+   land is refused until you verify again. Before anything is committed, `ch-runner` scans
+   the lines the change adds for private keys and provider tokens. A hit refuses the land and
+   names the file and line, never the value; Land anyway lands that exact change. The scan is
+   a floor: patterns miss things, so read the diff.
 
 Not done yet: cloud sandbox providers, the Agent Client Protocol, cost tracking, plugins, and
 signed releases. [ROADMAP](#roadmap) has the order.
