@@ -162,6 +162,9 @@ Notable changes to C-Harness. The format follows
   other variables that point git at another repository.
 - Approval dialogs the app cannot answer (`confirm`, `input`, `editor`, `ask`) are cancelled,
   which omp treats as a refusal.
+- `ch-app`: the session itself refuses a land while the agent works or waits on you, not only
+  the Land button. Tests pin down that no button grants anything on its own: an answer goes
+  out only for an approval omp still holds open, once, and with a choice omp offered.
 - A runner frame that arrives inside omp's `rpc_chunk` sequence is dropped, so omp cannot forge
   verify evidence, a diff, a stop or a landed branch.
 - `ch-app` drops a runner reply that names no open request of its kind: evidence must answer a

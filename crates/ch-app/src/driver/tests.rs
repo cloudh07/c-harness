@@ -551,4 +551,5 @@ fn stderr_is_masked_before_display() {
 }
 
 mod checkpoints;
+mod projection;
 mod resume;

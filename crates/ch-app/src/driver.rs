@@ -300,8 +300,11 @@ impl Driver {
 
     /// Lands the work. The runner refuses a land while omp runs, so omp is stopped first and the
     /// land goes out once the runner says it ended. The request's `id` is replaced when it is
-    /// sent.
+    /// sent. Refused unless [`Self::can_land`], whoever asks.
     pub fn land(&mut self, request: LandRequest) -> bool {
+        if !self.can_land() {
+            return false;
+        }
         if self.omp == OmpState::Ended {
             return self.send_land(request);
         }
