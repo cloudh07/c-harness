@@ -8,11 +8,11 @@ use gpui_kit::{
     ClickEvent, Context, Div, FontWeight, ParentElement, SharedString, Styled, div, px, rgb,
 };
 
-use super::{Phase, SessionView, status_for};
+use super::{Phase, SessionView, header_status};
 use crate::assets::{Icon, icon, status_icon};
 use crate::view_model::{
     Place, Sandbox, branch_for, context_label, context_near_full, elide_middle, live_title,
-    session_title, state_label, usage_label,
+    session_title, usage_label,
 };
 use crate::widgets::{MONO, Tone, icon_button};
 
@@ -28,12 +28,14 @@ impl SessionView {
         let (glyph, color, label) = if self.disconnected() {
             (Icon::Plug, p.status(Status::NearCap), "Disconnected")
         } else {
-            let status = state.map_or(Status::Idle, status_for);
-            (
-                status_icon(status),
-                p.status(status),
-                state.map_or("Not started", state_label),
-            )
+            let failure = match &self.phase {
+                Phase::Live(live) => live.driver.session().failure().map(|f| f.kind),
+                _ => None,
+            };
+            let (status, label) = state.map_or((Status::Idle, "Not started"), |state| {
+                header_status(state, failure)
+            });
+            (status_icon(status), p.status(status), label)
         };
         let (title, branch) = match &self.phase {
             Phase::Empty => ("New session".to_string(), None),

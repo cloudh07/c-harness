@@ -27,6 +27,7 @@ fn flush(rig: &mut Rig) {
 
 /// Starts a session and lets one run end. `listed` says whether the runner keeps checkpoints.
 fn first_run(rig: &mut Rig, listed: bool) {
+    rig.hello();
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
     rig.say(&json!({"type":"ready"}));

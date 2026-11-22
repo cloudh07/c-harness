@@ -152,6 +152,13 @@ Notable changes to C-Harness. The format follows
   notifications show under `HKCU\Software\Classes\AppUserModelId\c-harness`. macOS shows no
   notification for a build that is not an app bundle. An SSH session keeps no record, so a
   restart forgets that it was waiting.
+- `ch-app`: when the secret scan refuses a land, the Land section lists each finding by file,
+  line and kind ("provider token" or "private key"), never the text it matched, and the session
+  moves to Needs you. Land anyway lands that exact change. Edit the work and the scan runs
+  again. A change too large to scan says so, and Land anyway lands it unscanned.
+- `ch-protocol`: `ch_land` takes `acknowledged_tree`, and `ch_error` can carry `secret_scan`:
+  the tree that was scanned, up to 50 findings, how many more there were, and whether the
+  change was too large to read.
 
 ### Changed
 
@@ -222,3 +229,15 @@ Notable changes to C-Harness. The format follows
   that check ran or after it, so a file edited after a passing check cannot land on its
   evidence. `ch-app` refuses Verify while the agent is working. The pull request marks a check
   that ran on earlier work as "(on earlier work)".
+- `ch-runner` scans a land for secrets before it commits or pushes anything. It reads every
+  line the change adds over the commit the session started from, and refuses the land when a
+  line holds a PEM private key header or a token with a known provider prefix and a digit. The
+  refusal names the file, line and kind, never the value. Files git treats as binary are not
+  scanned. A diff over 32 MiB is refused as too large to scan, never scanned in part. A land
+  that sends `acknowledged_tree` skips the scan only when that tree is the one the runner
+  computes again, so any edit after the person looked is scanned. The scan is a floor: a key
+  with no known prefix, or a PGP key block, passes.
+- `ch-app` lands only through a `ch-runner` whose hello announces protocol 3 or later, the first
+  that scans a land for secrets. `RUNNER_PROTOCOL_VERSION` is now 3. With an older runner, or
+  one that never said hello, the Land button is off and the Land section says why and to
+  reinstall `ch-runner` with `--force`.

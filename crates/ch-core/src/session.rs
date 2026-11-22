@@ -4,7 +4,7 @@
 //! each frame it writes through [`Session::apply_action`]. Nothing here reads a clock or waits,
 //! so the same lines always give the same state.
 
-use ch_protocol::runner::{Checkpoint, Evidence, RunnerFrame, RunnerLine};
+use ch_protocol::runner::{Checkpoint, Evidence, RunnerFrame, RunnerLine, SecretScan};
 use serde_json::Value;
 
 use crate::approval::{ApprovalRequest, withdrawn_approval};
@@ -74,13 +74,34 @@ pub struct ToolCall {
 /// What went wrong and where.
 ///
 /// `stage` is the runner's `ch_error` stage, or one of two set here: `prompt` when omp rejected
-/// or failed a prompt, and `omp` when omp exited without being asked to. Only a prompt omp
-/// failed gets a `kind` other than [`FailureKind::Permanent`], read from omp's error.
+/// or failed a prompt, and `omp` when omp exited without being asked to. A prompt omp failed
+/// gets its `kind` from omp's error; a land the secret scan refused is
+/// [`FailureKind::NeedsHuman`]; anything else is [`FailureKind::Permanent`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     pub stage: String,
     pub kind: FailureKind,
     pub message: String,
+    /// What the runner's secret scan found, when that is why the land was refused.
+    pub secret_scan: Option<SecretScan>,
+}
+
+impl Failure {
+    /// A runner `ch_error`. Only the runner's findings make it a person's call; its wording
+    /// never does.
+    fn from_runner(stage: &str, message: &str, secret_scan: Option<&SecretScan>) -> Self {
+        let kind = if secret_scan.is_some() {
+            FailureKind::NeedsHuman
+        } else {
+            FailureKind::Permanent
+        };
+        Self {
+            stage: stage.to_owned(),
+            kind,
+            message: message.to_owned(),
+            secret_scan: secret_scan.cloned(),
+        }
+    }
 }
 
 /// A `ch_notice` from the runner, such as a repository that carries its own omp config.
@@ -430,12 +451,13 @@ impl Session {
                     pull_request_url: pull_request_url.clone(),
                 });
             }
-            RunnerFrame::Error { stage, message, .. } => {
-                let problem = Failure {
-                    stage: stage.clone(),
-                    kind: FailureKind::Permanent,
-                    message: message.clone(),
-                };
+            RunnerFrame::Error {
+                stage,
+                message,
+                secret_scan,
+                ..
+            } => {
+                let problem = Failure::from_runner(stage, message, secret_scan.as_ref());
                 // A line sent just before omp died is dropped, which says nothing new and must
                 // not replace why omp ended.
                 let after_omp = self.omp_gone && stage == PROTOCOL_STAGE;
@@ -593,6 +615,7 @@ impl Session {
             stage: stage.to_owned(),
             kind,
             message,
+            secret_scan: None,
         });
     }
 

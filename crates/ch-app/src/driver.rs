@@ -11,7 +11,9 @@ use ch_core::{
     ApprovalDecision, ApprovalRequest, ClientAction, ContextMeter, ContextState, STATS_COMMAND,
     Session, SessionState, Transcript, Usage, redact_secrets,
 };
-use ch_protocol::runner::{ClientFrame, LandRequest, RunnerFrame, RunnerLine, StartSession};
+use ch_protocol::runner::{
+    ClientFrame, LandRequest, RunnerFrame, RunnerLine, SECRET_SCAN_PROTOCOL, StartSession,
+};
 use serde_json::{Value, json};
 
 use crate::link::{Link, LinkEvent};
@@ -88,6 +90,15 @@ impl Request {
     }
 }
 
+/// Why the runner keeps land off when nothing else would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunnerBlock {
+    /// Its hello named a protocol older than the secret scan.
+    Outdated,
+    /// It never said hello, or said it in a shape this app cannot read.
+    Silent,
+}
+
 pub struct Driver {
     link: Link,
     session: Session,
@@ -110,6 +121,8 @@ pub struct Driver {
     omp_session_file: Option<String>,
     saves: checkpoints::Saves,
     first_reply: first_reply::FirstReply,
+    /// The protocol the runner announced in its first hello. A later hello changes nothing.
+    runner_protocol: Option<u32>,
 }
 
 impl Driver {
@@ -135,6 +148,7 @@ impl Driver {
             omp_session_file: None,
             saves: checkpoints::Saves::default(),
             first_reply: first_reply::FirstReply::default(),
+            runner_protocol: None,
         }
     }
 
@@ -201,8 +215,25 @@ impl Driver {
     }
 
     /// Whether a land can go out now: once the work is ready for review, and again after a land
-    /// that failed, since a rejected push is fixed by changing settings and trying again.
+    /// that failed, since a rejected push is fixed by changing settings and trying again. Only
+    /// through a runner that announced the secret scan; one that never said hello is refused too.
     pub fn can_land(&self) -> bool {
+        self.runner_protocol
+            .is_some_and(|protocol| protocol >= SECRET_SCAN_PROTOCOL)
+            && self.land_ready()
+    }
+
+    /// Why the runner alone keeps land off. Silence is reported only once everything else would
+    /// allow a land: the hello comes before omp is ready, so until then it may still be on its way.
+    pub fn runner_block(&self) -> Option<RunnerBlock> {
+        match self.runner_protocol {
+            Some(protocol) if protocol < SECRET_SCAN_PROTOCOL => Some(RunnerBlock::Outdated),
+            Some(_) => None,
+            None => self.land_ready().then_some(RunnerBlock::Silent),
+        }
+    }
+
+    fn land_ready(&self) -> bool {
         if self.closed || self.landing() || self.restoring() {
             return false;
         }
@@ -396,6 +427,9 @@ impl Driver {
                 }
                 self.on_resume_frame(frame);
                 self.cancel_unanswerable(frame);
+            }
+            RunnerLine::Runner(RunnerFrame::Hello { protocol, .. }) => {
+                self.runner_protocol.get_or_insert(*protocol);
             }
             RunnerLine::Runner(_) => {}
         }

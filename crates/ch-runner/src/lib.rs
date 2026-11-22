@@ -11,6 +11,7 @@ mod pr;
 mod proc_tree;
 mod scratch;
 mod scrub;
+mod secret_scan;
 mod serve;
 mod tail;
 mod verify;

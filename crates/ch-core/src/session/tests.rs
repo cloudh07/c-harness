@@ -24,6 +24,7 @@ fn failure(stage: &str, message: &str) -> Failure {
         stage: stage.to_owned(),
         kind: FailureKind::Permanent,
         message: message.to_owned(),
+        secret_scan: None,
     }
 }
 
@@ -427,6 +428,55 @@ fn a_land_refused_while_omp_runs_leaves_omp_usable() {
     );
     session.apply_action(&ClientAction::PromptSent);
     assert_eq!(session.state(), SessionState::Failed, "omp is gone");
+}
+
+const SECRET_REFUSAL: &str = r#"{"type":"ch_error","id":"l1","stage":"land","message":"nothing was landed: lines this change adds look like secrets: src/a.rs:3 (provider token)","secret_scan":{"tree":"4b825dc","findings":[{"path":"src/a.rs","line":3,"kind":"provider_token"}]}}"#;
+
+fn settled_and_landing() -> Session {
+    let mut session = running();
+    feed(
+        &mut session,
+        r#"{"id":"req_1","type":"prompt_result","status":"completed","sessionSettled":true}"#,
+    );
+    session.apply_action(&ClientAction::LandSent);
+    session
+}
+
+#[test]
+fn a_land_refused_for_secrets_needs_a_person_and_keeps_the_findings() {
+    let mut session = settled_and_landing();
+    feed(&mut session, SECRET_REFUSAL);
+
+    assert_eq!(session.state(), SessionState::Failed);
+    let failure = session.failure().expect("the refusal is the failure");
+    assert_eq!(failure.stage, "land");
+    assert_eq!(failure.kind, FailureKind::NeedsHuman);
+    let scan = failure.secret_scan.as_ref().expect("the findings are kept");
+    assert_eq!(scan.tree, "4b825dc");
+    assert_eq!(scan.findings[0].path, "src/a.rs");
+    assert_eq!(scan.findings[0].line, 3);
+
+    session.apply_action(&ClientAction::LandSent);
+    assert_eq!(session.failure(), None, "landing anyway clears the refusal");
+    assert_eq!(session.state(), SessionState::NeedsReview);
+}
+
+#[test]
+fn a_land_error_that_only_mentions_secrets_stays_permanent() {
+    let mut session = settled_and_landing();
+    feed(
+        &mut session,
+        r#"{"type":"ch_error","id":"l1","stage":"land","message":"nothing was landed: lines this change adds look like secrets"}"#,
+    );
+
+    assert_eq!(
+        session.failure(),
+        Some(&failure(
+            "land",
+            "nothing was landed: lines this change adds look like secrets"
+        )),
+        "the kind comes from the runner's findings, never from its wording"
+    );
 }
 
 mod checkpoints;

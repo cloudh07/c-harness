@@ -302,6 +302,7 @@ mod tests {
                 title: "Fix empty input".into(),
                 body: "Handles an empty file.".into(),
             }),
+            acknowledged_tree: None,
         });
         let frame = serde_json::to_value(&land).expect("serializes");
         let record = Transcript::new().outgoing(0, &frame).expect("recorded");

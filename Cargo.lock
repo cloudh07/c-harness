@@ -818,6 +818,7 @@ dependencies = [
 name = "ch-runner"
 version = "0.1.0"
 dependencies = [
+ "ch-core",
  "ch-protocol",
  "serde",
  "serde_json",

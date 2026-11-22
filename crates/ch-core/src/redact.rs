@@ -77,7 +77,7 @@ const SECRET_PHRASES: &[&str] = &[
 ];
 
 /// Whether `token` looks like a provider credential rather than ordinary output.
-fn is_provider_token(token: &str) -> bool {
+pub(crate) fn is_provider_token(token: &str) -> bool {
     PREFIXES.iter().any(|(prefix, min_len)| {
         token.len() >= *min_len
             && token.starts_with(prefix)
@@ -545,46 +545,9 @@ pub fn redact_secrets(text: &str) -> String {
     out
 }
 
-/// Whether `text` carries a credential by its shape alone: a PEM private key, or a token with a
-/// known provider prefix (rule 1) that holds a digit.
-///
-/// The assignment-name rule is left out on purpose: UI source declares `password: string` in
-/// every sign-in form. The digit keeps kebab-case class names that happen to start with a prefix
-/// (`sk-loading-spinner-wrapper`) out; provider keys are random.
-#[must_use]
-pub fn holds_provider_secret(text: &str) -> bool {
-    text.contains(concat!("PRIVATE", " KEY-----"))
-        || text
-            .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
-            .any(|word| word.bytes().any(|b| b.is_ascii_digit()) && is_provider_token(word))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_provider_key_or_private_key_is_held_back_and_a_form_is_not() {
-        for held in [
-            concat!(
-                "const k = \"gh",
-                "p_abcdefghijklmnopqrstuvwxyz0123456789\";"
-            ),
-            concat!("apiKey='sk", "-proj-abc123def456ghi789jkl012'"),
-            concat!("AKIA", "ZZZZ0000ZZZZ0000"),
-            concat!("-----BEGIN OPENSSH PRIV", "ATE KEY-----"),
-        ] {
-            assert!(holds_provider_secret(held), "{held}");
-        }
-        for plain in [
-            "password: string;",
-            "const [token, setToken] = useState('');",
-            "<div className=\"sk-loading-spinner-wrapper\" />",
-            "export function SignIn() { return <form /> }",
-        ] {
-            assert!(!holds_provider_secret(plain), "{plain}");
-        }
-    }
 
     #[test]
     fn masks_provider_tokens_and_keeps_their_punctuation() {

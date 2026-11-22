@@ -14,7 +14,7 @@ ch-app ──> ch-ui
    ├────> ch-runtime ──> ch-protocol
    └────> ch-vault
 
-ch-runner ──> ch-protocol        (separate binary, runs next to omp)
+ch-runner ──> ch-core, ch-protocol   (separate binary, runs next to omp)
 ```
 
 | Crate | Owns | I/O |
@@ -34,7 +34,8 @@ Three rules hold across the workspace:
 - **GPUI comes from `gpui-kit` only.** `gpui-kit` pins the `gpui-pre` crate family. Adding
   `gpui` or `gpui-pre` next to it would put two copies of the framework in the build.
 - **`ch-runner` depends on nothing heavy.** It runs on machines you don't control, so it is
-  `std`, `serde` and `ch-protocol`, plus the `git` and `curl` already on the machine.
+  `std`, `serde`, `ch-protocol` and `ch-core` (pure logic, no I/O), plus the `git` and `curl`
+  already on the machine. Anything added to `ch-core` ships in the runner too.
 
 ## One stream, two kinds of frame
 
@@ -45,16 +46,17 @@ a new omp event costs the transport nothing.
 
 | App to runner | Runner to app |
 |---|---|
-| `ch_start` session id, omp arguments, environment | `ch_runner_hello` version and working directory |
+| `ch_start` session id, omp arguments, environment | `ch_runner_hello` version, protocol and working directory |
 | `ch_verify` a command and a timeout | `ch_evidence` exit code, duration, commit, output tail |
 | `ch_diff` | `ch_diff_result` stat and capped patch |
 | `ch_stop` | `ch_stopped` |
-| `ch_land` branch, message, author, remote, token, pull request | `ch_landed` branch, commit, pull request URL |
+| `ch_land` branch, message, author, remote, token, pull request, acknowledged tree | `ch_landed` branch, commit, pull request URL |
 | any omp command | any omp event, `ch_notice`, `ch_omp_exited`, `ch_error` |
 
 Verify, diff, stop and land carry an id that the reply repeats, and `ch_error` repeats it when a
-request fails. The app keeps the ids it is still waiting on and drops a reply that names none of
-them, or names one of another kind.
+request fails. A land the secret scan refused also carries `secret_scan`: the tree it scanned
+and where the findings are, never what they matched. The app keeps the ids it is still waiting
+on and drops a reply that names none of them, or names one of another kind.
 
 ## A session, end to end
 
@@ -82,8 +84,14 @@ them, or names one of another kind.
    that wait covers both. A run that ends with no reply and no tool calls saves no
    checkpoint.
 5. Verify runs in `ch-runner`, not in the agent, so the exit code is measured.
-6. Land stops omp and waits for it, then commits through a temporary index (your checkout is
-   never touched), pushes from a scratch repository with system and global git config ignored,
+6. The app sends a land only through a runner whose hello announced protocol 3 or later, the
+   first with the secret scan; an older runner, or one that never said hello, cannot land.
+   Land stops omp and waits for it, then writes the working tree through a temporary index
+   (your checkout is never touched). Before it commits, it scans the lines that tree adds over
+   the session's starting commit for private keys and provider tokens, and refuses the land on a
+   hit or on a diff too large to read whole. Land anyway sends the refused tree back as
+   `acknowledged_tree`; the runner skips the scan only if the tree it writes again is that one.
+   Then it commits, pushes from a scratch repository with system and global git config ignored,
    and opens the pull request with `curl` reading the token from stdin. The GitHub token reaches
    the sandbox only in this step.
 

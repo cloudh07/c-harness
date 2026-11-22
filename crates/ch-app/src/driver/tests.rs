@@ -1,5 +1,5 @@
 use super::*;
-use ch_protocol::runner::GitAuthor;
+use ch_protocol::runner::{GitAuthor, RUNNER_PROTOCOL_VERSION, SECRET_SCAN_PROTOCOL};
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -77,6 +77,17 @@ impl Rig {
             stdin,
             runner: Some(tx),
         }
+    }
+
+    /// The first line a runner writes, from one as new as this app.
+    fn hello(&self) {
+        self.hello_at(RUNNER_PROTOCOL_VERSION);
+    }
+
+    fn hello_at(&self, protocol: u32) {
+        self.say(
+            &json!({"type":"ch_runner_hello","version":"0.1.0","protocol":protocol,"workdir":"/w"}),
+        );
     }
 
     fn say(&self, line: &Value) {
@@ -186,6 +197,7 @@ fn land_request() -> LandRequest {
         remote_url: "https://github.com/example/demo.git".into(),
         token: Some(TOKEN.into()),
         pull_request: None,
+        acknowledged_tree: None,
     }
 }
 
@@ -230,7 +242,7 @@ fn runs_one_session_from_start_to_landed() {
         "Fix the bug".into()
     ));
 
-    rig.say(&json!({"type":"ch_runner_hello","version":"0.1.0","protocol":1,"workdir":"/w"}));
+    rig.hello();
     rig.say(&json!({"type":"ready","protocolVersion":1}));
     rig.pump_until("the queued prompt", |_, sent| sent.len() == 3);
     let sent = rig.sent();
@@ -315,7 +327,7 @@ fn prompt_waits_until_omp_is_ready() {
             .start("s1", Vec::new(), BTreeMap::new(), "hello".into())
     );
     assert!(!rig.driver.prompt("too early"));
-    rig.say(&json!({"type":"ch_runner_hello","version":"0.1.0","protocol":1,"workdir":"/w"}));
+    rig.hello();
     rig.pump_until("hello", |d, sent| {
         sent.len() == 1 && d.transcript().contains("ch_runner_hello")
     });
@@ -355,6 +367,12 @@ fn a_failed_start_drops_the_queued_prompt() {
 }
 
 fn settle(rig: &mut Rig) {
+    rig.hello();
+    run_to_review(rig);
+}
+
+/// Starts a session and lets its first run end. The runner's hello is up to the caller.
+fn run_to_review(rig: &mut Rig) {
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
     rig.say(&json!({"type":"ready"}));

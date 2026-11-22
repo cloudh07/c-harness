@@ -10,6 +10,7 @@ mod failure;
 mod history;
 mod redact;
 mod risk;
+mod secret_shape;
 mod session;
 mod transcript;
 mod usage;
@@ -25,8 +26,9 @@ pub use history::{
     HISTORY_COMMAND, HISTORY_PAGE_LIMIT, History, HistoryPage, MAX_HISTORY_TURNS, history_request,
     read_page,
 };
-pub use redact::{MASK, holds_provider_secret, redact_secrets};
+pub use redact::{MASK, redact_secrets};
 pub use risk::{Assessment, Risk, classify};
+pub use secret_shape::{holds_provider_secret, secret_kind};
 pub use session::{
     ClientAction, Diff, Failure, Landing, Notice, ReplyWait, Session, SessionState, ToolCall,
     ToolStatus, TurnDiff,

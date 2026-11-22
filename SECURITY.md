@@ -93,6 +93,21 @@ last check ran on, or when files changed while that check ran. Two limits: a cha
 undone while a check runs is not seen, and a land with no check at all is still allowed (the
 pull request then says no checks were run).
 
+**The secret scan is a floor.** Before land commits, `ch-runner` reads every line the change
+adds and refuses the land when one holds a PEM private key header, or a token that starts with a
+prefix the log redaction knows (`sk-`, `ghp_`, `AKIA`, `xoxb-` and the rest) and holds a digit.
+Patterns miss things. A key with no known prefix, a PGP key block, a password assigned in a
+config file, a secret split across lines or encoded, and anything in a file git treats as binary
+all pass. Only added lines are read, so a secret already in the commit the session started from
+is not reported. A diff over 32 MiB is refused unread. Land anyway lands the refused tree
+unscanned; any later edit makes a new tree, and that one is scanned. The scan runs in
+`ch-runner`, so the app lands only through a runner that announced protocol 3 or later in its
+hello. A runner installed before the scan existed would commit and push unscanned, so the app
+turns Land off for it and says to reinstall. A runner that never said hello is treated the same
+way.
+The protocol number is the runner's own claim: it guards against an old install, not a forged
+runner. Read the diff before you land.
+
 **Checkpoints are a convenience, not evidence or a backup.** They are refs in your repository,
 under `refs/c-harness/<session>/`, and in a local session the agent can rewrite them. Land never
 reads them. Ignored files are in no checkpoint: a restore refuses to write over or delete one,

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
-use ch_core::{ApprovalDecision, SessionState};
+use ch_core::{ApprovalDecision, FailureKind, SessionState};
 use ch_ui::{Palette, Status};
 use ch_vault::{SecretName, Vault};
 use gpui_kit::base::input::{InputEvent, TextareaState};
@@ -29,7 +29,7 @@ use crate::driver::{self, Driver};
 use crate::launch::{self, Launched, Resumed, Runner};
 use crate::ledger::Ledger;
 use crate::settings::{self, Problem, Settings};
-use crate::view_model::{Place, land_request, session_id, transcript_file_name};
+use crate::view_model::{Place, land_request, session_id, state_label, transcript_file_name};
 use crate::widgets::{Tone, banner, icon_button};
 use leftovers::Leftovers;
 
@@ -114,6 +114,15 @@ fn status_for(state: SessionState) -> Status {
         SessionState::Landed => Status::Done,
         SessionState::Failed => Status::Error,
     }
+}
+
+/// The header's colour and words for a session. A failure only a person can clear, such as a
+/// land the secret scan refused, reads as Needs you, which is also the inbox row it sits in.
+fn header_status(state: SessionState, failure: Option<FailureKind>) -> (Status, &'static str) {
+    if state == SessionState::Failed && failure == Some(FailureKind::NeedsHuman) {
+        return (Status::NeedsYou, state_label(SessionState::NeedsYou));
+    }
+    (status_for(state), state_label(state))
 }
 
 fn is_working(state: SessionState) -> bool {
@@ -451,11 +460,21 @@ impl SessionView {
     }
 
     fn land(&mut self, cx: &mut Context<Self>) {
-        self.message = self.try_land().err().map(Err);
+        self.send_land(None, cx);
+    }
+
+    /// Lands past the secret scan, for the tree the person looked at. The runner checks the
+    /// tree again and scans anything that changed since.
+    fn land_anyway(&mut self, tree: String, cx: &mut Context<Self>) {
+        self.send_land(Some(tree), cx);
+    }
+
+    fn send_land(&mut self, acknowledged_tree: Option<String>, cx: &mut Context<Self>) {
+        self.message = self.try_land(acknowledged_tree).err().map(Err);
         cx.notify();
     }
 
-    fn try_land(&mut self) -> Result<(), String> {
+    fn try_land(&mut self, acknowledged_tree: Option<String>) -> Result<(), String> {
         let Phase::Live(live) = &mut self.phase else {
             return Ok(());
         };
@@ -479,6 +498,7 @@ impl SessionView {
             &live.first_prompt,
             token.expose().to_string(),
             live.driver.session().evidence(),
+            acknowledged_tree,
         );
         if live.driver.land(request) {
             Ok(())
@@ -608,6 +628,27 @@ mod tests {
         assert_eq!(status_for(SessionState::NeedsReview), Status::Review);
         assert_eq!(status_for(SessionState::Failed), Status::Error);
         assert_eq!(status_for(SessionState::Landed), Status::Done);
+    }
+
+    #[test]
+    fn a_failure_only_a_person_can_clear_reads_as_needs_you() {
+        assert_eq!(
+            header_status(SessionState::Failed, Some(FailureKind::NeedsHuman)),
+            (Status::NeedsYou, "Needs you")
+        );
+        assert_eq!(
+            header_status(SessionState::Failed, Some(FailureKind::Permanent)),
+            (Status::Error, "Failed")
+        );
+        assert_eq!(
+            header_status(SessionState::Failed, None),
+            (Status::Error, "Failed")
+        );
+        assert_eq!(
+            header_status(SessionState::Running, Some(FailureKind::NeedsHuman)),
+            (Status::Running, "Running"),
+            "a failure left over from an earlier run does not hide what the session does now"
+        );
     }
 
     #[test]

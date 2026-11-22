@@ -2,23 +2,41 @@
 
 mod checkpoints;
 
+use std::time::Duration;
+
 use ch_core::{Diff, Landing};
+use ch_protocol::runner::SecretScan;
+use ch_runtime::RUNNER_INSTALL_COMMAND;
 use ch_ui::{Palette, Status};
 use gpui_kit::{
-    App, ClickEvent, Context, Div, InteractiveElement, IntoElement, ParentElement, Stateful,
-    StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    Animation, AnimationElement, AnimationExt, App, ClickEvent, Context, Div, InteractiveElement,
+    IntoElement, ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled, Window,
+    div, ease_out_quint, px, rgb,
 };
 
 use super::{Live, OpenSettings, SessionView, list};
 use crate::assets::{Icon, icon};
+use crate::driver::RunnerBlock;
 use crate::view_model::{
-    branch_for, check_outcome, check_passed, diff_files, diff_totals, first_chars, pr_link_allowed,
+    branch_for, check_outcome, check_passed, diff_files, diff_totals, elide_middle, first_chars,
+    pr_link_allowed, secret_rows,
 };
 use crate::widgets::{MONO, Tone, button, eyebrow, icon_text_button, muted};
 
 const PANEL_WIDTH: f32 = 288.0;
 const SHOWN_FILES: usize = 12;
 const SHOWN_CHECKS: usize = 6;
+const SHOWN_SECRETS: usize = 6;
+/// Characters of `path:line` a finding row shows before it drops the middle, so the line number
+/// stays in view.
+const PLACE_LIMIT: usize = 34;
+/// The runner stage a refused land reports, which is the one the findings belong to.
+const LAND_STAGE: &str = "land";
+/// The findings fade in after a refused land so the change in the panel reads as the answer to
+/// the click. GPUI shows the end state at once when reduce motion is set.
+const FINDINGS_FADE: Duration = Duration::from_millis(200);
+/// The findings start this visible, so reading them never waits on the fade.
+const FINDINGS_FLOOR: f32 = 0.25;
 const SHORT_COMMIT: usize = 12;
 const ROW_ICON: f32 = 14.0;
 
@@ -146,6 +164,12 @@ impl SessionView {
             return section.child(landed(p, landing, &self.settings.github_repo));
         }
         let problems = self.settings.land_problems();
+        let can_land = driver.can_land() && problems.is_empty();
+        let refused = driver
+            .session()
+            .failure()
+            .filter(|failure| failure.stage == LAND_STAGE)
+            .and_then(|failure| failure.secret_scan.as_ref());
         let busy = if driver.landing() {
             Some("Landing. The agent is stopped first, then the runner commits and pushes.")
         } else if driver.stopping() {
@@ -177,7 +201,25 @@ impl SessionView {
                         .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(OpenSettings))),
                 )
         };
+        let runner_note = driver.runner_block().map(|block| {
+            let why = match block {
+                RunnerBlock::Outdated => "This ch-runner is too old to scan a land for secrets",
+                RunnerBlock::Silent => {
+                    "This ch-runner never said which version it is and may not scan a land for \
+                     secrets"
+                }
+            };
+            muted(
+                p,
+                format!(
+                    "{why}, so landing is off. Reinstall it where the session runs with \
+                     `{RUNNER_INSTALL_COMMAND} --force`, then start the session again."
+                ),
+            )
+        });
         section
+            .children(refused.map(|scan| self.secret_findings(scan, can_land, cx)))
+            .children(runner_note)
             .child(
                 icon_text_button(
                     p,
@@ -185,7 +227,7 @@ impl SessionView {
                     Icon::GitPullRequest,
                     "Land and open PR",
                     Tone::Primary,
-                    driver.can_land() && problems.is_empty(),
+                    can_land,
                 )
                 .w_full()
                 .justify_center()
@@ -193,6 +235,78 @@ impl SessionView {
             )
             .children(busy.map(|text| muted(p, text)))
             .child(detail)
+    }
+
+    /// What the secret scan found in a refused land: where each hit is and what it looks like,
+    /// never the value, and the way past it for a change the person has checked.
+    fn secret_findings(
+        &self,
+        scan: &SecretScan,
+        can_land: bool,
+        cx: &mut Context<Self>,
+    ) -> AnimationElement<Div> {
+        let p = self.palette;
+        let (rows, hidden) = secret_rows(scan, SHOWN_SECRETS);
+        let summary = if scan.too_large {
+            "The change is too large to scan for secrets, so nothing was landed."
+        } else {
+            "These added lines look like secrets, so nothing was landed."
+        };
+        let rows = rows.into_iter().map(|row| {
+            div()
+                .flex()
+                .items_start()
+                .gap_2()
+                .child(icon(
+                    Icon::CircleAlert,
+                    px(ROW_ICON),
+                    p.status(Status::NeedsYou),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family(MONO)
+                                .truncate()
+                                .child(elide_middle(&row.place, PLACE_LIMIT)),
+                        )
+                        .child(muted(p, row.kind)),
+                )
+        });
+        let tree = scan.tree.clone();
+        let land_anyway = icon_text_button(
+            p,
+            "land-anyway",
+            Icon::ShieldAlert,
+            "Land anyway",
+            Tone::Danger,
+            can_land,
+        )
+        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            this.land_anyway(tree.clone(), cx);
+        }));
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(muted(p, summary))
+            .children(rows)
+            .children((hidden > 0).then(|| muted(p, format!("{hidden} more not listed."))))
+            .child(start(land_anyway))
+            .child(muted(
+                p,
+                "Lands this exact change. Edit it and the scan runs again.",
+            ))
+            .with_animation(
+                SharedString::from(format!("secret-findings-{}", scan.tree)),
+                Animation::new(FINDINGS_FADE).with_easing(ease_out_quint()),
+                |findings, delta| findings.opacity(FINDINGS_FLOOR + (1.0 - FINDINGS_FLOOR) * delta),
+            )
     }
 }
 
