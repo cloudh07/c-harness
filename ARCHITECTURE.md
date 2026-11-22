@@ -92,6 +92,15 @@ worktrees locked as `c-harness session <session>` or sitting in its worktrees fo
 another window holds are skipped. Discard deletes only a worktree git lists for that session,
 never runs `git worktree prune`, and keeps the `ch/<session>` branch.
 
+Approvals live only in omp's process: `ch-core` fills its pending list from omp's
+`extension_ui_request` frames and empties it when omp ends, and Resume never refills it. So a
+request cannot outlive omp, and nothing can answer it after a restart. What survives is a
+`needs_you` flag on the session record. The app writes it when the session state crosses into
+or out of Needs you, on the same tick that shows or removes the OS notification. A resumed
+session starts with the flag as it was saved, and the first tick clears it once omp is running
+with nothing to answer. Leftovers with the flag sort first, count under Needs you, and say
+their request expired.
+
 [SECURITY.md](SECURITY.md) lists what this design does not protect against.
 
 ## Next

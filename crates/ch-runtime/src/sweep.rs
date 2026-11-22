@@ -461,6 +461,7 @@ mod tests {
             base_commit: "abc".to_owned(),
             created_unix_secs: 1,
             omp_session_file: None,
+            needs_you: false,
         };
         record::write(&provider.sessions_dir, &moved).unwrap();
         // From before worktrees were locked.

@@ -41,11 +41,14 @@ pub fn inbox_slot(state: SessionState) -> usize {
     }
 }
 
-pub fn inbox_counts(state: Option<SessionState>) -> [usize; 4] {
+/// The inbox rows: the open session in its row, plus sessions left over from before that were
+/// waiting for an answer when they stopped, under Needs you.
+pub fn inbox_counts(state: Option<SessionState>, waiting_leftovers: usize) -> [usize; 4] {
     let mut counts = [0; 4];
     if let Some(state) = state {
         counts[inbox_slot(state)] = 1;
     }
+    counts[0] += waiting_leftovers;
     counts
 }
 
@@ -389,12 +392,22 @@ mod tests {
 
     #[test]
     fn each_state_counts_under_one_inbox_row() {
-        assert_eq!(inbox_counts(None), [0, 0, 0, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::NeedsYou)), [1, 0, 0, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::Failed)), [1, 0, 0, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::Running)), [0, 1, 0, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::NeedsReview)), [0, 0, 1, 0]);
-        assert_eq!(inbox_counts(Some(SessionState::Landed)), [0, 0, 0, 1]);
+        assert_eq!(inbox_counts(None, 0), [0, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::NeedsYou), 0), [1, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::Failed), 0), [1, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::Running), 0), [0, 1, 0, 0]);
+        assert_eq!(
+            inbox_counts(Some(SessionState::NeedsReview), 0),
+            [0, 0, 1, 0]
+        );
+        assert_eq!(inbox_counts(Some(SessionState::Landed), 0), [0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn sessions_left_waiting_count_under_needs_you() {
+        assert_eq!(inbox_counts(None, 2), [2, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::NeedsYou), 1), [2, 0, 0, 0]);
+        assert_eq!(inbox_counts(Some(SessionState::Running), 1), [1, 1, 0, 0]);
     }
 
     #[test]

@@ -94,6 +94,7 @@ fn go_live_resumed(session: &str, place: Place, resumed: Resumed) -> Result<Live
                 env,
             },
         omp_args,
+        needs_you,
     } = resumed;
     let (ledger, rows) = Ledger::resumed(settings::usage_dir().as_deref(), session);
     let mut driver = Driver::new(link, driver::epoch_ms);
@@ -114,6 +115,7 @@ fn go_live_resumed(session: &str, place: Place, resumed: Resumed) -> Result<Live
         prompt: String::new(),
         hidden: 0,
         noted_file: None,
+        waiting: needs_you,
     })
 }
 

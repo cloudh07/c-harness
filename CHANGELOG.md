@@ -140,6 +140,16 @@ Notable changes to C-Harness. The format follows
   the SSH host with the port Settings name, then the folder the agent writes in. That folder is
   the session's worktree once the runner has made it, or the checkout on the host. A long path
   drops its middle, so the drive and the session's own folder stay in view.
+- `ch-app`: while a session waits for your answer, the OS shows the notification "C-Harness
+  needs you". It never names the session or what it asks, because notifications show on the
+  lock screen. It goes away once the session stops waiting, closes or the app quits, and
+  clicking it brings the window forward. A local session's record notes that it is waiting,
+  so after a restart that session is listed first under "Left from earlier sessions", counts
+  under Needs you, and says its request expired. Resume starts it again; there is nothing to approve, because omp
+  does not ask the old question again. On Windows the app registers the name its
+  notifications show under `HKCU\Software\Classes\AppUserModelId\c-harness`. macOS shows no
+  notification for a build that is not an app bundle. An SSH session keeps no record, so a
+  restart forgets that it was waiting.
 
 ### Changed
 

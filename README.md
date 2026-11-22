@@ -138,6 +138,10 @@ session screen:
   prompt. Resume is offered for a whole worktree only, and only while Settings runs sessions
   on this computer. It uses the approval mode and model Settings has now. The session's
   checkpoints are listed again.
+
+  A session that was waiting for your answer when it stopped is listed first, counts under
+  Needs you in the sidebar, and says its request expired. Resume does not bring the question
+  back, so there is nothing to approve; omp goes on from the saved conversation.
 - **Keep** hides the session until the next start.
 - **Discard**, pressed twice, deletes the worktree with its uncommitted changes and its
   checkpoints, and keeps the `ch/<session>` branch.
@@ -149,9 +153,10 @@ session screen:
 | Settings | `c-harness/settings.json` under your OS config folder |
 | Model key and GitHub token | The OS keychain. The model key is read when a session starts, the token when you land. |
 | Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work. The empty session screen lists these under "Left from earlier sessions", where Resume picks one up again and Discard deletes one with its uncommitted changes and keeps its `ch/<session>` branch. By hand, run `git worktree remove --force --force <path>` from your repository, then delete its session record. |
-| Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree, and, once omp names it, the path of the file omp keeps the conversation in (never its contents). It is written before the worktree is created and deleted after it is removed. While a window has the session open it holds `<session>.lock` beside the record, so no other window starts or discards it. |
+| Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree; once omp names it, the path of the file omp keeps the conversation in (never its contents); and `needs_you` while the session waits for your answer. It is written before the worktree is created and deleted after it is removed. While a window has the session open it holds `<session>.lock` beside the record, so no other window starts or discards it. |
 | Checkpoints | Commits under `refs/c-harness/<session>/turn-<n>` in your repository, with the author `C-Harness`. A normal `git push` does not send them, and land pushes only the session branch. They are deleted with the session's worktree. By hand, run `git for-each-ref --format="delete %(refname)" refs/c-harness/<session>/ \| git update-ref --stdin` from your repository. |
 | Exported transcripts | `c-harness/transcripts` under the same data folder, with secrets removed by pattern |
+| Notification name (Windows) | `HKCU\Software\Classes\AppUserModelId\c-harness`, with the display name `C-Harness`. Windows needs it to show notifications from an app that has no Start menu shortcut. It is written the first time a run of the app shows a notification. Delete the key by hand to remove it. |
 | Token usage | `c-harness/usage/<session>.jsonl` under the same data folder: one line per model turn with the provider, model, token counts and omp's cost estimate, never the prompt or the reply. A count omp did not report is `null`. Discard and closing a session keep this file. The cost is omp's estimate from its price table, not your provider's bill. |
 
 The config folder is `%APPDATA%` on Windows, `~/Library/Application Support` on macOS and

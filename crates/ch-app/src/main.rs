@@ -52,6 +52,16 @@ const THEMES: [(ThemePref, Icon, &str); 3] = [
 fn main() {
     application().with_assets(assets::Assets).run(|cx| {
         gpui_kit::init(cx);
+        // The name notifications are shown under. On Windows the first notification of a run
+        // also registers it for the current user, under HKCU\Software\Classes\AppUserModelId.
+        cx.set_app_identity("c-harness", "C-Harness");
+        cx.on_system_notification_response(|_, cx| {
+            cx.activate(true);
+            for window in cx.windows() {
+                // A window that closed meanwhile has nothing to bring forward.
+                let _ = window.update(cx, |_, window, _| window.activate_window());
+            }
+        });
         cx.on_window_closed(|cx, _| cx.quit()).detach();
 
         let options = WindowOptions {
@@ -209,12 +219,13 @@ impl Shell {
 
     fn inbox(&self, cx: &Context<Self>) -> Vec<Stateful<Div>> {
         let p = self.palette;
-        let state = self.session.read(cx).state();
+        let session = self.session.read(cx);
+        let (state, waiting) = (session.state(), session.waiting_leftovers());
         let current = state.map(inbox_slot);
         let on_session = self.screen == Screen::Session;
         INBOX
             .iter()
-            .zip(inbox_counts(state))
+            .zip(inbox_counts(state, waiting))
             .enumerate()
             .map(|(slot, ((label, status), count))| {
                 let (text, number) = if count > 0 {

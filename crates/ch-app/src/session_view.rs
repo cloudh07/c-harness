@@ -7,6 +7,7 @@ mod leftovers;
 mod resume;
 mod review;
 mod thread;
+mod waiting;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -74,6 +75,8 @@ struct Live {
     hidden: usize,
     /// The omp session file last saved to the session record.
     noted_file: Option<String>,
+    /// Whether the session was waiting for an answer at the last tick.
+    waiting: bool,
 }
 
 pub struct SessionView {
@@ -144,7 +147,10 @@ impl SessionView {
                 .auto_grow(2, 8)
                 .submit_on_enter(true)
         });
-        let subscriptions = vec![cx.subscribe_in(&prompt, window, Self::on_prompt_event)];
+        let subscriptions = vec![
+            cx.subscribe_in(&prompt, window, Self::on_prompt_event),
+            waiting::dismiss_on_quit(cx),
+        ];
         let ticker = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
@@ -192,6 +198,11 @@ impl SessionView {
             Phase::Live(live) => Some(live.driver.session().state()),
             Phase::LaunchFailed { .. } => Some(SessionState::Failed),
         }
+    }
+
+    /// How many sessions left over from before were waiting for an answer when they stopped.
+    pub fn waiting_leftovers(&self) -> usize {
+        self.leftovers.waiting()
     }
 
     /// Whether Settings still has something to fill in before a session can start.
@@ -259,11 +270,12 @@ impl SessionView {
             }
             Phase::Empty | Phase::LaunchFailed { .. } => false,
         };
+        let waiting = self.track_waiting(cx);
         let swept = self.leftovers.poll();
         let minute = driver::epoch_ms() / 60_000;
         let new_minute = minute != self.minute;
         self.minute = minute;
-        if changed || swept || new_minute {
+        if changed || waiting || swept || new_minute {
             cx.notify();
         }
     }
@@ -323,6 +335,7 @@ impl SessionView {
             prompt,
             hidden: 0,
             noted_file: None,
+            waiting: false,
         }))
     }
 
@@ -489,8 +502,13 @@ impl SessionView {
                 mut driver,
                 runner,
                 mut ledger,
+                session,
+                waiting,
                 ..
             } = *live;
+            if waiting {
+                cx.dismiss_system_notification(&waiting::tag(&session));
+            }
             problem = ledger.flush(driver.usage().rows());
             let landed = driver.session().state() == SessionState::Landed;
             driver.close();

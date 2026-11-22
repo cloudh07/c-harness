@@ -72,6 +72,7 @@ impl LocalProvider {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs()),
             omp_session_file: None,
+            needs_you: false,
         };
         record::create(&self.sessions_dir, &record)?;
         let add = worktree_add_args(&self.repo, &path, session, &record.base_commit);

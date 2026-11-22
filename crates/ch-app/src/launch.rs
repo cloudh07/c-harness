@@ -113,6 +113,8 @@ pub struct Launched {
 pub struct Resumed {
     pub launched: Launched,
     pub omp_args: Vec<String>,
+    /// Whether the record says the session was waiting for an answer when it stopped.
+    pub needs_you: bool,
 }
 
 /// The runner process, plus the worktree it was given when it runs on this computer.
@@ -135,6 +137,17 @@ impl Runner {
         };
         provider
             .note_omp_session_file(session, file)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Stores whether the session is waiting for an answer in its record. Returns whether the
+    /// record changed; a session on another machine has none.
+    pub fn note_needs_you(&self, waiting: bool) -> Result<bool, String> {
+        let Some((provider, session)) = &self.local else {
+            return Ok(false);
+        };
+        provider
+            .note_needs_you(session, waiting)
             .map_err(|e| e.to_string())
     }
 
@@ -264,7 +277,11 @@ fn resume_local(settings: &Settings, session: &str) -> Result<Resumed, String> {
         info.version,
         env,
     )?;
-    Ok(Resumed { launched, omp_args })
+    Ok(Resumed {
+        launched,
+        omp_args,
+        needs_you: record.needs_you,
+    })
 }
 
 /// Wires a started runner's pipes to a [`Link`].

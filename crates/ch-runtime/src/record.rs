@@ -24,6 +24,15 @@ pub struct SessionRecord {
     /// The file omp keeps the conversation in, once omp has named it. Resume passes it back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omp_session_file: Option<PathBuf>,
+    /// Whether the session was waiting for an answer when this was last written. Only the fact
+    /// is kept: the request itself ends with omp and cannot be answered after a restart.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub needs_you: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde passes the field by reference.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn path(dir: &Path, session: &str) -> PathBuf {
@@ -119,7 +128,24 @@ mod tests {
             base_commit: "0123abcd".to_owned(),
             created_unix_secs: 1_700_000_000,
             omp_session_file: None,
+            needs_you: false,
         }
+    }
+
+    #[test]
+    fn needs_you_is_left_out_until_set_and_then_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = r#"{"session":"s1","repo":"/repo","worktree":"/worktrees/s1",
+            "branch":"ch/s1","base_commit":"0123abcd","created_unix_secs":1700000000}"#;
+        fs::write(dir.path().join("s1.json"), older).unwrap();
+        assert!(!read(dir.path(), "s1").unwrap().unwrap().needs_you);
+
+        let mut waiting = record("s1");
+        waiting.needs_you = true;
+        let json = serde_json::to_value(&waiting).unwrap();
+        assert_eq!(json["needs_you"], true);
+        write(dir.path(), &waiting).unwrap();
+        assert_eq!(read(dir.path(), "s1").unwrap(), Some(waiting));
     }
 
     #[test]
