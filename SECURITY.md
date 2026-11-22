@@ -77,11 +77,11 @@ can run after it was stopped. The GitHub token is not in that command's environm
 **omp shares the runner's output stream.** Runner frames and omp's events travel on one pipe.
 `ch-runner` drops any line from omp whose `type` starts with `ch_`, and the app drops a runner
 frame that comes out of omp's chunked output. Each verify, diff, checkpoint, restore, stop and
-land carries a request id, and the app drops a reply that names no open request of that kind. The ids are sequential,
-so this catches stray, late and replayed replies; it is not authentication. Frames that answer no
-request (the runner's hello, a notice, omp exiting, an error without an id) are taken as they
-come. Over SSH the remote command runs through your login shell, so anything that shell prints
-on startup lands on the same stream.
+land carries a request id, and the app drops a reply that names no open request of that kind.
+The ids are sequential, so this catches stray, late and replayed replies; it is not
+authentication. Frames that answer no request (the runner's hello, a notice, omp exiting, an
+error without an id) are taken as they come. Over SSH the remote command runs through your login
+shell, so anything that shell prints on startup lands on the same stream.
 
 **Verification is measured, not reported.** `ch-runner` runs the verify command itself and
 records the real exit code. The agent may still have edited the tests or scripts that command
