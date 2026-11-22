@@ -102,15 +102,55 @@ allow third-party apps to use subscription logins, and omp prefers a stored logi
 so `ch-runner` turns the `anthropic` provider off for the session while such a login exists,
 or when it cannot tell. `google-antigravity` is always off for the same reason.
 
+### Checkpoints
+
+Each time the agent finishes a run, a local session saves a checkpoint: the working tree,
+untracked files included and ignored files left out. The Checkpoints section of the review
+panel lists the last eight. The diff button on one shows what changed since the checkpoint
+before it, and Restore puts the working tree back as it was then. Session start restores the
+commit the session began from.
+
+- Before a restore, the tree it replaces is saved as a checkpoint of its own, marked "Saved
+  before a restore", so a restore can be undone.
+- A restore is refused when it would write over or delete a file no checkpoint holds, such as
+  an ignored build output or `.env`. Move that file away, then restore again.
+- Files come back with your repository's line-ending settings, as `git checkout` writes them.
+- Restore waits while the agent works and while a check, diff or another restore runs. A new
+  prompt waits for a restore, and up to 15 seconds for the save of the last run.
+- A session keeps at most 1000 checkpoints. Only a worktree C-Harness made for the session
+  keeps them, so an SSH session has none.
+
+### If C-Harness closes during a session
+
+When the window closes, `ch-runner` sees its input end and stops the agent. A local session's
+worktree, record and usage file stay. An SSH session keeps no record, so it is not listed or
+resumed. The next start lists the local session under "Left from earlier sessions" on the empty
+session screen:
+
+- **Resume** starts the runner again in that worktree and omp on the saved conversation: the
+  file the session record names, or, when it names none or the file is gone, the worktree's
+  most recent conversation (`--continue`), which may be a new, empty one. The earlier prompts
+  and replies show again, up to the last 200. Tool calls, approvals that were waiting, verify
+  results and the diff do not come back, so verify again before you land. After a compaction
+  omp may return only what it kept, so older turns can be missing or show without their
+  prompt. Resume is offered for a whole worktree only, and only while Settings runs sessions
+  on this computer. It uses the approval mode and model Settings has now. The session's
+  checkpoints are listed again.
+- **Keep** hides the session until the next start.
+- **Discard**, pressed twice, deletes the worktree with its uncommitted changes and its
+  checkpoints, and keeps the `ch/<session>` branch.
+
 ### Where things are kept
 
 | What | Where |
 |---|---|
 | Settings | `c-harness/settings.json` under your OS config folder |
 | Model key and GitHub token | The OS keychain. The model key is read when a session starts, the token when you land. |
-| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work. To remove it, run `git worktree remove --force --force <path>` from your repository, which also deletes changes nobody committed, then delete its session record. |
-| Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree. It is written before the worktree is created and deleted after it is removed. |
+| Local session worktrees | `c-harness/worktrees/<session>` under your OS local data folder. Each is locked with the reason `c-harness session <session>`, so `git worktree prune` keeps it even if its folder is gone. Closing a landed session removes its worktree. Any other session keeps it, so you can still recover the work. The empty session screen lists these under "Left from earlier sessions", where Resume picks one up again and Discard deletes one with its uncommitted changes and keeps its `ch/<session>` branch. By hand, run `git worktree remove --force --force <path>` from your repository, then delete its session record. |
+| Local session records | `c-harness/sessions/<session>.json` under the same data folder: the repository, worktree path, branch, base commit and start time of each local session that still has a worktree, and, once omp names it, the path of the file omp keeps the conversation in (never its contents). It is written before the worktree is created and deleted after it is removed. While a window has the session open it holds `<session>.lock` beside the record, so no other window starts or discards it. |
+| Checkpoints | Commits under `refs/c-harness/<session>/turn-<n>` in your repository, with the author `C-Harness`. A normal `git push` does not send them, and land pushes only the session branch. They are deleted with the session's worktree. By hand, run `git for-each-ref --format="delete %(refname)" refs/c-harness/<session>/ \| git update-ref --stdin` from your repository. |
 | Exported transcripts | `c-harness/transcripts` under the same data folder, with secrets removed by pattern |
+| Token usage | `c-harness/usage/<session>.jsonl` under the same data folder: one line per model turn with the provider, model, token counts and omp's cost estimate, never the prompt or the reply. A count omp did not report is `null`. Discard and closing a session keep this file. The cost is omp's estimate from its price table, not your provider's bill. |
 
 The config folder is `%APPDATA%` on Windows, `~/Library/Application Support` on macOS and
 `~/.config` on Linux. The local data folder is `%LOCALAPPDATA%`, `~/Library/Application

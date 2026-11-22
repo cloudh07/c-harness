@@ -15,7 +15,11 @@ pub const PROBE_SENTINEL_PROVIDER: &str = "__ch_probe__";
 pub const PROVIDER_LIST_PREFIX: &str = "Configured providers:";
 
 /// Values `--approval-mode` accepts.
-const APPROVAL_MODES: [&str; 3] = ["always-ask", "write", "yolo"];
+const APPROVAL_MODES: [&str; 4] = ["always-ask", "always-ask-cached", "write", "yolo"];
+
+/// The approval mode that remembers grants, which omp added in 18.12.3.
+const CACHED_APPROVAL_MODE: &str = "always-ask-cached";
+const CACHED_APPROVAL_SINCE: [u64; 3] = [18, 12, 3];
 
 /// Values `--thinking` accepts.
 const THINKING_LEVELS: [&str; 8] = [
@@ -123,6 +127,86 @@ pub fn classify_exit(exit_code: Option<i32>, stderr_tail: &[String]) -> ExitReas
 /// error anywhere, so the host has to be the component that validates.
 pub fn validate_approval_mode(value: &str) -> Result<(), String> {
     validate_choice("approvalMode", value, &APPROVAL_MODES)
+}
+
+/// Reject `always-ask-cached` unless omp is new enough to know it.
+///
+/// An omp older than 18.12.3 would take the value like any unknown one and run under its
+/// configured default (see [`validate_approval_mode`]). `version` runs `omp --version` and is
+/// called only for that mode; an answer that does not read as a release counts as too old.
+pub fn check_approval_mode_version(
+    mode: &str,
+    version: impl FnOnce() -> Option<String>,
+) -> Result<(), String> {
+    if mode != CACHED_APPROVAL_MODE {
+        return Ok(());
+    }
+    let [major, minor, patch] = CACHED_APPROVAL_SINCE;
+    let needs = format!("--approval-mode {mode} needs omp {major}.{minor}.{patch} or newer");
+    let release = version()
+        .as_deref()
+        .and_then(parse_version)
+        .and_then(|v| parse_release(&v));
+    match release {
+        Some(release) if release.at_least(CACHED_APPROVAL_SINCE) => Ok(()),
+        Some(release) => Err(format!("{needs}, and this omp is {release}")),
+        None => Err(format!(
+            "{needs}, and the runner could not read this omp's version"
+        )),
+    }
+}
+
+/// A `major.minor.patch` version, with a pre-release suffix or not.
+struct Release {
+    number: [u64; 3],
+    pre_release: bool,
+}
+
+impl Release {
+    /// A pre-release comes before the release it leads to.
+    fn at_least(&self, min: [u64; 3]) -> bool {
+        if self.pre_release {
+            self.number > min
+        } else {
+            self.number >= min
+        }
+    }
+}
+
+impl std::fmt::Display for Release {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let [major, minor, patch] = self.number;
+        write!(f, "{major}.{minor}.{patch}")?;
+        if self.pre_release {
+            write!(f, " (a pre-release)")?;
+        }
+        Ok(())
+    }
+}
+
+/// Reads `18.12.3`, `18.12.3-rc.1` or `18.12.3+build`; anything else is `None`.
+fn parse_release(version: &str) -> Option<Release> {
+    let version = version.split_once('+').map_or(version, |(core, _)| core);
+    let (core, pre_release) = match version.split_once('-') {
+        Some((core, _)) => (core, true),
+        None => (version, false),
+    };
+    // Digits only: `parse` alone would also take a leading `+`.
+    let mut parts = core.split('.').map(|part| {
+        if part.bytes().all(|b| b.is_ascii_digit()) {
+            part.parse::<u64>().ok()
+        } else {
+            None
+        }
+    });
+    let number = [parts.next()??, parts.next()??, parts.next()??];
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(Release {
+        number,
+        pre_release,
+    })
 }
 
 /// Reject a `--thinking` value omp would silently swallow. Same failure mode as
@@ -423,6 +507,7 @@ mod tests {
         assert!(validate_approval_mode("yolo").is_ok());
         assert!(validate_approval_mode("write").is_ok());
         assert!(validate_approval_mode("always-ask").is_ok());
+        assert!(validate_approval_mode("always-ask-cached").is_ok());
         assert!(validate_approval_mode("Yolo").is_err());
         assert!(validate_approval_mode("").is_err());
 
@@ -432,6 +517,45 @@ mod tests {
         assert!(validate_model("anthropic/claude-opus-4").is_ok());
         assert!(validate_model("--api-key").is_err());
         assert!(validate_model("   ").is_err());
+    }
+
+    #[test]
+    fn the_cached_approval_mode_needs_omp_18_12_3() {
+        let check = |version: Option<&str>| {
+            check_approval_mode_version("always-ask-cached", || version.map(str::to_owned))
+        };
+        for version in [
+            "omp/18.12.3",
+            "18.12.3",
+            "v18.13.1",
+            "omp/19.0.0",
+            "18.12.3+build.7",
+        ] {
+            assert_eq!(check(Some(version)), Ok(()), "{version}");
+        }
+        for version in [
+            "omp/18.12.2",
+            "18.11.9",
+            "17.2.10",
+            "18.12.3-rc.1",
+            "18.12",
+            "18.12.x",
+            "garbage",
+            "",
+        ] {
+            let error = check(Some(version)).unwrap_err();
+            assert!(error.contains("18.12.3"), "{version}: {error}");
+        }
+        let error = check(None).unwrap_err();
+        assert!(error.contains("could not read"), "{error}");
+    }
+
+    #[test]
+    fn other_approval_modes_never_ask_for_the_version() {
+        for mode in ["always-ask", "write", "yolo"] {
+            let asked = check_approval_mode_version(mode, || panic!("{mode} asked"));
+            assert_eq!(asked, Ok(()), "{mode}");
+        }
     }
 
     #[test]

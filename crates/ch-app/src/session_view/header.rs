@@ -8,7 +8,10 @@ use gpui_kit::{
 
 use super::{Phase, SessionView, status_for};
 use crate::assets::{Icon, icon, status_icon};
-use crate::view_model::{branch_for, repo_label, session_title, state_label};
+use crate::view_model::{
+    branch_for, context_label, context_near_full, live_title, repo_label, session_title,
+    state_label, usage_label,
+};
 use crate::widgets::{MONO, Tone, icon_button};
 
 const STATUS_ICON: f32 = 16.0;
@@ -33,36 +36,17 @@ impl SessionView {
             Phase::Launching {
                 session, prompt, ..
             } => (session_title(prompt), Some(branch_for(session))),
+            Phase::Resuming { session, .. } => {
+                ("Resuming a session".to_string(), Some(branch_for(session)))
+            }
             Phase::LaunchFailed { prompt, .. } => (session_title(prompt), None),
             Phase::Live(live) => (
-                session_title(&live.first_prompt),
+                live_title(&live.first_prompt),
                 Some(branch_for(&live.session)),
             ),
         };
-        let repo = repo_label(&self.settings);
         let live = matches!(self.phase, Phase::Live(_));
-
-        let meta = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .min_w_0()
-            .text_xs()
-            .text_color(rgb(p.text_muted))
-            .child(div().flex_none().text_color(rgb(color)).child(label))
-            .when(!repo.is_empty(), |row| {
-                row.child(dot(p.text_faint))
-                    .child(meta_item(p, Icon::FolderGit, repo, None))
-            })
-            .children(branch.map(|branch| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .min_w_0()
-                    .child(dot(p.text_faint))
-                    .child(meta_item(p, Icon::GitBranch, branch, Some(MONO)))
-            }));
+        let meta = self.meta(color, label, branch);
 
         div()
             .flex()
@@ -113,6 +97,55 @@ impl SessionView {
                     )
                     .when(self.review_open, |b| b.bg(rgb(p.hover)))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_review(cx))),
+                )
+            })
+    }
+}
+
+impl SessionView {
+    /// The line under the title: state, repository, branch and, once a turn ends, usage and
+    /// context, the context drawn as a warning when the window is nearly full.
+    fn meta(&self, color: u32, label: &'static str, branch: Option<String>) -> Div {
+        let p = self.palette;
+        let repo = repo_label(&self.settings);
+        let (usage, context, near_full) = match &self.phase {
+            Phase::Live(live) => (
+                usage_label(&live.driver.usage().totals()),
+                context_label(live.driver.context()),
+                context_near_full(live.driver.context()),
+            ),
+            _ => (None, None, false),
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .text_xs()
+            .text_color(rgb(p.text_muted))
+            .child(div().flex_none().text_color(rgb(color)).child(label))
+            .when(!repo.is_empty(), |row| {
+                row.child(dot(p.text_faint))
+                    .child(meta_item(p, Icon::FolderGit, repo, None))
+            })
+            .children(branch.map(|branch| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(dot(p.text_faint))
+                    .child(meta_item(p, Icon::GitBranch, branch, Some(MONO)))
+            }))
+            .when_some(usage, |row, usage| {
+                row.child(dot(p.text_faint))
+                    .child(meta_item(p, Icon::Sparkles, usage, None))
+            })
+            .when_some(context, |row, context| {
+                row.child(dot(p.text_faint)).child(
+                    meta_item(p, Icon::Gauge, context, None).when(near_full, |item| {
+                        item.text_color(rgb(p.status(Status::NearCap)))
+                    }),
                 )
             })
     }

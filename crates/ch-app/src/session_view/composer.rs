@@ -34,6 +34,17 @@ fn live_hint(closed: bool, state: SessionState, can_prompt: bool) -> &'static st
     }
 }
 
+/// Why prompts wait while a checkpoint is restored or saved, if they do.
+fn checkpoint_hint(restoring: bool, saving: bool) -> Option<&'static str> {
+    if restoring {
+        Some("Restoring a checkpoint. Send a prompt once it is done.")
+    } else if saving {
+        Some("Saving a checkpoint of the last run.")
+    } else {
+        None
+    }
+}
+
 impl SessionView {
     pub(super) fn approvals(&self, cx: &Context<Self>) -> Option<Stateful<Div>> {
         let Phase::Live(live) = &self.phase else {
@@ -65,13 +76,17 @@ impl SessionView {
                 let driver = &live.driver;
                 let state = driver.session().state();
                 let can_prompt = driver.can_prompt();
+                let hint = checkpoint_hint(driver.restoring(), driver.saving_checkpoint())
+                    .filter(|_| !driver.closed())
+                    .unwrap_or_else(|| live_hint(driver.closed(), state, can_prompt));
                 (
                     can_prompt,
-                    live_hint(driver.closed(), state, can_prompt),
+                    hint,
                     is_working(state) && !driver.stopping() && !driver.closed(),
                 )
             }
             Phase::Launching { .. } => (false, "Starting the session.", false),
+            Phase::Resuming { .. } => (false, "Resuming the session.", false),
             Phase::Empty | Phase::LaunchFailed { .. } if needs_setup => {
                 (false, "Finish Settings to start a session.", false)
             }
@@ -172,6 +187,13 @@ mod tests {
                 "{state:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_restore_or_a_save_says_why_prompts_wait() {
+        assert!(checkpoint_hint(true, true).is_some_and(|h| h.contains("Restoring")));
+        assert!(checkpoint_hint(false, true).is_some_and(|h| h.contains("Saving")));
+        assert_eq!(checkpoint_hint(false, false), None);
     }
 
     #[test]

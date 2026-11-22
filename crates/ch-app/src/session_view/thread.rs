@@ -29,6 +29,10 @@ impl SessionView {
                 .gap_4()
                 .child(bubble(p, prompt))
                 .child(working(p, "Checking the runner and creating the worktree.")),
+            Phase::Resuming { .. } => div().flex().flex_col().gap_4().child(working(
+                p,
+                "Starting the runner again in the session's worktree.",
+            )),
             Phase::LaunchFailed { prompt, message } => div()
                 .flex()
                 .flex_col()
@@ -111,6 +115,7 @@ impl SessionView {
             .pt(px(64.0))
             .child(intro)
             .children(setup)
+            .children(self.leftovers_card(cx))
     }
 
     fn live_thread(&self, live: &Live, cx: &mut Context<Self>) -> Div {
@@ -129,19 +134,14 @@ impl SessionView {
             .flex()
             .flex_col()
             .gap_4()
+            .children((live.hidden > 0).then(|| muted(p, hidden_note(live.hidden))))
             .children(
                 live.turns
                     .iter()
                     .enumerate()
                     .map(|(i, (prompt, reply))| turn(p, format!("turn-{i}"), prompt, reply, false)),
             )
-            .child(turn(
-                p,
-                "turn-now".to_string(),
-                &live.prompt,
-                session.reply(),
-                waiting,
-            ))
+            .children(current_turn(p, live, waiting))
             .children(panels::failure(p, session.failure()))
             .children(panels::warnings(p, session.warnings()))
             .children(panels::notices(p, session.notices()))
@@ -158,6 +158,7 @@ impl SessionView {
             .children(ask_review.then(|| self.review_prompt(cx)))
             .children(panels::evidence(p, session.evidence()))
             .children(panels::diff(p, session.last_diff()))
+            .children(panels::turn_diff(p, session.turn_diff()))
             .children(landing)
             .children(panels::log(p, live.driver.log()))
     }
@@ -188,6 +189,33 @@ impl SessionView {
     }
 }
 
+/// The turn in progress. A resumed session has none until the first prompt, only a line while
+/// the earlier conversation loads.
+fn current_turn(p: Palette, live: &Live, waiting: bool) -> Option<Div> {
+    let reply = live.driver.session().reply();
+    if live.prompt.is_empty() && reply.is_empty() {
+        return (live.driver.loading_history() && !live.driver.closed())
+            .then(|| working(p, "Loading the earlier conversation."));
+    }
+    Some(turn(
+        p,
+        "turn-now".to_string(),
+        &live.prompt,
+        reply,
+        waiting,
+    ))
+}
+
+fn hidden_note(hidden: usize) -> String {
+    if hidden == 1 {
+        "1 earlier turn is not shown.".to_string()
+    } else {
+        format!("{hidden} earlier turns are not shown.")
+    }
+}
+
+/// One prompt and its reply. A turn read back from omp may have no prompt, e.g. after
+/// compaction.
 fn turn(p: Palette, id: String, prompt: &str, reply: &str, waiting: bool) -> Div {
     let (shown, clipped) = last_chars(reply, panels::SHOWN_CHARS);
     let body = if !shown.is_empty() {
@@ -203,7 +231,7 @@ fn turn(p: Palette, id: String, prompt: &str, reply: &str, waiting: bool) -> Div
         .flex()
         .flex_col()
         .gap_2()
-        .child(bubble(p, prompt))
+        .children((!prompt.is_empty()).then(|| bubble(p, prompt)))
         .children(clipped.then(|| muted(p, "Only the end of this reply is shown.")))
         .child(body)
         .children((waiting && !shown.is_empty()).then(|| working(p, "Still working.")))
@@ -236,4 +264,15 @@ fn working(p: Palette, text: &'static str) -> Div {
             p.status(Status::Running),
         ))
         .child(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hidden_note;
+
+    #[test]
+    fn the_hidden_note_counts_turns() {
+        assert_eq!(hidden_note(1), "1 earlier turn is not shown.");
+        assert_eq!(hidden_note(3), "3 earlier turns are not shown.");
+    }
 }

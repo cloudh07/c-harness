@@ -2,6 +2,7 @@
 
 pub mod args;
 mod base64;
+mod checkpoint;
 mod git;
 mod land;
 mod omp;

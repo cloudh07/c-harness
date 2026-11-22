@@ -310,6 +310,11 @@ pub fn sessions_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("sessions"))
 }
 
+/// Where per-turn usage is kept: `<local data dir>/c-harness/usage`.
+pub fn usage_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("usage"))
+}
+
 /// Where redacted transcripts are exported: `<local data dir>/c-harness/transcripts`.
 pub fn transcripts_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_DIR).join("transcripts"))
@@ -555,7 +560,8 @@ mod tests {
     #[test]
     fn a_hand_edited_yolo_is_refused_not_obeyed() {
         // Full auto is not offered yet: the file fails to load and the app falls back to write.
-        for mode in ["yolo", "Write", ""] {
+        // Nor is the cached mode, which an older omp replaces with full auto.
+        for mode in ["yolo", "always-ask-cached", "Write", ""] {
             let text = format!(r#"{{"approval_mode": "{mode}"}}"#);
             assert!(serde_json::from_str::<Settings>(&text).is_err(), "{mode:?}");
         }

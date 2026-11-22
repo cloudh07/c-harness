@@ -12,12 +12,16 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use ch_protocol::runner::{
-    ClientFrame, ClientLine, Evidence, LandRequest, MAX_OUTPUT_TAIL_BYTES, MAX_PATCH_BYTES,
-    RUNNER_PROTOCOL_VERSION, RouteError, RunnerFrame, StartSession, route_client_line,
+    ClientFrame, ClientLine, Evidence, LandRequest, RUNNER_PROTOCOL_VERSION, RouteError,
+    RunnerFrame, StartSession, route_client_line,
 };
-use ch_protocol::{LineSplitter, MAX_FRAME_BYTES, host_config_overlay, host_disabled_providers};
+use ch_protocol::{
+    LineSplitter, MAX_FRAME_BYTES, check_approval_mode_version, host_config_overlay,
+    host_disabled_providers,
+};
 use serde_json::Value;
 
+use crate::checkpoint::Store;
 use crate::git::{Base, Git};
 use crate::land::Lander;
 use crate::omp::{self, Launch, Omp};
@@ -28,11 +32,15 @@ use crate::scratch::PrivateDir;
 use crate::scrub::Scrubber;
 use crate::verify::{self, Checked, Job};
 
-// The `ch_error` stages the client tells apart; `verify` and `diff` failures leave the
-// session usable, every other stage ends it.
+mod checkpoints;
+
+// The `ch_error` stages the client tells apart; `verify`, `diff`, `checkpoint` and
+// `restore` failures leave the session usable, every other stage ends it.
 const START: &str = "start";
 const VERIFY: &str = "verify";
 const DIFF: &str = "diff";
+const CHECKPOINT: &str = "checkpoint";
+const RESTORE: &str = "restore";
 const STOP: &str = "stop";
 const LAND: &str = "land";
 const PROTOCOL: &str = "protocol";
@@ -95,6 +103,8 @@ where
         omp: OmpState::NotStarted,
         landed: HashMap::new(),
         workers: Vec::new(),
+        side_workers: Vec::new(),
+        checkpoints: None,
         shutdown: Arc::new(AtomicBool::new(false)),
         checked: Arc::new(Mutex::new(None)),
     };
@@ -176,7 +186,13 @@ struct Session {
     base: Option<Base>,
     omp: OmpState,
     landed: HashMap<String, String>,
+    /// Checks, diffs and restores: land waits for these.
     workers: Vec<JoinHandle<()>>,
+    /// Checkpoint saves: land does not wait for these, they only read the working tree. A
+    /// restore is refused while one runs.
+    side_workers: Vec<JoinHandle<()>>,
+    /// Set by a start in a worktree that keeps checkpoints.
+    checkpoints: Option<Arc<Mutex<Store>>>,
     shutdown: Arc<AtomicBool>,
     /// What the last finished check ran on, for land to hold the work to.
     checked: Arc<Mutex<Option<Checked>>>,
@@ -205,6 +221,7 @@ impl Session {
             }
             self.watch_omp();
             self.workers.retain(|worker| !worker.is_finished());
+            self.side_workers.retain(|worker| !worker.is_finished());
             if self.out.is_broken() {
                 return;
             }
@@ -218,7 +235,7 @@ impl Session {
         }
         self.out.close_omp();
         self.shutdown.store(true, Ordering::Relaxed);
-        for worker in self.workers.drain(..) {
+        for worker in self.workers.drain(..).chain(self.side_workers.drain(..)) {
             proc_tree::join_within(worker, WORKER_JOIN);
         }
     }
@@ -239,7 +256,9 @@ impl Session {
                 command,
                 timeout_secs,
             } => self.verify(id, command, timeout_secs),
-            ClientFrame::Diff { id } => self.diff(id),
+            ClientFrame::Diff { id, from, to } => self.diff(id, from, to),
+            ClientFrame::Checkpoint { id } => self.checkpoint(id),
+            ClientFrame::Restore { id, turn } => self.restore(id, turn),
             ClientFrame::Stop { id } => self.stop(id),
             ClientFrame::Land(request) => self.land(&request),
         }
@@ -276,6 +295,7 @@ impl Session {
             Ok((omp, base)) => {
                 self.omp = OmpState::Running(omp);
                 self.base = Some(base);
+                self.open_checkpoints(&start.session);
             }
             Err(e) => {
                 let scrubber = Scrubber::for_env(start.env.values());
@@ -285,7 +305,10 @@ impl Session {
     }
 
     fn start_omp(&self, start: &StartSession) -> Result<(Omp, Base), String> {
-        omp::check_start(start)?;
+        let mode = omp::check_start(start)?;
+        check_approval_mode_version(mode, || {
+            omp::probe_version(&self.omp_program, self.git.workdir(), &start.env)
+        })?;
         let base = self.git.base()?;
         let write = |stem: &str, text: &str| {
             self.dir
@@ -366,30 +389,6 @@ impl Session {
         }));
     }
 
-    fn diff(&mut self, id: String) {
-        let Some(base) = self.base.clone() else {
-            self.out
-                .frame(&error(Some(id), DIFF, "send ch_start before ch_diff"));
-            return;
-        };
-        let git = self.git.clone();
-        let out = self.out.clone();
-        let index = self.dir.unique_path("diff-index");
-        self.workers.push(thread::spawn(move || {
-            let frame = match git.diff(&base, &index, MAX_OUTPUT_TAIL_BYTES, MAX_PATCH_BYTES) {
-                Ok(diff) => RunnerFrame::DiffResult {
-                    id,
-                    base: base.id,
-                    stat: diff.stat,
-                    patch: diff.patch,
-                    truncated: diff.truncated,
-                },
-                Err(e) => error(Some(id), DIFF, e),
-            };
-            out.frame(&frame);
-        }));
-    }
-
     fn stop(&mut self, id: String) {
         match std::mem::replace(&mut self.omp, OmpState::Lost) {
             OmpState::NotStarted => {
@@ -465,8 +464,9 @@ impl Session {
         };
         self.workers.retain(|worker| !worker.is_finished());
         let refusal = refusal.or_else(|| {
-            (!self.workers.is_empty())
-                .then_some("refused while a check or diff is still running: wait for its result")
+            (!self.workers.is_empty()).then_some(
+                "refused while a check, diff or restore is still running: wait for its result",
+            )
         });
         let base = match (refusal, &self.base) {
             (None, Some(base)) => base.clone(),

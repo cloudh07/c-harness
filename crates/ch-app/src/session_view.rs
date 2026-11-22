@@ -3,6 +3,8 @@
 
 mod composer;
 mod header;
+mod leftovers;
+mod resume;
 mod review;
 mod thread;
 
@@ -22,10 +24,12 @@ use gpui_kit::{
 
 use crate::assets::Icon;
 use crate::driver::{self, Driver};
-use crate::launch::{self, Launched, Runner};
+use crate::launch::{self, Launched, Resumed, Runner};
+use crate::ledger::Ledger;
 use crate::settings::{self, Problem, Settings};
 use crate::view_model::{land_request, session_id, transcript_file_name};
 use crate::widgets::{Tone, banner, icon_button};
+use leftovers::Leftovers;
 
 const TICK: Duration = Duration::from_millis(50);
 const CONTENT_WIDTH: f32 = 760.0;
@@ -39,6 +43,11 @@ enum Phase {
         session: String,
         prompt: String,
         rx: Receiver<Result<Launched, String>>,
+    },
+    /// A leftover session is starting again in its worktree.
+    Resuming {
+        session: String,
+        rx: Receiver<Result<Resumed, String>>,
     },
     Live(Box<Live>),
     LaunchFailed {
@@ -57,6 +66,11 @@ struct Live {
     /// Earlier prompts and the full reply each one got.
     turns: Vec<(String, String)>,
     prompt: String,
+    ledger: Ledger,
+    /// Turns of a resumed conversation too old to show.
+    hidden: usize,
+    /// The omp session file last saved to the session record.
+    noted_file: Option<String>,
 }
 
 pub struct SessionView {
@@ -66,7 +80,10 @@ pub struct SessionView {
     prompt: Entity<TextareaState>,
     message: Option<Result<String, String>>,
     review_open: bool,
+    leftovers: Leftovers,
     scroll: ScrollHandle,
+    /// Minutes since the Unix epoch at the last tick, so ages on screen move on with the clock.
+    minute: u64,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -105,6 +122,12 @@ fn may_start_new(closed: bool, landing: bool, stopping: bool, state: SessionStat
     closed || (!landing && (stopping || !is_working(state)))
 }
 
+/// The turn a new prompt closes, unless it has nothing to show: the first prompt of a
+/// resumed session follows no turn of this run.
+fn finished_turn(prompt: String, reply: String) -> Option<(String, String)> {
+    (!prompt.is_empty() || !reply.is_empty()).then_some((prompt, reply))
+}
+
 impl SessionView {
     pub fn new(
         settings: Settings,
@@ -127,6 +150,7 @@ impl SessionView {
                 }
             }
         });
+        let leftovers = Leftovers::scanning(launch::leftovers(&settings));
         Self {
             palette,
             settings,
@@ -134,7 +158,9 @@ impl SessionView {
             prompt,
             message: None,
             review_open: true,
+            leftovers,
             scroll: ScrollHandle::new(),
+            minute: driver::epoch_ms() / 60_000,
             _ticker: ticker,
             _subscriptions: subscriptions,
         }
@@ -146,6 +172,10 @@ impl SessionView {
     }
 
     pub fn set_settings(&mut self, settings: Settings, cx: &mut Context<Self>) {
+        // Another repository may have its own leftovers.
+        if settings.repo.trim() != self.settings.repo.trim() {
+            self.leftovers = Leftovers::scanning(launch::leftovers(&settings));
+        }
         self.settings = settings;
         self.message = None;
         cx.notify();
@@ -155,7 +185,7 @@ impl SessionView {
     pub fn state(&self) -> Option<SessionState> {
         match &self.phase {
             Phase::Empty => None,
-            Phase::Launching { .. } => Some(SessionState::Starting),
+            Phase::Launching { .. } | Phase::Resuming { .. } => Some(SessionState::Starting),
             Phase::Live(live) => Some(live.driver.session().state()),
             Phase::LaunchFailed { .. } => Some(SessionState::Failed),
         }
@@ -170,7 +200,7 @@ impl SessionView {
     pub fn can_start_new(&self) -> bool {
         match &self.phase {
             Phase::Empty | Phase::LaunchFailed { .. } => true,
-            Phase::Launching { .. } => false,
+            Phase::Launching { .. } | Phase::Resuming { .. } => false,
             Phase::Live(live) => {
                 let d = &live.driver;
                 may_start_new(d.closed(), d.landing(), d.stopping(), d.session().state())
@@ -206,10 +236,31 @@ impl SessionView {
     fn tick(&mut self, cx: &mut Context<Self>) {
         let changed = match &mut self.phase {
             Phase::Launching { .. } => self.poll_launch(),
-            Phase::Live(live) => live.driver.pump(),
+            Phase::Resuming { .. } => self.poll_resume(),
+            Phase::Live(live) => {
+                let pumped = live.driver.pump();
+                let (caught_up, history_problem) = live.catch_up();
+                let problems: Vec<String> = [
+                    live.ledger.sync(live.driver.usage().rows()),
+                    history_problem,
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                if problems.is_empty() {
+                    pumped || caught_up
+                } else {
+                    self.message = Some(Err(problems.join(" ")));
+                    true
+                }
+            }
             Phase::Empty | Phase::LaunchFailed { .. } => false,
         };
-        if changed {
+        let swept = self.leftovers.poll();
+        let minute = driver::epoch_ms() / 60_000;
+        let new_minute = minute != self.minute;
+        self.minute = minute;
+        if changed || swept || new_minute {
             cx.notify();
         }
     }
@@ -255,6 +306,7 @@ impl SessionView {
         }
         Phase::Live(Box::new(Live {
             worktree: runner.worktree(),
+            ledger: Ledger::new(settings::usage_dir().as_deref(), &session),
             session,
             driver,
             runner: Some(runner),
@@ -262,6 +314,8 @@ impl SessionView {
             first_prompt: prompt.clone(),
             turns: Vec::new(),
             prompt,
+            hidden: 0,
+            noted_file: None,
         }))
     }
 
@@ -286,8 +340,11 @@ impl SessionView {
             let previous = live.driver.session().reply().to_string();
             let sent = live.driver.prompt(&text);
             if sent {
+                if live.first_prompt.is_empty() {
+                    live.first_prompt.clone_from(&text);
+                }
                 let earlier = std::mem::replace(&mut live.prompt, text);
-                live.turns.push((earlier, previous));
+                live.turns.extend(finished_turn(earlier, previous));
             }
             sent
         } else {
@@ -301,7 +358,7 @@ impl SessionView {
     }
 
     fn launch(&mut self, prompt: String) -> bool {
-        if matches!(self.phase, Phase::Launching { .. } | Phase::Live(_)) {
+        if !matches!(self.phase, Phase::Empty | Phase::LaunchFailed { .. }) {
             return false;
         }
         let problems = self.settings.problems();
@@ -417,17 +474,22 @@ impl SessionView {
     }
 
     fn close_session(&mut self, cx: &mut Context<Self>) {
+        let mut problem = None;
         if let Phase::Live(live) = std::mem::replace(&mut self.phase, Phase::Empty) {
             let Live {
-                mut driver, runner, ..
+                mut driver,
+                runner,
+                mut ledger,
+                ..
             } = *live;
+            problem = ledger.flush(driver.usage().rows());
             let landed = driver.session().state() == SessionState::Landed;
             driver.close();
             if let Some(runner) = runner {
                 runner.retire(landed);
             }
         }
-        self.message = None;
+        self.message = problem.map(Err);
         cx.notify();
     }
 
@@ -562,5 +624,18 @@ mod tests {
         ));
         assert!(may_start_new(true, true, false, SessionState::NeedsReview));
         assert!(may_start_new(true, false, false, SessionState::Running));
+    }
+
+    #[test]
+    fn a_turn_with_nothing_in_it_is_not_kept() {
+        assert_eq!(finished_turn(String::new(), String::new()), None);
+        assert_eq!(
+            finished_turn("Fix it".into(), String::new()),
+            Some(("Fix it".into(), String::new()))
+        );
+        assert_eq!(
+            finished_turn(String::new(), "Carrying on.".into()),
+            Some((String::new(), "Carrying on.".into()))
+        );
     }
 }

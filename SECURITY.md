@@ -36,10 +36,18 @@ session behaved oddly.
 
 **Approvals come from omp.** C-Harness starts omp with `--approval-mode` set to the mode chosen
 in Settings (`write` unless you pick `always-ask`), shows omp's approval requests as cards and
-sends your answer back. It does not enforce a policy of its own inside the sandbox. An approved
-shell command runs with your full access, so approval limits what runs without asking, not what
-a command can do. The risk level on a card is a hint worked out from the request text, not a
-guarantee.
+sends your answer back. `ch-runner` refuses a start that does not name `--approval-mode`, or
+names it twice. It accepts `always-ask-cached` only from omp 18.12.3 or newer, read from
+`omp --version`, because an older omp does not know the value and replaces it with full auto.
+Settings does not offer it. C-Harness does not enforce a policy of its own inside the sandbox.
+An approved shell command runs with your full access, so approval limits what runs without
+asking, not what a command can do. The risk level on a card is a hint worked out from the
+request text, not a guarantee.
+
+**A resumed session uses today's Settings.** Resume starts omp again with the approval mode
+and model Settings has now, which may differ from the ones the session started with. omp opens
+the conversation file the session record names. The record sits in your local data folder, so
+anything that can write there as you can point a resume at another omp conversation.
 
 **A repository can change how omp behaves.** omp reads project config and extensions from
 `.omp`, `.claude`, `.codex` and `.gemini` in the working tree. They can loosen approval prompts
@@ -59,20 +67,21 @@ in the shell or service that starts `ch-runner` is visible to the agent.
 **Stopping the agent is best effort on Windows.** `ch-runner` ends omp with `taskkill /T`, which
 follows parent links. A process whose parent has already exited is not found and keeps running.
 
-**Git still runs some repository config.** `ch-runner` turns off hooks and `fsmonitor`, and
-builds the diff without external diff or textconv drivers. Filter drivers named in
-`.gitattributes` and defined in the repository's own config still run each time the work is
-staged, for a diff and for land. In a local session the agent can edit that config, so a command
-it chose can run after it was stopped. The GitHub token is not in that command's environment.
+**Git still runs some repository config.** `ch-runner` and the app turn off hooks and
+`fsmonitor` in every git command they run, and `ch-runner` builds the diff without external diff
+or textconv drivers. Filter drivers named in `.gitattributes` and defined in the repository's own
+config still run each time the work is staged, for a diff, a checkpoint and land, and when a
+restore writes files. In a local session the agent can edit that config, so a command it chose
+can run after it was stopped. The GitHub token is not in that command's environment.
 
 **omp shares the runner's output stream.** Runner frames and omp's events travel on one pipe.
 `ch-runner` drops any line from omp whose `type` starts with `ch_`, and the app drops a runner
-frame that comes out of omp's chunked output. Each verify, diff, stop and land carries a request
-id, and the app drops a reply that names no open request of that kind. The ids are sequential,
-so this catches stray, late and replayed replies; it is not authentication. Frames that answer no
-request (the runner's hello, a notice, omp exiting, an error without an id) are taken as they
-come. Over SSH the remote command runs through your login shell, so anything that shell prints
-on startup lands on the same stream.
+frame that comes out of omp's chunked output. Each verify, diff, checkpoint, restore, stop and
+land carries a request id, and the app drops a reply that names no open request of that kind.
+The ids are sequential, so this catches stray, late and replayed replies; it is not
+authentication. Frames that answer no request (the runner's hello, a notice, omp exiting, an
+error without an id) are taken as they come. Over SSH the remote command runs through your login
+shell, so anything that shell prints on startup lands on the same stream.
 
 **Verification is measured, not reported.** `ch-runner` runs the verify command itself and
 records the real exit code. The agent may still have edited the tests or scripts that command
@@ -83,6 +92,15 @@ tree before and after each check, and refuses to land when the work differs from
 last check ran on, or when files changed while that check ran. Two limits: a change made and
 undone while a check runs is not seen, and a land with no check at all is still allowed (the
 pull request then says no checks were run).
+
+**Checkpoints are a convenience, not evidence or a backup.** They are refs in your repository,
+under `refs/c-harness/<session>/`, and in a local session the agent can rewrite them. Land never
+reads them. Ignored files are in no checkpoint: a restore refuses to write over or delete one,
+but nothing stops the agent from deleting it. Only a worktree locked for the session keeps
+checkpoints, so a restore never rewrites a checkout C-Harness did not make. They are deleted
+with the worktree. A restore does not stop the agent: the app offers it only while the agent is
+idle, but a process the agent left running can still write files during one, and an ignored
+file written between the check and the rewrite can be lost.
 
 **Releases are not signed yet.** macOS and Windows will warn when you open them. Check the
 download against `SHA256SUMS` from the same release.

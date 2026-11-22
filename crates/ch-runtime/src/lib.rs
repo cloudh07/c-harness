@@ -4,16 +4,25 @@
 //! described in [`ch_protocol::runner`]; this crate only moves the bytes.
 
 mod error;
+mod git;
 mod local;
+mod lock;
 mod process;
 mod record;
+mod resume;
 mod ssh;
+mod sweep;
+#[cfg(test)]
+mod test_support;
 
 pub use error::RuntimeError;
 pub use local::{LocalProvider, validate_session};
+pub use lock::SessionLock;
 pub use process::RunnerProcess;
 pub use record::SessionRecord;
+pub use resume::valid_omp_session_file;
 pub use ssh::{DEFAULT_REMOTE_RUNNER, SshProvider};
+pub use sweep::{Leftover, LeftoverKind, WorktreeEntry};
 
 /// How to install `ch-runner` where a session runs.
 pub const RUNNER_INSTALL_COMMAND: &str =

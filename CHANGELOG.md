@@ -61,6 +61,65 @@ Notable changes to C-Harness. The format follows
   is written before the worktree is created and deleted after the worktree is removed, so a
   crash still leaves a way back to the work. A session id that still has a record is not
   reused.
+- `ch-app`: the empty session screen lists local sessions an earlier run left behind, with
+  what is left of each: a live worktree, a worktree whose folder is gone, a record only, a
+  record whose repository moved, a worktree with no record, or a damaged record. A record that
+  cannot be read at all, such as one another program holds open, is left off the list and
+  cannot be discarded. Each row says when its session started. Keep hides one until the next
+  start. Discard, pressed twice, deletes its worktree with any uncommitted changes, its
+  checkpoint refs and its record, and keeps its `ch/<session>` branch. A double click counts as
+  one press, so the warning shows before anything is deleted. Only a folder git lists as that
+  session's worktree is deleted; any other is named and left alone.
+- `ch-runtime`: an open local session holds `c-harness/sessions/<session>.lock`, so a second
+  window cannot start or discard it. The lock is released after the worktree is removed.
+- `ch-app`: a usage ledger. Each model turn adds a line to `c-harness/usage/<session>.jsonl`
+  with its provider, model, input, output and cache tokens, omp's cost estimate, and whether
+  the counts are complete, partial or unavailable. omp's zero means "not reported", so it is
+  written as `null`, never as a free turn. The session header sums the turns, and marks a sum
+  that misses turns with "≥". If the file cannot be written, the app says so once and tries
+  the same lines again after the next turn and when you start a new session, and says so again
+  if that last try fails too. Lines still unsaved when the app quits are lost. A write after
+  one cut off mid-line, in this run or an earlier one, starts on a new line, and a turn a retry
+  wrote twice is read back once.
+- `ch-app`: the session header shows how full omp's context window is, as a share of the
+  window, read with `get_session_stats` after each turn and after each compaction. Right after
+  a compaction omp has no count yet, which is shown as "Context unknown", never as zero. When
+  omp ends in the middle of a compaction, the header stops saying it is compacting. From 80%
+  the share is drawn in the warning color. A share under one percent reads "<1%".
+- `ch-core`: omp's automatic compaction shows as a notice that says whether it finished, was
+  stopped, was skipped or failed, and whether omp will retry. A newer compaction notice replaces
+  the older one. The transcript keeps the compaction outcome but not omp's summary of the
+  conversation, and keeps neither the context questions nor their answers, which name omp's
+  session file.
+- `ch-app`: Resume on a leftover local session whose worktree is whole. It starts the runner
+  again in that worktree and omp on the saved conversation: `--resume=<file>` with the file the
+  session record names, or `--continue` when it names none or the file is gone, which may open
+  a new conversation. The earlier turns are read back with `get_messages_page` before the
+  first prompt is accepted, and the last 200 are shown with a count of the rest. Only prompt
+  and reply text comes back, at most 32,000 characters each: a longer prompt keeps its start
+  and a longer reply its end. Usage turns number on from the session's ledger. A failed resume
+  shows its reason on the row. Resume is offered only while Settings runs sessions on this
+  computer. The header takes its title from the earlier conversation's first prompt, or reads
+  "Resumed session" when there is none.
+- `ch-runtime`: the session record keeps the path of the file omp keeps the conversation in,
+  once omp names it in a `get_session_stats` answer. Only an absolute `.jsonl` path with no
+  `..` or control characters is kept or passed back, and on Windows only one on a drive
+  letter, never a network share. Records without it still load.
+- `ch-runner`, `ch-app`: turn checkpoints for local sessions. Each time the agent finishes a run,
+  the runner saves the working tree, untracked files included and ignored ones left out, as a
+  commit under `refs/c-harness/<session>/turn-<n>`, up to 1000 per session. A failed save is
+  not tried again, but the next run is still saved, with those changes in it. The review panel
+  lists the last eight, each with how long ago it was saved. Each shows what changed since the
+  one before it in a card in the thread, and Restore puts the working tree back as it was then,
+  or as the session started. A
+  restore first saves the tree it replaces as a checkpoint of its own, so it can be undone. It
+  is refused when it would write over or delete a file no checkpoint holds, such as an ignored
+  one. Files come back with the repository's line-ending settings. A prompt waits for a restore,
+  and up to 15 seconds for the save of the last run. Only a worktree C-Harness made and locked
+  for the session keeps checkpoints, so SSH sessions have none. A resumed session lists the
+  checkpoints it had.
+- `ch-protocol`: `ch_checkpoint`, `ch_restore`, and `from` and `to` on `ch_diff`, answered by
+  `ch_checkpoints`, `ch_checkpointed`, `ch_restored` and a `ch_diff_result` that names its range.
 
 ### Changed
 
@@ -68,10 +127,20 @@ Notable changes to C-Harness. The format follows
   `c-harness session <session>`, at the commit their record names. `git worktree prune` no
   longer drops a session whose folder went missing; removing the session still does. Local
   sessions need git 2.33 or newer.
+- `ch-runtime`: a session id is claimed by creating its record with create-new, so two starts
+  of one id cannot both win.
 - `ch-app`: New session moved to the sidebar. It waits until the agent is stopped, and a land
   in flight keeps the session open unless the runner is gone.
 - The session screen calls the coding agent "the agent". Settings, install help and error
   messages still name omp, because that is the program you install and configure.
+- `ch-core`: once omp has ended, a line the runner could not pass to it is a warning, not a
+  failure, so it no longer replaces why omp ended or fails a session that was stopped.
+- `ch-app`: the context window is also read when omp says it is ready, so a session learns
+  where omp keeps its conversation before the first turn. An answer without a count, before
+  any count, leaves the meter blank. The transcript keeps neither history page requests nor
+  their answers.
+- `ch-core`: a warning the session already shows is not added again, so a checkpoint save that
+  fails the same way after every run shows one warning.
 
 ### Security
 
@@ -79,7 +148,18 @@ Notable changes to C-Harness. The format follows
   directory nested inside another repository.
 - The GitHub token is only ever sent to `https://github.com/`: a land that carries a token is
   refused for any other remote. UNC paths are refused as remotes.
-- Land is refused while a verify or diff is still running.
+- Land is refused while a verify, diff or restore is still running. A restore is refused while
+  any of them runs, or while a checkpoint is still being saved.
+- Checkpoints are kept only in a worktree locked for the session, so a restore never rewrites a
+  checkout C-Harness did not make. The agent can rewrite these refs, so they are never used as
+  evidence. They are deleted with the worktree, and land pushes only the session branch. A
+  restore or a diff reads a checkpoint ref only when it points at a commit with C-Harness's
+  checkpoint subject, never a tag or another commit, and a restore that changes more paths than
+  it can check (16 MiB of names) is refused.
+- `ch-runtime` runs git with hooks and `fsmonitor` turned off, as `ch-runner` already did, so
+  creating or removing a worktree, or deleting its checkpoints, runs no program the repository
+  names. It also drops `GIT_ALTERNATE_OBJECT_DIRECTORIES` from git's environment, like the
+  other variables that point git at another repository.
 - Approval dialogs the app cannot answer (`confirm`, `input`, `editor`, `ask`) are cancelled,
   which omp treats as a refusal.
 - A runner frame that arrives inside omp's `rpc_chunk` sequence is dropped, so omp cannot forge
@@ -90,7 +170,9 @@ Notable changes to C-Harness. The format follows
 - omp no longer starts in its own default approval mode, full auto: the app always sends
   `--approval-mode`, and a repository's `.omp` config cannot change it. `ch-runner` refuses
   `--yolo`, `--auto-approve` and an approval mode omp does not know, which omp would silently
-  replace with full auto.
+  replace with full auto. It also refuses a start without `--approval-mode` or with it twice,
+  and accepts `always-ask-cached` only from an omp whose `--version` reads 18.12.3 or newer.
+  Settings does not offer that mode.
 - The host overlay turns omp's memory off (`memory.backend: "off"`), so omp keeps nothing of
   its own between sessions.
 - Verify evidence names the work it ran on: `ch-runner` writes the working tree as a git tree

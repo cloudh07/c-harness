@@ -355,6 +355,34 @@ mod tests {
         );
     }
 
+    /// The cached mode's dialog, read from the omp 18.13.1 binary: grants, their `Always`
+    /// forms, then once, session and deny. No reply may pick a grant.
+    #[test]
+    fn the_cached_dialog_never_answers_with_a_grant() {
+        let request = parse(
+            "Allow tool: edit\nFile: src/lib.rs",
+            &[
+                "Approve Directory: src",
+                "Approve",
+                "Always Approve Directory: src",
+                "Always Approve",
+                "Approve Once",
+                "Approve edit for this session",
+                "Deny",
+            ],
+        );
+        let reply = |decision| {
+            let frame = request.reply(decision).expect("offered");
+            frame["value"].as_str().expect("a label").to_owned()
+        };
+        assert_eq!(reply(ApprovalDecision::ApproveOnce), "Approve Once");
+        assert_eq!(
+            reply(ApprovalDecision::ApproveForSession),
+            "Approve edit for this session"
+        );
+        assert_eq!(reply(ApprovalDecision::Deny), "Deny");
+    }
+
     #[test]
     fn grant_labels_alone_are_never_read_as_approve_once() {
         for options in [

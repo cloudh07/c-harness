@@ -35,8 +35,9 @@ pub const DRAIN_ON_STOP: Duration = Duration::from_secs(10);
 /// How long the output of an omp that exited by itself may keep arriving.
 pub const DRAIN_ON_EXIT: Duration = Duration::from_secs(2);
 
-/// Refuses a `ch_start` the runner could not honour safely.
-pub fn check_start(start: &StartSession) -> Result<(), String> {
+/// Refuses a `ch_start` the runner could not honour safely, and returns its approval mode.
+pub fn check_start(start: &StartSession) -> Result<&str, String> {
+    let mut mode = None;
     let mut args = start.omp_args.iter();
     while let Some(arg) = args.next() {
         if arg.contains('\0') {
@@ -48,9 +49,20 @@ pub fn check_start(start: &StartSession) -> Result<(), String> {
                 "omp_args may not hold {arg:?}: the runner passes --config itself"
             ));
         }
-        check_approval_arg(arg, &mut args)?;
+        if let Some(value) = approval_arg(arg, &mut args)?
+            && mode.replace(value).is_some()
+        {
+            return Err("omp_args may hold --approval-mode only once".to_owned());
+        }
     }
-    for (name, value) in &start.env {
+    // Without the flag omp runs under its own configured default.
+    let mode = mode.ok_or("omp_args must hold --approval-mode")?;
+    check_env(&start.env)?;
+    Ok(mode)
+}
+
+fn check_env(env: &BTreeMap<String, String>) -> Result<(), String> {
+    for (name, value) in env {
         if name.is_empty() || name.contains(['=', '\0']) {
             return Err(format!(
                 "{name:?} is not a usable environment variable name"
@@ -74,10 +86,11 @@ pub fn check_start(start: &StartSession) -> Result<(), String> {
 
 /// The approval policy may only come as `--approval-mode` with a value omp knows. omp keeps
 /// its own default, yolo, when the value is wrong, and the shortcut flags hide the policy.
-fn check_approval_arg<'a>(
-    arg: &str,
+/// Returns the mode when `arg` sets one.
+fn approval_arg<'a>(
+    arg: &'a str,
     rest: &mut impl Iterator<Item = &'a String>,
-) -> Result<(), String> {
+) -> Result<Option<&'a str>, String> {
     let flag = arg.split_once('=').map_or(arg, |(flag, _)| flag);
     if matches!(flag, "--yolo" | "--auto-approve") {
         return Err(format!(
@@ -85,13 +98,25 @@ fn check_approval_arg<'a>(
         ));
     }
     if flag != "--approval-mode" {
-        return Ok(());
+        return Ok(None);
     }
     let value = match arg.split_once('=') {
         Some((_, value)) => value,
         None => rest.next().ok_or("--approval-mode needs a value")?.as_str(),
     };
-    validate_approval_mode(value)
+    validate_approval_mode(value)?;
+    Ok(Some(value))
+}
+
+/// What `omp --version` prints, or `None` when it could not run or failed.
+pub fn probe_version(
+    program: &OsStr,
+    workdir: &Path,
+    env: &BTreeMap<String, String>,
+) -> Option<String> {
+    probe(program, &["--version"], workdir, env)
+        .filter(|answer| answer.success)
+        .map(|answer| answer.stdout)
 }
 
 /// omp's arguments: the client's, then each overlay, the host's last so its keys win.
@@ -471,13 +496,30 @@ mod tests {
         }
     }
 
+    const WRITE: [&str; 2] = ["--approval-mode", "write"];
+
     #[test]
     fn accepts_a_normal_start() {
         let ok = start(
-            &["--mode", "rpc"],
+            &["--mode", "rpc", "--approval-mode", "write"],
             &[("ANTHROPIC_API_KEY", "test-model-key-not-real")],
         );
-        assert_eq!(check_start(&ok), Ok(()));
+        assert_eq!(check_start(&ok), Ok("write"));
+    }
+
+    #[test]
+    fn a_start_names_its_approval_mode_once() {
+        // Without the flag omp would run under its own default, which is yolo.
+        for args in [&[][..], &["--mode", "rpc"]] {
+            let error = check_start(&start(args, &[])).unwrap_err();
+            assert!(
+                error.contains("must hold --approval-mode"),
+                "{args:?}: {error}"
+            );
+        }
+        let twice = ["--approval-mode", "write", "--approval-mode=yolo"];
+        let error = check_start(&start(&twice, &[])).unwrap_err();
+        assert!(error.contains("only once"), "{error}");
     }
 
     #[test]
@@ -490,12 +532,16 @@ mod tests {
 
     #[test]
     fn approval_policy_comes_only_as_a_known_approval_mode() {
-        for args in [
-            &["--approval-mode", "write"][..],
-            &["--approval-mode=always-ask"],
-            &["--approval-mode", "yolo"],
+        for (args, mode) in [
+            (&["--approval-mode", "write"][..], "write"),
+            (&["--approval-mode=always-ask"], "always-ask"),
+            (
+                &["--approval-mode", "always-ask-cached"],
+                "always-ask-cached",
+            ),
+            (&["--approval-mode", "yolo"], "yolo"),
         ] {
-            assert_eq!(check_start(&start(args, &[])), Ok(()), "{args:?}");
+            assert_eq!(check_start(&start(args, &[])), Ok(mode), "{args:?}");
         }
         // omp takes a bad value without a word and keeps its own default, which is yolo.
         for args in [
@@ -518,16 +564,22 @@ mod tests {
             "claude_code_oauth_token",
             "Anthropic_OAuth_Token",
         ] {
-            let error = check_start(&start(&[], &[(name, "test-oauth-not-real")])).unwrap_err();
+            let error = check_start(&start(&WRITE, &[(name, "test-oauth-not-real")])).unwrap_err();
+            assert!(error.contains("subscription login"), "{error}");
             assert!(!error.contains("test-oauth-not-real"), "{error}");
         }
     }
 
     #[test]
     fn refuses_unusable_environment_entries() {
-        assert!(check_start(&start(&[], &[("", "v")])).is_err());
-        assert!(check_start(&start(&[], &[("A=B", "v")])).is_err());
-        assert!(check_start(&start(&[], &[("A", "v\0w")])).is_err());
+        for (env, why) in [
+            (("", "v"), "not a usable environment variable name"),
+            (("A=B", "v"), "not a usable environment variable name"),
+            (("A", "v\0w"), "holds a NUL byte"),
+        ] {
+            let error = check_start(&start(&WRITE, &[env])).unwrap_err();
+            assert!(error.contains(why), "{env:?}: {error}");
+        }
     }
 
     #[test]

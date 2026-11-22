@@ -1,6 +1,6 @@
 //! The file a local session leaves on disk, so its worktree can be found again after a crash.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -21,10 +21,41 @@ pub struct SessionRecord {
     /// The commit the worktree was created at.
     pub base_commit: String,
     pub created_unix_secs: u64,
+    /// The file omp keeps the conversation in, once omp has named it. Resume passes it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omp_session_file: Option<PathBuf>,
 }
 
 fn path(dir: &Path, session: &str) -> PathBuf {
     dir.join(format!("{session}.json"))
+}
+
+/// Writes the first record of `record.session`. Fails with `WorktreeExists` when the session
+/// already has one, so two starts of one id cannot both win. A crash in between leaves an empty
+/// file, which reads as damaged.
+pub(crate) fn create(dir: &Path, record: &SessionRecord) -> Result<(), RuntimeError> {
+    let failed = |source: io::Error| RuntimeError::Io {
+        action: "write the session record",
+        source,
+    };
+    let target = path(dir, &record.session);
+    // Apart from the claim: a file in the directory's place is also `AlreadyExists`.
+    fs::create_dir_all(dir).map_err(failed)?;
+    let claimed = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target);
+    match claimed {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(RuntimeError::WorktreeExists(record.worktree.clone()));
+        }
+        Err(source) => return Err(failed(source)),
+    }
+    write(dir, record).inspect_err(|_| {
+        // Gives the id back; the write error is the one worth reporting.
+        let _ = fs::remove_file(&target);
+    })
 }
 
 /// Writes `record` so that a crash leaves either no file or the whole file.
@@ -87,6 +118,7 @@ mod tests {
             branch: format!("ch/{session}"),
             base_commit: "0123abcd".to_owned(),
             created_unix_secs: 1_700_000_000,
+            omp_session_file: None,
         }
     }
 
@@ -128,6 +160,20 @@ mod tests {
     }
 
     #[test]
+    fn the_omp_session_file_is_left_out_until_known_and_then_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = r#"{"session":"s1","repo":"/repo","worktree":"/worktrees/s1",
+            "branch":"ch/s1","base_commit":"0123abcd","created_unix_secs":1700000000}"#;
+        fs::write(dir.path().join("s1.json"), older).unwrap();
+        assert_eq!(read(dir.path(), "s1").unwrap(), Some(record("s1")));
+
+        let mut known = record("s1");
+        known.omp_session_file = Some(PathBuf::from("/home/me/.omp/sessions/a.jsonl"));
+        write(dir.path(), &known).unwrap();
+        assert_eq!(read(dir.path(), "s1").unwrap(), Some(known));
+    }
+
+    #[test]
     fn a_missing_record_reads_as_none_and_removes_cleanly() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(read(dir.path(), "s1").unwrap(), None);
@@ -136,6 +182,28 @@ mod tests {
         write(dir.path(), &record("s1")).unwrap();
         remove(dir.path(), "s1").unwrap();
         assert_eq!(read(dir.path(), "s1").unwrap(), None);
+    }
+
+    #[test]
+    fn only_the_first_create_of_an_id_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = dir.path().join("sessions");
+        create(&records, &record("s1")).unwrap();
+        let mut other = record("s1");
+        other.base_commit = "ffff".to_owned();
+
+        let err = create(&records, &other).unwrap_err();
+        assert!(matches!(err, RuntimeError::WorktreeExists(_)), "{err}");
+        assert_eq!(read(&records, "s1").unwrap(), Some(record("s1")));
+    }
+
+    #[test]
+    fn a_create_that_cannot_write_gives_the_id_back() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the temp file goes makes the write fail after the claim.
+        fs::create_dir_all(dir.path().join(".s1.json.tmp")).unwrap();
+        assert!(create(dir.path(), &record("s1")).is_err());
+        assert!(!dir.path().join("s1.json").exists());
     }
 
     #[test]

@@ -6,7 +6,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ch_runtime::{LocalProvider, RunnerProcess, SandboxProvider, SshProvider};
+use ch_runtime::{
+    Leftover, LocalProvider, RunnerProcess, SandboxProvider, SshProvider, valid_omp_session_file,
+};
 use ch_vault::{SecretName, SecretStore, Vault};
 
 use crate::link::Link;
@@ -106,6 +108,13 @@ pub struct Launched {
     pub env: BTreeMap<String, String>,
 }
 
+/// A runner started again in a session's worktree, with the omp arguments that open the saved
+/// conversation.
+pub struct Resumed {
+    pub launched: Launched,
+    pub omp_args: Vec<String>,
+}
+
 /// The runner process, plus the worktree it was given when it runs on this computer.
 pub struct Runner {
     process: RunnerProcess,
@@ -116,6 +125,17 @@ impl Runner {
     pub fn worktree(&self) -> Option<PathBuf> {
         let (provider, session) = self.local.as_ref()?;
         provider.worktree_path(session).ok()
+    }
+
+    /// Stores where omp keeps this conversation in the session's record, so a later resume can
+    /// open it. Returns whether the record changed; a session on another machine has none.
+    pub fn note_omp_session_file(&self, file: &Path) -> Result<bool, String> {
+        let Some((provider, session)) = &self.local else {
+            return Ok(false);
+        };
+        provider
+            .note_omp_session_file(session, file)
+            .map_err(|e| e.to_string())
     }
 
     /// Lets the runner exit on its own, kills it after [`EXIT_GRACE`], and removes the local
@@ -130,21 +150,86 @@ impl Runner {
                     Ok(None) => thread::sleep(EXIT_POLL),
                 }
             }
+            // Held until the worktree is gone, so no other window starts or discards it meanwhile.
+            let lock = process.take_lock();
             drop(process);
             if remove_worktree && let Some((provider, session)) = local {
                 let _ = provider.remove_worktree(&session);
             }
+            drop(lock);
         });
     }
 }
 
-/// Checks the runner, reads the key and starts `session` on a background thread.
-pub fn spawn(settings: Settings, session: String) -> Receiver<Result<Launched, String>> {
+/// Runs `work` on its own thread; the receiver gets its result.
+fn background<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Receiver<Result<T, String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(launch(&settings, &session));
+        let _ = tx.send(work());
     });
     rx
+}
+
+/// Checks the runner, reads the key and starts `session` on a background thread.
+pub fn spawn(settings: Settings, session: String) -> Receiver<Result<Launched, String>> {
+    background(move || launch(&settings, &session))
+}
+
+/// Starts the runner of a local session an earlier run left open, on a background thread.
+pub fn resume(settings: Settings, session: String) -> Receiver<Result<Resumed, String>> {
+    background(move || resume_local(&settings, &session))
+}
+
+/// How omp opens the saved conversation: the file the record names when it is still there,
+/// otherwise the most recent conversation of the worktree.
+pub fn resume_args(file: Option<&Path>) -> Vec<String> {
+    let path = file
+        .filter(|f| valid_omp_session_file(f) && f.is_file())
+        .and_then(Path::to_str);
+    match path {
+        Some(path) => vec![format!("--resume={path}")],
+        None => vec!["--continue".to_string()],
+    }
+}
+
+/// A provider for the local records and worktrees only. It looks in the configured repository
+/// even when sessions now run over SSH, since earlier local ones may still be there.
+fn sweeper(settings: &Settings) -> Result<LocalProvider, String> {
+    let (Some(worktrees_dir), Some(sessions_dir)) =
+        (settings::worktrees_dir(), settings::sessions_dir())
+    else {
+        return Err("This system has no local data folder for session records.".to_string());
+    };
+    Ok(LocalProvider {
+        repo: PathBuf::from(settings.repo.trim()),
+        runner: PathBuf::new(),
+        worktrees_dir,
+        sessions_dir,
+    })
+}
+
+/// Finds the local sessions earlier runs left behind, on a background thread.
+pub fn leftovers(settings: &Settings) -> Receiver<Result<Vec<Leftover>, String>> {
+    let provider = sweeper(settings);
+    background(move || provider?.leftovers().map_err(|e| e.to_string()))
+}
+
+/// Deletes what `session` left behind, on a background thread; `seen_in` is the repository the
+/// scan found its worktree in. The result is the folder that was kept because git no longer
+/// listed it, if any.
+pub fn discard(
+    settings: &Settings,
+    session: String,
+    seen_in: Option<PathBuf>,
+) -> Receiver<Result<Option<PathBuf>, String>> {
+    let provider = sweeper(settings);
+    background(move || {
+        provider?
+            .discard(&session, seen_in.as_deref())
+            .map_err(|e| e.to_string())
+    })
 }
 
 fn launch(settings: &Settings, session: &str) -> Result<Launched, String> {
@@ -152,19 +237,51 @@ fn launch(settings: &Settings, session: &str) -> Result<Launched, String> {
     let provider = target.provider();
     let info = provider.check().map_err(|e| e.to_string())?;
     let env = model_env(settings, &Vault::os())?;
-    let mut process = provider.start(session).map_err(|e| e.to_string())?;
-    let (Some(stdin), Some(stdout)) = (process.take_stdin(), process.take_stdout()) else {
-        return Err("The runner started without its stdin or stdout.".to_string());
-    };
-    let link = Link::new(stdin, stdout, process.take_stderr());
+    let process = provider.start(session).map_err(|e| e.to_string())?;
     let local = match target {
         Target::Local(provider) => Some((provider, session.to_string())),
         Target::Ssh(_) => None,
     };
+    connect(process, local, info.version, env)
+}
+
+fn resume_local(settings: &Settings, session: &str) -> Result<Resumed, String> {
+    let Target::Local(provider) = Target::from_settings(settings)? else {
+        return Err(
+            "Sessions run over SSH now. Switch Settings to this computer to resume a local \
+             session."
+                .to_string(),
+        );
+    };
+    let info = provider.check().map_err(|e| e.to_string())?;
+    let env = model_env(settings, &Vault::os())?;
+    let (process, record) = provider.resume(session).map_err(|e| e.to_string())?;
+    let mut omp_args = settings.omp_args();
+    omp_args.extend(resume_args(record.omp_session_file.as_deref()));
+    let launched = connect(
+        process,
+        Some((provider, session.to_string())),
+        info.version,
+        env,
+    )?;
+    Ok(Resumed { launched, omp_args })
+}
+
+/// Wires a started runner's pipes to a [`Link`].
+fn connect(
+    mut process: RunnerProcess,
+    local: Option<(LocalProvider, String)>,
+    runner_version: String,
+    env: BTreeMap<String, String>,
+) -> Result<Launched, String> {
+    let (Some(stdin), Some(stdout)) = (process.take_stdin(), process.take_stdout()) else {
+        return Err("The runner started without its stdin or stdout.".to_string());
+    };
+    let link = Link::new(stdin, stdout, process.take_stderr());
     Ok(Launched {
         link,
         runner: Runner { process, local },
-        runner_version: info.version,
+        runner_version,
         env,
     })
 }
@@ -239,6 +356,34 @@ mod tests {
             panic!("an empty repo must not start");
         };
         assert!(message.contains("repository"), "{message}");
+    }
+
+    #[test]
+    fn a_resume_opens_the_recorded_file_or_the_latest_conversation() {
+        let continue_ = vec!["--continue".to_string()];
+        assert_eq!(resume_args(None), continue_);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("s1.jsonl");
+        assert_eq!(resume_args(Some(&file)), continue_, "a missing file");
+        std::fs::write(
+            &file, b"{}
+",
+        )
+        .unwrap();
+        assert_eq!(
+            resume_args(Some(&file)),
+            vec![format!("--resume={}", file.display())]
+        );
+
+        let other = dir.path().join("s1.txt");
+        std::fs::write(&other, b"").unwrap();
+        assert_eq!(resume_args(Some(&other)), continue_, "not a .jsonl file");
+        assert_eq!(
+            resume_args(Some(Path::new("s1.jsonl"))),
+            continue_,
+            "a relative path"
+        );
     }
 
     #[test]
