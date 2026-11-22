@@ -2,7 +2,7 @@
 //! record so the next start can say it was waiting.
 
 use ch_core::SessionState;
-use gpui_kit::{Context, Subscription, SystemNotification};
+use gpui_kit::{Context, SystemNotification};
 
 use super::{Phase, SessionView};
 
@@ -26,19 +26,6 @@ pub(super) fn notification(session: &str) -> SystemNotification {
         body: "A session is waiting for your answer.".into(),
         actions: Vec::new(),
     }
-}
-
-/// Takes down the live session's notification when the app quits. omp stops with the app, so
-/// the request goes too, and the OS would otherwise keep showing it.
-pub(super) fn dismiss_on_quit(cx: &mut Context<SessionView>) -> Subscription {
-    cx.on_app_quit(|view, cx| {
-        if let Phase::Live(live) = &view.phase
-            && live.waiting
-        {
-            cx.dismiss_system_notification(&tag(&live.session));
-        }
-        async {}
-    })
 }
 
 impl SessionView {
