@@ -229,17 +229,26 @@ fn nothing_lands_through_a_runner_that_never_said_hello() {
 }
 
 #[test]
-fn a_missing_hello_is_not_named_while_the_session_starts() {
-    let mut rig = Rig::new();
-    rig.driver
+fn a_missing_hello_is_not_named_while_the_session_starts_or_resumes() {
+    let mut started = Rig::new();
+    started
+        .driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
-
-    assert_eq!(rig.driver.session().state(), SessionState::Starting);
-    assert_eq!(
-        rig.driver.runner_block(),
-        None,
-        "the hello may be on its way"
+    let mut resumed = Rig::new();
+    assert!(
+        resumed
+            .driver
+            .resume("s1", Vec::new(), BTreeMap::new(), Vec::new())
     );
+
+    for rig in [&started, &resumed] {
+        assert_eq!(rig.driver.session().state(), SessionState::Starting);
+        assert_eq!(
+            rig.driver.runner_block(),
+            None,
+            "the hello may be on its way"
+        );
+    }
 }
 
 #[test]
