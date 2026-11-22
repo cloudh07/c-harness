@@ -40,8 +40,11 @@ fn first_run(rig: &mut Rig, listed: bool) {
     }
 }
 
+/// Lets a run end with a reply, so it counts as a turn worth a checkpoint.
 fn end_run(rig: &mut Rig) {
     rig.say(&json!({"type":"agent_start"}));
+    rig.say(&json!({"type":"message_update",
+        "assistantMessageEvent":{"type":"text_delta","delta":"Done."}}));
     rig.say(&json!({"type":"session_settled"}));
     rig.pump_until("review", |d, _| {
         d.session().state() == SessionState::NeedsReview
@@ -127,6 +130,30 @@ fn a_failed_save_is_tried_again_after_the_next_run() {
     assert!(rig.driver.prompt("again"));
     end_run(&mut rig);
     assert_eq!(wait_sent(&mut rig, "ch_checkpoint", 2).len(), 2);
+}
+
+#[test]
+fn a_run_with_no_reply_and_no_tool_calls_saves_no_checkpoint() {
+    let mut rig = Rig::new();
+    rig.driver
+        .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
+    rig.say(&json!({"type":"ready"}));
+    rig.say(&json!({"type":"ch_checkpoints","checkpoints":[]}));
+    wait_sent(&mut rig, "prompt", 1);
+    rig.say(&json!({"type":"agent_start"}));
+    rig.say(&json!({"type":"session_settled"}));
+    rig.pump_until("review", |d, _| {
+        d.session().state() == SessionState::NeedsReview
+    });
+    assert!(rig.driver.session().run_was_empty());
+
+    flush(&mut rig);
+    assert_eq!(saves(&rig).len(), 0, "{:?}", rig.sent());
+    assert!(rig.driver.can_prompt(), "no save holds the next prompt");
+
+    assert!(rig.driver.prompt("again"));
+    end_run(&mut rig);
+    wait_sent(&mut rig, "ch_checkpoint", 1);
 }
 
 static NOW: AtomicU64 = AtomicU64::new(1);

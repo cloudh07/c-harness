@@ -117,6 +117,7 @@ commit the session began from.
 - Files come back with your repository's line-ending settings, as `git checkout` writes them.
 - Restore waits while the agent works and while a check, diff or another restore runs. A new
   prompt waits for a restore, and up to 15 seconds for the save of the last run.
+- A run that ends with no reply and no tool calls saves no checkpoint, and the thread says so.
 - A session keeps at most 1000 checkpoints. Only a worktree C-Harness made for the session
   keeps them, so an SSH session has none.
 

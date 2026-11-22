@@ -9,7 +9,7 @@ use crate::settings::{Location, Settings};
 
 mod failure;
 mod labels;
-pub use failure::{failure_text, retry_text};
+pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text};
 pub use labels::{age_label, context_near_full, live_title};
 
 /// Git's own advice for a commit subject line.

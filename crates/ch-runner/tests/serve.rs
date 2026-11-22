@@ -637,7 +637,10 @@ fn start_refusals() {
     inner.expect("ch_runner_hello");
     inner.send(&start_frame(&[]));
     let refused = inner.expect("ch_error");
-    assert_eq!(refused["stage"], "start");
+    assert_eq!(
+        refused["stage"], "repo",
+        "the repository check names its own stage"
+    );
     assert!(
         refused["message"]
             .as_str()

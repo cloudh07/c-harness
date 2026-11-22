@@ -117,6 +117,16 @@ pub struct Landing {
     pub pull_request_url: Option<String>,
 }
 
+/// A run waiting for the model's first word, after a prompt or after one of omp's retries.
+///
+/// `epoch` changes whenever the wait starts over, so the app can restart its timer. omp waits
+/// `delay_ms` before it sends a retry, which the app's deadline should not count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplyWait {
+    pub epoch: u32,
+    pub delay_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Phase {
     #[default]
@@ -148,6 +158,13 @@ pub struct Session {
     // Where the reply stood when the last message that did not fail ended, so a retry can drop
     // the text of the attempt that failed.
     reply_mark: usize,
+    // How many tool calls the session had when the latest prompt went out; `None` before any
+    // prompt, when there is no run to judge.
+    run_tools: Option<usize>,
+    // The model said something in the current attempt: text, thinking or a tool call.
+    heard: bool,
+    wait_epoch: u32,
+    wait_delay_ms: u64,
     // Set by `ch_stop` or `ch_land`, so omp exiting afterwards is not a crash.
     exit_expected: bool,
     // Set only by the runner saying omp ended. Nothing more comes from it, so a prompt sent after
@@ -237,6 +254,21 @@ impl Session {
         self.landing.as_ref()?.pull_request_url.as_deref()
     }
 
+    /// The wait for the model's first word, while omp works and the model has said nothing.
+    pub fn reply_wait(&self) -> Option<ReplyWait> {
+        (self.state() == SessionState::Running && !self.heard).then_some(ReplyWait {
+            epoch: self.wait_epoch,
+            delay_ms: self.wait_delay_ms,
+        })
+    }
+
+    /// The latest run finished with no reply text and no tool calls.
+    pub fn run_was_empty(&self) -> bool {
+        self.run_tools == Some(self.tool_calls.len())
+            && self.state() == SessionState::NeedsReview
+            && self.reply.trim().is_empty()
+    }
+
     /// Folds in a frame the app wrote.
     ///
     /// A failure is cleared only by an action that moves past it: a new land after a `land`
@@ -261,6 +293,8 @@ impl Session {
                     self.phase = Phase::Running;
                     self.reply.clear();
                     self.reply_mark = 0;
+                    self.run_tools = Some(self.tool_calls.len());
+                    self.restart_wait(0);
                 }
             }
             ClientAction::ApprovalAnswered { id } => self.pending.retain(|r| r.id() != id),
@@ -309,6 +343,9 @@ impl Session {
             "extension_ui_request" => self.on_ui_request(frame),
             "auto_compaction_start" | "auto_compaction_end" => {
                 note_compaction(&mut self.notices, frame);
+                // Compacting is a model call of its own, and the reply comes after it.
+                self.wait_epoch = self.wait_epoch.wrapping_add(1);
+                self.wait_delay_ms = 0;
             }
             _ => {}
         }
@@ -428,6 +465,7 @@ impl Session {
     }
 
     fn on_message(&mut self, frame: &Value) {
+        self.heard = true;
         let event = &frame["assistantMessageEvent"];
         if event["type"] == "text_delta"
             && let Some(delta) = event["delta"].as_str()
@@ -439,8 +477,13 @@ impl Session {
     // omp sends the failed attempt's `message_end`, with `stopReason: "error"`, before it says it
     // will retry, so that text is not kept.
     fn on_message_end(&mut self, frame: &Value) {
-        if frame["message"]["stopReason"] != "error" {
+        let message = &frame["message"];
+        if message["stopReason"] != "error" {
             self.reply_mark = self.reply.len();
+            // omp also ends the prompt's own message, which is not the model speaking.
+            if message["role"] == "assistant" {
+                self.heard = true;
+            }
         }
     }
 
@@ -449,9 +492,17 @@ impl Session {
             self.reply.truncate(self.reply_mark);
         }
         self.retrying = Some(Retrying::from_frame(frame));
+        self.restart_wait(frame["delayMs"].as_u64().unwrap_or(0));
+    }
+
+    fn restart_wait(&mut self, delay_ms: u64) {
+        self.heard = false;
+        self.wait_epoch = self.wait_epoch.wrapping_add(1);
+        self.wait_delay_ms = delay_ms;
     }
 
     fn on_tool_start(&mut self, frame: &Value) {
+        self.heard = true;
         let Some(id) = frame["toolCallId"].as_str() else {
             return;
         };

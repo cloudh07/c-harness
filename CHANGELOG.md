@@ -127,6 +127,15 @@ Notable changes to C-Harness. The format follows
   drops the text of the failed attempt. After a failure the banner says "Gave up: <error>" when
   a later try may work, or what to check when a person has to act. The app never retries on its
   own; omp's `retry.maxRetries` setting is the budget.
+- `ch-app`: when the model has sent no text, thinking or tool call 90 seconds after a prompt,
+  the thread says so and suggests waiting or stopping the agent. omp reports no event for the
+  provider connection, so the 90 seconds cover the connection and the first token together.
+  After omp's retry delay the wait starts again. It stops while an approval card waits for you
+  and starts again from zero once you answer.
+- `ch-runner`: each git command of the repository check before omp starts has 30 seconds to
+  finish. A check that fails or hangs ends the start with its own `repo` stage, which the
+  banner calls "the repository check", so it is never taken for a provider that does not
+  answer. A timeout suggests `git fsck`.
 
 ### Changed
 
@@ -148,6 +157,9 @@ Notable changes to C-Harness. The format follows
   their answers.
 - `ch-core`: a warning the session already shows is not added again, so a checkpoint save that
   fails the same way after every run shows one warning.
+- `ch-app`: a run that ends with no reply text and no tool calls saves no checkpoint, and the
+  thread says so under the run. Any edit you made in the worktree meanwhile goes into the next
+  checkpoint.
 
 ### Security
 

@@ -64,8 +64,11 @@ them, or names one of another kind.
    for as long as its window has it open.
 2. `ch-runtime` starts `ch-runner` there. The model key travels in `ch_start` over stdin and
    lands in omp's environment only. It never appears on a command line.
-3. `ch-runner` checks the working tree for project omp config (`.omp`, `.claude`, `.codex`,
-   `.gemini`) and warns. It asks omp whether a Claude subscription login is stored and which
+3. `ch-runner` checks that it was started at the top of a git working tree and reads the
+   commit the session starts from. Each git command of this check has 30 seconds; a failure
+   or a hang ends the start with the `repo` stage, kept apart from `start` so a damaged
+   repository is not mistaken for a provider. It checks the working tree for project omp config (`.omp`, `.claude`,
+   `.codex`, `.gemini`) and warns. It asks omp whether a Claude subscription login is stored and which
    providers the user already turned off, then starts `omp --mode rpc` with a config overlay
    that keeps those off and adds `google-antigravity`, plus `anthropic` while a login is
    stored or the answer was not recognised.
@@ -73,6 +76,10 @@ them, or names one of another kind.
    becomes a card with a risk hint; an answer the app cannot map to an option is sent as a
    cancel, which omp treats as deny. omp retries a failed model call itself; the session shows
    its count and, once omp gives up, whether a person has to act. The app adds no retries.
+   The app times the model's first text, thinking or tool call against its own clock and
+   says so after 90 seconds of silence; omp has no event for the provider connection, so
+   that wait covers both. A run that ends with no reply and no tool calls saves no
+   checkpoint.
 5. Verify runs in `ch-runner`, not in the agent, so the exit code is measured.
 6. Land stops omp and waits for it, then commits through a temporary index (your checkout is
    never touched), pushes from a scratch repository with system and global git config ignored,

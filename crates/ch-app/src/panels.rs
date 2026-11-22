@@ -9,8 +9,8 @@ use gpui_kit::{App, ClickEvent, Div, FontWeight, ParentElement, Styled, Window, 
 
 use crate::assets::{icon, tool_icon};
 use crate::view_model::{
-    check_outcome, check_passed, failure_text, first_chars, last_chars, pr_link_allowed,
-    retry_text, turn_diff_title,
+    check_outcome, check_passed, failure_text, first_chars, first_reply_text, last_chars,
+    pr_link_allowed, retry_text, turn_diff_title,
 };
 use crate::widgets::{MONO, Tone, banner, button, card, mono_block, muted};
 
@@ -42,6 +42,12 @@ pub fn failure(p: Palette, failure: Option<&Failure>) -> Option<Div> {
 pub fn retrying(p: Palette, retrying: Option<&Retrying>) -> Option<Div> {
     let (title, body) = retry_text(retrying?);
     Some(banner(p, p.status(Status::NearCap), title, body))
+}
+
+/// The model has been silent past the deadline. A warning only: the run goes on.
+pub fn first_reply(p: Palette, late: bool) -> Option<Div> {
+    let (title, body) = first_reply_text();
+    late.then(|| banner(p, p.status(Status::NearCap), title, body))
 }
 
 pub fn warnings(p: Palette, warnings: &[Failure]) -> Option<Div> {

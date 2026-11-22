@@ -28,8 +28,8 @@ pub use history::{
 pub use redact::{MASK, holds_provider_secret, redact_secrets};
 pub use risk::{Assessment, Risk, classify};
 pub use session::{
-    ClientAction, Diff, Failure, Landing, Notice, Session, SessionState, ToolCall, ToolStatus,
-    TurnDiff,
+    ClientAction, Diff, Failure, Landing, Notice, ReplyWait, Session, SessionState, ToolCall,
+    ToolStatus, TurnDiff,
 };
 pub use transcript::Transcript;
 pub use usage::{Usage, UsageRow, UsageStatus, UsageTotals};

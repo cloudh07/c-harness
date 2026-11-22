@@ -17,8 +17,10 @@ use serde_json::{Value, json};
 use crate::link::{Link, LinkEvent};
 
 mod checkpoints;
+mod first_reply;
 mod history;
 
+pub use first_reply::FIRST_REPLY_MS;
 use history::Earlier;
 pub use history::EarlierTurns;
 
@@ -107,6 +109,7 @@ pub struct Driver {
     earlier: Earlier,
     omp_session_file: Option<String>,
     saves: checkpoints::Saves,
+    first_reply: first_reply::FirstReply,
 }
 
 impl Driver {
@@ -131,6 +134,7 @@ impl Driver {
             earlier: Earlier::Off,
             omp_session_file: None,
             saves: checkpoints::Saves::default(),
+            first_reply: first_reply::FirstReply::default(),
         }
     }
 
@@ -324,7 +328,18 @@ impl Driver {
         }
         self.flush_queued();
         self.page_history();
-        changed
+        let wait = if self.closed || self.stopping() {
+            None
+        } else {
+            self.session.reply_wait()
+        };
+        let late_changed = self.first_reply.update((self.clock)(), wait);
+        changed || late_changed
+    }
+
+    /// The model has said nothing for [`FIRST_REPLY_MS`] since the prompt or omp's last retry.
+    pub fn first_reply_late(&self) -> bool {
+        self.first_reply.late()
     }
 
     /// The transcript as JSON lines, secrets removed.

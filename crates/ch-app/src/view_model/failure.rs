@@ -2,10 +2,17 @@
 
 use ch_core::{Failure, FailureKind, Retrying};
 
+use crate::driver::FIRST_REPLY_MS;
+
 const TRANSIENT_HINT: &str = "The provider may accept it later. Send the prompt again to retry.";
 const NEEDS_HUMAN_HINT: &str =
     "Check the provider key, the account or omp's cost cap, then send the prompt again.";
 const RETRY_BODY: &str = "omp is sending the model call again.";
+const FIRST_REPLY_BODY: &str = "The provider may be slow or unreachable, or an SSH link may have \
+     stalled. Keep waiting, or stop the agent and send the prompt again.";
+/// Shown under a run that ended with nothing in it, in a session that keeps checkpoints.
+pub const EMPTY_RUN_NOTE: &str =
+    "The model sent no reply and called no tools, so no checkpoint was saved.";
 
 /// A failure banner: what happened, the error or what to do next, and a hint when both are needed.
 #[derive(Debug, PartialEq, Eq)]
@@ -15,7 +22,16 @@ pub struct FailureText {
     pub hint: Option<&'static str>,
 }
 
+/// The words a banner uses for a runner stage. Most stage names already read as words.
+fn stage_label(stage: &str) -> &str {
+    match stage {
+        "repo" => "the repository check",
+        other => other,
+    }
+}
+
 pub fn failure_text(failure: &Failure) -> FailureText {
+    let stage = stage_label(&failure.stage);
     let (title, body, hint) = match failure.kind {
         FailureKind::Transient => (
             format!("Gave up: {}", failure.message),
@@ -23,12 +39,12 @@ pub fn failure_text(failure: &Failure) -> FailureText {
             None,
         ),
         FailureKind::NeedsHuman => (
-            format!("Action needed during {}", failure.stage),
+            format!("Action needed during {stage}"),
             failure.message.clone(),
             Some(NEEDS_HUMAN_HINT),
         ),
         FailureKind::Permanent => (
-            format!("Failed during {}", failure.stage),
+            format!("Failed during {stage}"),
             failure.message.clone(),
             None,
         ),
@@ -49,6 +65,13 @@ pub fn retry_text(retrying: &Retrying) -> (String, String) {
         retrying.reason.clone()
     };
     (title, body)
+}
+
+/// The title and body of the banner shown once the model has been silent past the deadline.
+pub fn first_reply_text() -> (String, &'static str) {
+    let seconds = FIRST_REPLY_MS / 1000;
+    let title = format!("No reply from the model in {seconds} seconds");
+    (title, FIRST_REPLY_BODY)
 }
 
 #[cfg(test)]
@@ -104,6 +127,19 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_repository_check_is_named_in_words() {
+        let repo = Failure {
+            stage: "repo".into(),
+            kind: FailureKind::Permanent,
+            message: "git rev-parse HEAD did not finish within 30 seconds.".into(),
+        };
+        assert_eq!(
+            failure_text(&repo).title,
+            "Failed during the repository check"
+        );
+    }
+
+    #[test]
     fn a_retry_shows_omps_count_when_it_has_one() {
         let cases = [
             (retrying(Some(2), Some(3), "529"), "Retrying 2/3"),
@@ -119,5 +155,12 @@ mod tests {
     #[test]
     fn a_retry_without_a_reason_still_says_what_is_happening() {
         assert_eq!(retry_text(&retrying(Some(1), Some(3), "")).1, RETRY_BODY);
+    }
+
+    #[test]
+    fn a_late_first_reply_names_the_deadline_the_driver_uses() {
+        let (title, body) = first_reply_text();
+        assert_eq!(title, "No reply from the model in 90 seconds");
+        assert!(body.contains("stop the agent"), "{body}");
     }
 }
