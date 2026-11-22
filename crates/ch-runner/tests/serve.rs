@@ -288,7 +288,7 @@ fn full_session() {
 
     let hello = client.expect("ch_runner_hello");
     assert_eq!(hello["version"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(hello["protocol"], 2);
+    assert_eq!(hello["protocol"], 3);
     assert_eq!(hello["workdir"], dir.to_string_lossy().as_ref());
 
     client.send(&start_frame(&[]));

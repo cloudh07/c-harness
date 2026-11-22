@@ -46,7 +46,7 @@ a new omp event costs the transport nothing.
 
 | App to runner | Runner to app |
 |---|---|
-| `ch_start` session id, omp arguments, environment | `ch_runner_hello` version and working directory |
+| `ch_start` session id, omp arguments, environment | `ch_runner_hello` version, protocol and working directory |
 | `ch_verify` a command and a timeout | `ch_evidence` exit code, duration, commit, output tail |
 | `ch_diff` | `ch_diff_result` stat and capped patch |
 | `ch_stop` | `ch_stopped` |
@@ -84,7 +84,9 @@ on and drops a reply that names none of them, or names one of another kind.
    that wait covers both. A run that ends with no reply and no tool calls saves no
    checkpoint.
 5. Verify runs in `ch-runner`, not in the agent, so the exit code is measured.
-6. Land stops omp and waits for it, then writes the working tree through a temporary index
+6. The app sends a land only through a runner whose hello announced protocol 3 or later, the
+   first with the secret scan; an older runner, or one that never said hello, cannot land.
+   Land stops omp and waits for it, then writes the working tree through a temporary index
    (your checkout is never touched). Before it commits, it scans the lines that tree adds over
    the session's starting commit for private keys and provider tokens, and refuses the land on a
    hit or on a diff too large to read whole. Land anyway sends the refused tree back as

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use ch_core::{Diff, Landing};
 use ch_protocol::runner::SecretScan;
+use ch_runtime::RUNNER_INSTALL_COMMAND;
 use ch_ui::{Palette, Status};
 use gpui_kit::{
     Animation, AnimationElement, AnimationExt, App, ClickEvent, Context, Div, InteractiveElement,
@@ -199,8 +200,19 @@ impl SessionView {
                         .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(OpenSettings))),
                 )
         };
+        let outdated = driver.runner_predates_secret_scan().then(|| {
+            muted(
+                p,
+                format!(
+                    "This ch-runner is too old to scan a land for secrets, so landing is off. \
+                     Reinstall it where the session runs with `{RUNNER_INSTALL_COMMAND} --force`, \
+                     then start the session again."
+                ),
+            )
+        });
         section
             .children(refused.map(|scan| self.secret_findings(scan, can_land, cx)))
+            .children(outdated)
             .child(
                 icon_text_button(
                     p,

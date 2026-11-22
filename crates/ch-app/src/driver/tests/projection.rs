@@ -24,6 +24,7 @@ fn responses(rig: &Rig) -> Vec<Value> {
 
 /// Starts a session whose agent waits on approval `ui_1`.
 fn waiting_on_approval(rig: &mut Rig) {
+    rig.hello();
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
     rig.say(&json!({"type":"ready"}));
@@ -156,6 +157,7 @@ fn nothing_can_be_landed_or_checked_while_omp_waits_on_the_person() {
 #[test]
 fn a_land_is_refused_while_the_agent_works() {
     let mut rig = Rig::new();
+    rig.hello();
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
     rig.say(&json!({"type":"ready"}));
@@ -171,4 +173,68 @@ fn a_land_is_refused_while_the_agent_works() {
     assert!(!rig.driver.landing());
     assert_eq!(of_type(&rig.sent(), "ch_stop"), Vec::<&Value>::new());
     assert_eq!(rig.driver.session().state(), SessionState::Running);
+}
+
+/// Asserts that a land went nowhere: no stop for the agent and no land for the runner.
+fn assert_nothing_landed(rig: &mut Rig) {
+    flush(rig);
+    let sent = rig.sent();
+    for kind in ["ch_stop", "ch_land"] {
+        assert_eq!(
+            of_type(&sent, kind),
+            Vec::<&Value>::new(),
+            "{kind} went out"
+        );
+    }
+    assert!(!rig.driver.landing());
+}
+
+#[test]
+fn a_runner_older_than_the_secret_scan_cannot_land() {
+    let mut rig = Rig::new();
+    rig.hello_at(SECRET_SCAN_PROTOCOL - 1);
+    run_to_review(&mut rig);
+
+    assert!(rig.driver.runner_predates_secret_scan());
+    assert!(!rig.driver.can_land());
+    assert!(!rig.driver.land(land_request()));
+    assert_nothing_landed(&mut rig);
+}
+
+#[test]
+fn a_later_hello_cannot_make_the_runner_newer() {
+    let mut rig = Rig::new();
+    rig.hello_at(SECRET_SCAN_PROTOCOL - 1);
+    rig.hello();
+    run_to_review(&mut rig);
+
+    assert!(rig.driver.runner_predates_secret_scan());
+    assert!(!rig.driver.land(land_request()));
+    assert_nothing_landed(&mut rig);
+}
+
+#[test]
+fn nothing_lands_through_a_runner_that_never_said_hello() {
+    let mut rig = Rig::new();
+    run_to_review(&mut rig);
+
+    assert!(
+        !rig.driver.runner_predates_secret_scan(),
+        "an unknown runner is not called old"
+    );
+    assert!(!rig.driver.can_land());
+    assert!(!rig.driver.land(land_request()));
+    assert_nothing_landed(&mut rig);
+}
+
+#[test]
+fn a_runner_at_the_secret_scan_protocol_can_land() {
+    let mut rig = Rig::new();
+    rig.hello_at(SECRET_SCAN_PROTOCOL);
+    run_to_review(&mut rig);
+
+    assert!(!rig.driver.runner_predates_secret_scan());
+    assert!(rig.driver.can_land());
+    assert!(rig.driver.land(land_request()));
+    rig.pump_until("the stop", |_, sent| !of_type(sent, "ch_stop").is_empty());
 }

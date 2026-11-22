@@ -10,8 +10,15 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Bumped when a frame changes shape. The runner announces it in [`RunnerFrame::Hello`].
-pub const RUNNER_PROTOCOL_VERSION: u32 = 2;
+/// Bumped when a frame changes shape or a request gains a guarantee. The runner announces it
+/// in [`RunnerFrame::Hello`]. 3 added the secret scan to land.
+pub const RUNNER_PROTOCOL_VERSION: u32 = 3;
+
+/// The oldest runner protocol whose land scans for secrets. The app refuses to land through an
+/// older runner, since one would commit and push without the scan and could not say so.
+pub const SECRET_SCAN_PROTOCOL: u32 = 3;
+
+const _: () = assert!(SECRET_SCAN_PROTOCOL <= RUNNER_PROTOCOL_VERSION);
 
 /// Every frame the runner adds has a `type` with this prefix. omp never uses it.
 pub const RUNNER_FRAME_PREFIX: &str = "ch_";

@@ -237,3 +237,7 @@ Notable changes to C-Harness. The format follows
   that sends `acknowledged_tree` skips the scan only when that tree is the one the runner
   computes again, so any edit after the person looked is scanned. The scan is a floor: a key
   with no known prefix, or a PGP key block, passes.
+- `ch-app` lands only through a `ch-runner` whose hello announces protocol 3 or later, the first
+  that scans a land for secrets. `RUNNER_PROTOCOL_VERSION` is now 3. With an older runner the
+  Land button is off and the Land section says to reinstall `ch-runner` with `--force`; a
+  runner that never said hello cannot land either.

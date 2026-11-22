@@ -100,8 +100,12 @@ Patterns miss things. A key with no known prefix, a PGP key block, a password as
 config file, a secret split across lines or encoded, and anything in a file git treats as binary
 all pass. Only added lines are read, so a secret already in the commit the session started from
 is not reported. A diff over 32 MiB is refused unread. Land anyway lands the refused tree
-unscanned; any later edit makes a new tree, and that one is scanned. Read the diff before you
-land.
+unscanned; any later edit makes a new tree, and that one is scanned. The scan runs in
+`ch-runner`, so the app lands only through a runner that announced protocol 3 or later in its
+hello. A runner installed before the scan existed would commit and push unscanned, so the app
+turns Land off for it and says to reinstall; a runner that never said hello cannot land either.
+The protocol number is the runner's own claim: it guards against an old install, not a forged
+runner. Read the diff before you land.
 
 **Checkpoints are a convenience, not evidence or a backup.** They are refs in your repository,
 under `refs/c-harness/<session>/`, and in a local session the agent can rewrite them. Land never

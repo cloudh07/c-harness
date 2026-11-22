@@ -13,7 +13,7 @@ fn resumed(rig: &mut Rig) {
         BTreeMap::new(),
         Vec::new(),
     ));
-    rig.say(&json!({"type":"ch_runner_hello","version":"0.1.0","protocol":1,"workdir":"/w"}));
+    rig.hello();
     rig.say(&json!({"type":"ready","protocolVersion":1}));
 }
 
