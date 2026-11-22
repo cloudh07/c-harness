@@ -3,6 +3,7 @@
 
 mod composer;
 mod exit;
+mod follow;
 mod header;
 mod leftovers;
 mod resume;
