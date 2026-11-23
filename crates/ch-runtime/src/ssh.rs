@@ -98,6 +98,8 @@ impl SshProvider {
             "ServerAliveInterval=15",
             "-o",
             "ServerAliveCountMax=4",
+            "-o",
+            "ConnectTimeout=15",
         ]
         .into_iter()
         .map(OsString::from)
@@ -159,7 +161,10 @@ impl SandboxProvider for SshProvider {
         let body = preflight::request_body(request)?;
         let mut ssh = command("ssh");
         ssh.args(self.ssh_args(self.preflight_command(body.is_some())?)?);
-        let output = preflight::output(ssh, body.as_deref()).map_err(ssh_spawn_error)?;
+        let limit = preflight::limit(body.is_some());
+        let output = preflight::output(ssh, body.as_deref(), limit)
+            .map_err(ssh_spawn_error)?
+            .ok_or_else(|| preflight::timed_out(&self.host, limit))?;
         match self.remote_failure(&output) {
             Some(err) => Err(err),
             None => preflight::report(&self.host, &output),
@@ -236,7 +241,7 @@ fn shell_quote(word: &str) -> String {
 mod tests {
     use super::*;
 
-    const BASE: [&str; 7] = [
+    const BASE: [&str; 9] = [
         "-T",
         "-o",
         "BatchMode=yes",
@@ -244,6 +249,8 @@ mod tests {
         "ServerAliveInterval=15",
         "-o",
         "ServerAliveCountMax=4",
+        "-o",
+        "ConnectTimeout=15",
     ];
 
     fn strings(args: Vec<OsString>) -> Vec<String> {
@@ -334,6 +341,24 @@ mod tests {
             r#""$HOME"/'.cargo/bin/ch-runner' --version"#
         );
         assert_eq!(provider.label(), "SSH: box:2222");
+    }
+
+    #[test]
+    fn preflight_arguments_with_and_without_the_model_test() {
+        let provider = SshProvider::new("dev@box", "~/work");
+        let args = |test_model| {
+            let command = provider.preflight_command(test_model).unwrap();
+            strings(provider.ssh_args(command).unwrap())
+        };
+        let mut expected: Vec<String> = BASE.iter().map(ToString::to_string).collect();
+        expected.extend([
+            "--".into(),
+            "dev@box".into(),
+            "'ch-runner' preflight --workdir \"$HOME\"/'work'".into(),
+        ]);
+        assert_eq!(args(false), expected);
+        expected.last_mut().unwrap().push_str(" --test-model");
+        assert_eq!(args(true), expected);
     }
 
     #[test]

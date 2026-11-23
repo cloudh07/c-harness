@@ -265,15 +265,15 @@ impl SessionView {
                 let before = follow::Shown::of(live.driver.session());
                 let pumped = live.driver.pump();
                 let caught_up = live.catch_up();
+                let capped = live
+                    .driver
+                    .enforce_cost_cap(self.settings.cost_cap_cents)
+                    .map(crate::view_model::cap_stopped);
                 let after = follow::Shown::of(live.driver.session());
                 self.follow.saw(before, after);
                 if caught_up.replaced {
                     self.follow.reset();
                 }
-                let capped = live
-                    .driver
-                    .enforce_cost_cap(self.settings.cost_cap_cents)
-                    .map(crate::view_model::cap_stopped);
                 let problems: Vec<String> = [
                     live.ledger.sync(live.driver.usage().rows()),
                     live.ledger.sync_marks(live.driver.marks()),

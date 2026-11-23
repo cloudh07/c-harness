@@ -173,8 +173,10 @@ impl SandboxProvider for LocalProvider {
         let mut runner = command(self.runner_program()?);
         clear_git_location(&mut runner);
         runner.args(preflight::args(repo.as_deref(), body.is_some()));
-        let output =
-            preflight::output(runner, body.as_deref()).map_err(|e| self.runner_spawn_error(e))?;
+        let limit = preflight::limit(body.is_some());
+        let output = preflight::output(runner, body.as_deref(), limit)
+            .map_err(|e| self.runner_spawn_error(e))?
+            .ok_or_else(|| preflight::timed_out(LOCATION, limit))?;
         preflight::report(LOCATION, &output)
     }
 
