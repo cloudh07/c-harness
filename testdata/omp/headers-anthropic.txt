@@ -1,0 +1,19 @@
+omp 18.13.1
+model anthropic/claude-sonnet-4-5
+
+POST /v1/messages (the prompt)
+  accept: text/event-stream
+  accept-encoding: gzip, deflate, br, zstd
+  anthropic-beta: effort-2025-11-24,interleaved-thinking-2025-05-14,context-management-2025-06-27
+  anthropic-dangerous-direct-browser-access: true
+  anthropic-version: 2023-06-01
+  authorization
+  connection
+  content-length
+  content-type: application/json
+  host
+  user-agent: omp/18.13.1
+  x-api-key
+  x-app: cli
+  x-claude-code-session-id  [links requests; value not recorded]
+  body: context_management, max_tokens, messages, metadata{user_id [links requests]}, model, stream, system, thinking, tools

@@ -1,0 +1,23 @@
+omp 18.13.1
+model openai/gpt-5
+
+GET /v1/models
+  accept: application/json
+  accept-encoding: gzip, deflate, br, zstd
+  authorization
+  connection
+  host
+  user-agent: omp/18.13.1
+
+POST /v1/responses (the prompt)
+  accept: text/event-stream
+  accept-encoding: gzip, deflate, br, zstd
+  authorization
+  connection
+  content-length
+  content-type: application/json
+  host
+  session_id  [links requests; value not recorded]
+  user-agent: omp/18.13.1
+  x-client-request-id  [links requests; value not recorded]
+  body: include, input, instructions, max_output_tokens, model, prompt_cache_key [links requests], reasoning, store, stream, stream_options, tools
