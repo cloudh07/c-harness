@@ -575,7 +575,10 @@ mod tests {
             action: "resolve the repository path",
             source: std::io::Error::other("denied"),
         });
-        assert!(why.starts_with("could not resolve the repository path: denied"), "{why}");
+        assert!(
+            why.starts_with("could not resolve the repository path: denied"),
+            "{why}"
+        );
         assert!(why.ends_with('.'), "{why}");
         assert_eq!(fix, "Fix what the message says, then check again.");
 

@@ -88,13 +88,7 @@ impl fmt::Display for RuntimeError {
                 stderr,
             } => {
                 write!(f, "`ch-runner --version` on {location} ")?;
-                match code {
-                    Some(code) => write!(f, "exited with code {code}")?,
-                    None => f.write_str("was killed by a signal")?,
-                }
-                if !stderr.is_empty() {
-                    write!(f, ": {stderr}")?;
-                }
+                write_exit(f, *code, stderr)?;
                 write!(f, ". Reinstall it with `{RUNNER_INSTALL_COMMAND}`")
             }
             Self::RunnerTooOld { location } => write!(
@@ -108,14 +102,7 @@ impl fmt::Display for RuntimeError {
                 stderr,
             } => {
                 write!(f, "the setup check on {location} ")?;
-                match code {
-                    Some(code) => write!(f, "exited with code {code}")?,
-                    None => f.write_str("was killed by a signal")?,
-                }
-                if !stderr.is_empty() {
-                    write!(f, ": {stderr}")?;
-                }
-                Ok(())
+                write_exit(f, *code, stderr)
             }
             Self::PreflightTimedOut { location, seconds } => write!(
                 f,
@@ -165,6 +152,18 @@ impl fmt::Display for RuntimeError {
             ),
         }
     }
+}
+
+/// How a child process ended, then what it printed on stderr, if anything.
+fn write_exit(f: &mut fmt::Formatter<'_>, code: Option<i32>, stderr: &str) -> fmt::Result {
+    match code {
+        Some(code) => write!(f, "exited with code {code}")?,
+        None => f.write_str("was killed by a signal")?,
+    }
+    if !stderr.is_empty() {
+        write!(f, ": {stderr}")?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for RuntimeError {

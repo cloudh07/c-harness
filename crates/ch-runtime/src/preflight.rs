@@ -271,7 +271,11 @@ mod tests {
         let body = vec![b'{'; 1 << 20];
         let output = output(child("sleep"), Some(&body), Duration::from_millis(300)).unwrap();
         assert!(output.is_none());
-        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -291,7 +295,7 @@ mod tests {
         let kept = Mutex::new(Vec::new());
         keep_capped(&mut pipe, &kept, 100);
         assert_eq!(kept.into_inner().unwrap(), data[..100]);
-        assert!(pipe.is_empty());
+        assert_eq!(pipe, &[] as &[u8]);
     }
 
     /// Gives two bytes, then hangs like a pipe a grandchild still holds open.
