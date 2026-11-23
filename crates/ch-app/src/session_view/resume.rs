@@ -77,6 +77,7 @@ impl SessionView {
             Ok(live) => {
                 self.leftovers.keep(&session);
                 self.phase = Phase::Live(Box::new(live));
+                self.follow.reset();
             }
             Err(message) => self.leftovers.failed(&session, message),
         }

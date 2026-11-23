@@ -201,6 +201,11 @@ Notable changes to C-Harness. The format follows
   two can disagree after a resume; nothing detects that yet.
 - `ch-core`: the transcript does not keep omp's `get_entries` requests or their answers.
 
+### Fixed
+
+- `ch-app`: the transcript stays where you are reading while the agent writes. It follows new
+  output only from the end, and Jump to latest (or End) brings you back.
+
 ### Security
 
 - `ch-runner` pins git to the session's own repository and working tree, and refuses a working

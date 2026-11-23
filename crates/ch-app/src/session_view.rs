@@ -3,6 +3,7 @@
 
 mod composer;
 mod exit;
+mod follow;
 mod header;
 mod leftovers;
 mod resume;
@@ -19,9 +20,8 @@ use ch_ui::{Palette, Status};
 use ch_vault::{SecretName, Vault};
 use gpui_kit::base::input::{InputEvent, TextareaState};
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Div, Entity, EventEmitter, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Task,
-    Window, div, px,
+    AppContext, ClickEvent, Context, Div, Entity, EventEmitter, IntoElement, ParentElement, Render,
+    Styled, Subscription, Task, Window, div, px,
 };
 
 use crate::assets::Icon;
@@ -88,7 +88,7 @@ pub struct SessionView {
     message: Option<Result<String, String>>,
     review_open: bool,
     leftovers: Leftovers,
-    scroll: ScrollHandle,
+    follow: follow::Follow,
     /// Minutes since the Unix epoch at the last tick, so ages on screen move on with the clock.
     minute: u64,
     _ticker: Task<()>,
@@ -176,7 +176,7 @@ impl SessionView {
             message: None,
             review_open: true,
             leftovers,
-            scroll: ScrollHandle::new(),
+            follow: follow::Follow::new(cx),
             minute: driver::epoch_ms() / 60_000,
             _ticker: ticker,
             _subscriptions: subscriptions,
@@ -260,8 +260,11 @@ impl SessionView {
             Phase::Launching { .. } => self.poll_launch(),
             Phase::Resuming { .. } => self.poll_resume(),
             Phase::Live(live) => {
+                let before = follow::Shown::of(live.driver.session());
                 let pumped = live.driver.pump();
                 let (caught_up, history_problem) = live.catch_up();
+                let after = follow::Shown::of(live.driver.session());
+                self.follow.saw(before, after);
                 let problems: Vec<String> = [
                     live.ledger.sync(live.driver.usage().rows()),
                     history_problem,
@@ -312,6 +315,7 @@ impl SessionView {
             Ok(launched) => self.go_live(session, prompt, place, launched),
             Err(message) => Phase::LaunchFailed { prompt, message },
         };
+        self.follow.reset();
         true
     }
 
@@ -577,22 +581,7 @@ impl Render for SessionView {
             .min_w_0()
             .h_full()
             .child(self.header(cx))
-            .child(
-                div()
-                    .id("session-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(
-                        div()
-                            .mx_auto()
-                            .w_full()
-                            .max_w(px(CONTENT_WIDTH))
-                            .px_6()
-                            .py_6()
-                            .child(self.body(cx)),
-                    ),
-            )
+            .child(self.transcript(cx))
             .child(
                 div()
                     .mx_auto()
