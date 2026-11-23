@@ -20,10 +20,13 @@ use crate::widgets::{Tone, banner, button, field, icon_text_button, muted, secti
 mod detect;
 use detect::Detect;
 
+mod notices;
+
 const PROVIDER_LOGO: f32 = 16.0;
 const NO_CONFIG: &str = "This system has no config folder, so settings cannot be saved.";
 
-/// Emitted after the settings file and any new secrets are written.
+/// Emitted after the settings file and any new secrets are written, or a switch that saves on
+/// its own is flipped.
 pub struct SettingsSaved(pub Settings);
 
 /// Asks for the first-run steps again.
@@ -234,10 +237,14 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Saves the theme on its own, so picking one never saves half-edited fields with it. A
-    /// file that failed to load is left alone; the theme then lasts until the app closes.
     pub fn set_theme(&mut self, theme: ThemePref, cx: &mut Context<Self>) {
         self.saved.theme = theme;
+        self.save_alone("the theme", cx);
+    }
+
+    /// Saves one change on its own, so it never saves half-edited fields with it. A file that
+    /// failed to load is left alone; the change then lasts until the app closes.
+    fn save_alone(&mut self, what: &str, cx: &mut Context<Self>) {
         if self.load_error.is_some() {
             return;
         }
@@ -245,7 +252,7 @@ impl SettingsView {
             return;
         };
         if let Err(e) = settings::save(&path, &self.saved) {
-            self.status = Some(Err(format!("Could not save the theme: {e}")));
+            self.status = Some(Err(format!("Could not save {what}: {e}")));
             cx.notify();
         }
     }
@@ -351,6 +358,8 @@ impl SettingsView {
             base_branch: value(&f.base_branch, cx),
             theme: self.saved.theme,
             cost_cap_cents: parse_cap(&value(&f.cost_cap, cx))?,
+            notify_finished: self.saved.notify_finished,
+            finished_sound: self.saved.finished_sound,
         })
     }
 
@@ -749,7 +758,7 @@ impl Render for SettingsView {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .child(body)
+            .child(body.child(self.outward(cx)))
     }
 }
 

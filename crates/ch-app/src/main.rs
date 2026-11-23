@@ -9,6 +9,7 @@ mod first_run;
 mod launch;
 mod ledger;
 mod link;
+mod outbound_view;
 mod panels;
 mod preflight;
 mod session_view;

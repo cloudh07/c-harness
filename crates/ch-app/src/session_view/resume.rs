@@ -7,7 +7,7 @@ use std::sync::mpsc::TryRecvError;
 use ch_runtime::LeftoverKind;
 use gpui_kit::Context;
 
-use super::{Live, Phase, SessionView};
+use super::{Live, Phase, SessionView, finished};
 use crate::driver::{self, Driver, EarlierTurns};
 use crate::launch::{self, Launched, Resumed};
 use crate::ledger::Ledger;
@@ -116,6 +116,7 @@ fn go_live_resumed(session: &str, place: Place, resumed: Resumed) -> Result<Live
         hidden: 0,
         noted_file: None,
         waiting: needs_you,
+        finished: finished::Run::default(),
     })
 }
 

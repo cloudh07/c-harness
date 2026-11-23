@@ -6,7 +6,7 @@
 use ch_core::{LedgerMark, UsageRow};
 use gpui_kit::{App, Context, Subscription};
 
-use super::{Live, Phase, SessionView, waiting};
+use super::{Live, Phase, SessionView, finished, waiting};
 use crate::ledger::Ledger;
 
 /// Closing the window releases the view before the app shuts down, so a quit handler alone never
@@ -48,6 +48,9 @@ impl Live {
         );
         if let Some(tag) = left.dismiss {
             cx.dismiss_system_notification(&tag);
+        }
+        if std::mem::take(&mut self.finished).has_notice() {
+            cx.dismiss_system_notification(&finished::tag(&self.session));
         }
         left.problem
     }
