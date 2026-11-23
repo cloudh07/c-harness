@@ -7,6 +7,7 @@ mod error;
 mod git;
 mod local;
 mod lock;
+mod preflight;
 mod process;
 mod record;
 mod resume;
@@ -49,6 +50,13 @@ pub trait SandboxProvider: Send + Sync {
 
     /// Runs `ch-runner --version` where sessions will run.
     fn check(&self) -> Result<RunnerInfo, RuntimeError>;
+
+    /// Runs `ch-runner preflight` against the repository sessions will use. With a `request`,
+    /// the runner also sends the model one short prompt, which the key's provider bills.
+    fn preflight(
+        &self,
+        request: Option<&ch_protocol::preflight::ModelTestRequest>,
+    ) -> Result<ch_protocol::preflight::PreflightReport, RuntimeError>;
 
     /// Starts `ch-runner serve --workdir <dir>` for `session` with piped stdin, stdout and
     /// stderr. `session` must pass [`validate_session`].

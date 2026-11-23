@@ -1,9 +1,9 @@
 //! What the live session does on its way out, whether the user closes it, closes the window or
-//! the OS quits the app: it saves the usage lines a failed write left and takes down its
-//! notification. omp stops with the app, so the request goes too, and the OS would otherwise
-//! keep showing it.
+//! the OS quits the app: it saves the usage lines a failed write left, with the marks they held
+//! back, and takes down its notification. omp stops with the app, so the request goes too, and
+//! the OS would otherwise keep showing it.
 
-use ch_core::UsageRow;
+use ch_core::{LedgerMark, UsageRow};
 use gpui_kit::{App, Context, Subscription};
 
 use super::{Live, Phase, SessionView, waiting};
@@ -36,14 +36,15 @@ impl SessionView {
 }
 
 impl Live {
-    /// Saves the usage lines still unsaved and takes down the notification, if any. Returns why
-    /// the lines could not be saved. Calling it again does nothing new.
+    /// Saves the usage lines and marks still unsaved and takes down the notification, if any.
+    /// Returns why they could not be saved. Calling it again does nothing new.
     pub(super) fn leave(&mut self, cx: &mut App) -> Option<String> {
         let left = leave(
             &mut self.waiting,
             &self.session,
             &mut self.ledger,
             self.driver.usage().rows(),
+            self.driver.marks(),
         );
         if let Some(tag) = left.dismiss {
             cx.dismiss_system_notification(&tag);
@@ -57,14 +58,25 @@ impl Live {
 struct Leaving {
     /// The tag of the notification still on screen.
     dismiss: Option<String>,
-    /// Why the last usage lines could not be saved.
+    /// Why the last usage lines or marks could not be saved.
     problem: Option<String>,
 }
 
-fn leave(waiting: &mut bool, session: &str, ledger: &mut Ledger, rows: &[UsageRow]) -> Leaving {
+fn leave(
+    waiting: &mut bool,
+    session: &str,
+    ledger: &mut Ledger,
+    rows: &[UsageRow],
+    marks: &[LedgerMark],
+) -> Leaving {
+    // Rows first: marks wait for the rows they are checked against.
+    let problems: Vec<String> = [ledger.flush(rows), ledger.sync_marks(marks)]
+        .into_iter()
+        .flatten()
+        .collect();
     Leaving {
         dismiss: std::mem::take(waiting).then(|| waiting::tag(session)),
-        problem: ledger.flush(rows),
+        problem: (!problems.is_empty()).then(|| problems.join(" ")),
     }
 }
 
@@ -73,6 +85,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
+    use ch_core::SessionLedger;
     use serde_json::json;
 
     use super::*;
@@ -82,11 +95,8 @@ mod tests {
     }
 
     fn turns(path: &Path) -> Vec<u32> {
-        fs::read_to_string(path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<UsageRow>(line).unwrap().turn)
-            .collect()
+        let saved = SessionLedger::parse(&fs::read_to_string(path).unwrap());
+        saved.rows.iter().map(|row| row.turn).collect()
     }
 
     /// A failed write is only tried again after the next turn, and there is none after a quit.
@@ -102,7 +112,7 @@ mod tests {
         fs::remove_dir(&path).unwrap();
 
         let mut waiting = true;
-        let left = leave(&mut waiting, "s1", &mut ledger, &rows);
+        let left = leave(&mut waiting, "s1", &mut ledger, &rows, &[]);
 
         assert_eq!(
             left,
@@ -124,8 +134,8 @@ mod tests {
         let rows = [row(1), row(2)];
         let mut waiting = true;
 
-        let first = leave(&mut waiting, "s1", &mut ledger, &rows);
-        let second = leave(&mut waiting, "s1", &mut ledger, &rows);
+        let first = leave(&mut waiting, "s1", &mut ledger, &rows, &[]);
+        let second = leave(&mut waiting, "s1", &mut ledger, &rows, &[]);
 
         assert_eq!(first.dismiss, Some(waiting::tag("s1")));
         assert_eq!(
@@ -143,7 +153,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ledger = Ledger::new(Some(dir.path()), "s1");
         let mut waiting = false;
-        let left = leave(&mut waiting, "s1", &mut ledger, &[]);
+        let left = leave(&mut waiting, "s1", &mut ledger, &[], &[]);
         assert_eq!(left.dismiss, None);
+    }
+
+    #[test]
+    fn leaving_saves_the_marks_a_failed_row_write_held_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s1.jsonl");
+        fs::create_dir(&path).unwrap();
+        let mut ledger = Ledger::new(Some(dir.path()), "s1");
+        let rows = [row(1)];
+        let marks = [LedgerMark::Verified { turn: 1, at_ms: 5 }];
+        assert!(ledger.sync(&rows).is_some());
+        assert_eq!(ledger.sync_marks(&marks), None, "held back with the row");
+        fs::remove_dir(&path).unwrap();
+
+        let left = leave(&mut false, "s1", &mut ledger, &rows, &marks);
+
+        assert_eq!(left.problem, None);
+        let saved = SessionLedger::parse(&fs::read_to_string(&path).unwrap());
+        assert_eq!((turns(&path), saved.marks), (vec![1], marks.to_vec()));
     }
 }

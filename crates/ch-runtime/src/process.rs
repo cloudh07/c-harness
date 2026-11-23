@@ -124,26 +124,7 @@ pub(crate) fn runner_info(location: &str, output: &Output) -> Result<RunnerInfo,
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(unix)]
-    fn status(code: i32) -> ExitStatus {
-        use std::os::unix::process::ExitStatusExt;
-        ExitStatus::from_raw(code << 8)
-    }
-
-    #[cfg(windows)]
-    fn status(code: i32) -> ExitStatus {
-        use std::os::windows::process::ExitStatusExt;
-        ExitStatus::from_raw(code.cast_unsigned())
-    }
-
-    fn output(code: i32, stdout: &str, stderr: &str) -> Output {
-        Output {
-            status: status(code),
-            stdout: stdout.as_bytes().to_vec(),
-            stderr: stderr.as_bytes().to_vec(),
-        }
-    }
+    use crate::test_support::output;
 
     #[test]
     fn version_line_loses_the_program_name() {

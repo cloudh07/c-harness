@@ -1,11 +1,11 @@
 //! The usage file of one session: a JSON line per model turn, appended as turns end.
 
-use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 
-use ch_core::UsageRow;
+use ch_core::{LedgerMark, SessionLedger, UsageRow};
+use serde::Serialize;
 
 pub struct Ledger {
     /// `None` when there is nowhere to write.
@@ -15,6 +15,10 @@ pub struct Ledger {
     failed_at: Option<usize>,
     /// A problem found before the first sync, reported by it.
     pending: Option<String>,
+    marks_written: usize,
+    /// A mark failed to save, so later ones are not saved either: a reading with a gap before
+    /// it would check omp against the wrong turns.
+    marks_failed: bool,
 }
 
 impl Ledger {
@@ -29,6 +33,8 @@ impl Ledger {
             written: 0,
             failed_at: None,
             pending: None,
+            marks_written: 0,
+            marks_failed: false,
         }
     }
 
@@ -41,13 +47,7 @@ impl Ledger {
             return (ledger, Vec::new());
         };
         let rows = match fs::read_to_string(path) {
-            Ok(text) => {
-                let mut seen = HashSet::new();
-                text.lines()
-                    .filter_map(|line| serde_json::from_str::<UsageRow>(line).ok())
-                    .filter(|row| seen.insert(row.turn))
-                    .collect()
-            }
+            Ok(text) => SessionLedger::parse(&text).rows,
             Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
             Err(e) => {
                 ledger.path = None;
@@ -92,6 +92,37 @@ impl Ledger {
             .map(|e| format!("Could not save token usage before the session closed: {e}"))
     }
 
+    /// Appends the marks not written yet whose turn rows are all in the file. While rows fail
+    /// to save, marks wait for them. The first failure of a mark's own write is reported and
+    /// ends mark writing for this run; turn rows go on being written.
+    pub fn sync_marks(&mut self, marks: &[LedgerMark]) -> Option<String> {
+        if self.failed_at.is_some() || self.marks_failed {
+            return None;
+        }
+        let path = self.path.as_deref()?;
+        let fresh = marks.get(self.marks_written..)?;
+        let written = self.written;
+        let ready = fresh
+            .iter()
+            .take_while(|mark| usize::try_from(mark.turn()).is_ok_and(|turn| turn <= written))
+            .count();
+        if ready == 0 {
+            return None;
+        }
+        match append(path, &fresh[..ready]) {
+            Ok(()) => {
+                self.marks_written += ready;
+                None
+            }
+            Err(e) => {
+                self.marks_failed = true;
+                Some(format!(
+                    "Could not save omp's totals beside the token usage, so this run is not checked against them: {e}"
+                ))
+            }
+        }
+    }
+
     fn write(&mut self, rows: &[UsageRow]) -> Result<(), String> {
         let Some(fresh) = rows.get(self.written..).filter(|fresh| !fresh.is_empty()) else {
             return Ok(());
@@ -111,7 +142,7 @@ impl Ledger {
 }
 
 /// The rows start on a new line if a write cut off by a full disk or a crash left half a line.
-fn append(path: &Path, rows: &[UsageRow]) -> Result<(), String> {
+fn append(path: &Path, rows: &[impl Serialize]) -> Result<(), String> {
     let mut text = String::from(if ends_mid_line(path) { "\n" } else { "" });
     for row in rows {
         text.push_str(&serde_json::to_string(row).map_err(|e| e.to_string())?);
@@ -355,5 +386,84 @@ not json
         let mut ledger = Ledger::new(None, "s1");
         assert_eq!(ledger.sync(&[row(1)]), None);
         assert_eq!(ledger.path(), None);
+    }
+
+    fn mark(turn: u32) -> LedgerMark {
+        LedgerMark::Verified {
+            turn,
+            at_ms: u64::from(turn),
+        }
+    }
+
+    #[test]
+    fn marks_are_appended_beside_the_rows_and_read_back_apart_from_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s1.jsonl");
+        let mut ledger = Ledger::new(Some(dir.path()), "s1");
+        assert_eq!(ledger.sync_marks(&[]), None);
+        assert!(!path.exists());
+
+        assert_eq!(ledger.sync(&[row(1)]), None);
+        let mut marks = vec![mark(1)];
+        assert_eq!(ledger.sync_marks(&marks), None);
+        assert_eq!(ledger.sync_marks(&marks), None);
+        let rows = [row(1), row(2)];
+        assert_eq!(ledger.sync(&rows), None);
+        marks.push(mark(2));
+        assert_eq!(ledger.sync_marks(&marks), None);
+
+        let read = SessionLedger::parse(&fs::read_to_string(&path).unwrap());
+        assert_eq!((read.rows.as_slice(), read.marks), (rows.as_slice(), marks));
+        let (_, resumed) = Ledger::resumed(Some(dir.path()), "s1");
+        assert_eq!(resumed, rows, "a mark is not a turn");
+    }
+
+    #[test]
+    fn a_failed_mark_is_reported_once_and_no_later_mark_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s1.jsonl");
+        let mut ledger = Ledger::new(Some(dir.path()), "s1");
+        assert_eq!(ledger.sync(&[row(1)]), None);
+        // The row is in, then a folder takes the file's place, so only the mark fails.
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let problem = ledger.sync_marks(&[mark(1)]).expect("the write must fail");
+        assert!(problem.contains("omp"), "{problem}");
+
+        fs::remove_dir(&path).unwrap();
+        assert_eq!(ledger.sync_marks(&[mark(1), mark(2)]), None);
+        assert!(
+            !path.exists(),
+            "a mark after a gap would check the wrong turns"
+        );
+        assert_eq!(ledger.sync(&[row(1), row(2)]), None, "rows still go on");
+        assert_eq!(lines(&path), [row(2)]);
+    }
+
+    #[test]
+    fn marks_wait_until_their_turn_rows_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s1.jsonl");
+        fs::create_dir(&path).unwrap();
+        let mut ledger = Ledger::new(Some(dir.path()), "s1");
+        assert!(ledger.sync(&[row(1)]).is_some());
+        assert_eq!(ledger.sync_marks(&[mark(1)]), None, "the row failed");
+
+        fs::remove_dir(&path).unwrap();
+        let rows = [row(1), row(2)];
+        assert_eq!(ledger.sync(&rows), None);
+        let marks = [mark(1), mark(3)];
+        assert_eq!(ledger.sync_marks(&marks), None);
+        let read = SessionLedger::parse(&fs::read_to_string(&path).unwrap());
+        assert_eq!(read.marks, [mark(1)], "turn 3 is not saved yet");
+
+        let rows = [row(1), row(2), row(3)];
+        assert_eq!(ledger.sync(&rows), None);
+        assert_eq!(ledger.sync_marks(&marks), None);
+        let read = SessionLedger::parse(&fs::read_to_string(&path).unwrap());
+        assert_eq!(
+            (read.rows.as_slice(), read.marks),
+            (rows.as_slice(), marks.to_vec())
+        );
     }
 }
