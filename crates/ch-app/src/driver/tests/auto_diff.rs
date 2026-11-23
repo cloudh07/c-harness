@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::checkpoints::{first_run, wait_sent};
 use super::*;
+use crate::settings::Settings;
+use crate::view_model::{Mark, checklist};
 
 fn diff_result(id: &Value, tree: &str) -> Value {
     json!({"type":"ch_diff_result","id":id,"base":"b","stat":" a | 1 +","patch":"+x",
@@ -42,6 +44,52 @@ fn a_run_that_ends_asks_for_a_diff_of_the_whole_session() {
     rig.pump_until("the diff", |d, _| d.session().current_diff().is_some());
     let shown = rig.driver.session().current_diff().unwrap();
     assert_eq!(shown.tree.as_deref(), Some("t1"));
+}
+
+/// The run's own diff is enough for the Checks row: a check on the same work passes with no
+/// diff asked for by hand.
+#[test]
+fn a_check_on_the_work_the_run_diff_shows_passes_without_a_click() {
+    let mut rig = Rig::new();
+    settle(&mut rig);
+    let diff = wait_sent(&mut rig, "ch_diff", 1).remove(0);
+    rig.say(&diff_result(&diff["id"], "t1"));
+    rig.pump_until("the diff", |d, _| d.session().current_diff().is_some());
+
+    assert!(rig.driver.verify("cargo test"));
+    let check = wait_sent(&mut rig, "ch_verify", 1).remove(0);
+    rig.say(
+        &json!({"type":"ch_evidence","id":check["id"],"command":"cargo test","exit_code":0,
+        "duration_ms":10,"output_tail":"ok","truncated":false,"timed_out":false,
+        "tree_before":"t1","tree_after":"t1"}),
+    );
+    rig.pump_until("the evidence", |d, _| d.session().evidence().len() == 1);
+
+    let settings = Settings {
+        verify: "cargo test".into(),
+        ..Settings::default()
+    };
+    let session = rig.driver.session();
+    let list = checklist(
+        &settings,
+        "s1",
+        "hello",
+        session.evidence(),
+        session.current_diff(),
+        session.failure(),
+        None,
+    );
+    let checks = list
+        .items
+        .iter()
+        .find(|item| item.name == "Checks")
+        .expect("a Checks row");
+    assert_eq!(checks.mark, Mark::Pass, "{checks:?}");
+    assert_eq!(
+        of_type(&rig.sent(), "ch_diff").len(),
+        1,
+        "a second diff was asked for"
+    );
 }
 
 #[test]
