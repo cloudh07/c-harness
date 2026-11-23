@@ -1,6 +1,7 @@
 //! The cost cap aborts a run once the priced turns reach it, and the ledger marks note omp's
 //! own totals and each passing check.
 
+use super::checkpoints::flush;
 use super::*;
 use ch_core::LedgerMark;
 
@@ -38,15 +39,6 @@ fn hit(cents: u32, abort_sent: bool) -> CapReached {
 
 fn aborts(rig: &Rig) -> usize {
     of_type(&rig.sent(), "abort").len()
-}
-
-/// Waits until everything sent so far was written: the writer keeps order.
-fn flush(rig: &mut Rig) {
-    let count = of_type(&rig.sent(), "ch_diff").len();
-    assert!(rig.driver.diff());
-    rig.pump_until("the probe", |_, sent| {
-        of_type(sent, "ch_diff").len() == count + 1
-    });
 }
 
 #[test]

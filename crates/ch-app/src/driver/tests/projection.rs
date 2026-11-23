@@ -1,19 +1,10 @@
 //! The UI only shows state; a button never grants anything by itself. Every action a button can
 //! call is checked again here against the session, and a refused one writes nothing.
 
+use super::checkpoints::flush;
 use super::*;
 
 const UI_RESPONSE: &str = "extension_ui_response";
-
-/// Waits until everything sent so far was written. The writer keeps order, so once a probe
-/// diff is out, no earlier frame is still on its way.
-fn flush(rig: &mut Rig) {
-    let count = of_type(&rig.sent(), "ch_diff").len();
-    assert!(rig.driver.diff());
-    rig.pump_until("the probe", |_, sent| {
-        of_type(sent, "ch_diff").len() == count + 1
-    });
-}
 
 fn responses(rig: &Rig) -> Vec<Value> {
     of_type(&rig.sent(), UI_RESPONSE)

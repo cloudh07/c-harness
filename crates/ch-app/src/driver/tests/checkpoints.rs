@@ -21,9 +21,28 @@ pub(super) fn wait_sent(rig: &mut Rig, kind: &str, count: usize) -> Vec<Value> {
 /// Waits until everything sent so far was written. The writer keeps order, so once a probe
 /// diff is out, no earlier frame is still on its way. Leaves the probe open.
 pub(super) fn flush(rig: &mut Rig) {
-    let count = of_type(&rig.sent(), "ch_diff").len();
+    let before = open_diffs(rig);
     assert!(rig.driver.diff());
-    wait_sent(rig, "ch_diff", count + 1);
+    new_diff(rig, &before);
+}
+
+/// Pumps until a whole-session diff that was not open in `before` is open and written, and
+/// returns it. Found by id rather than by count: a run's end asks for a diff of its own, and
+/// that one may still be on its way.
+pub(super) fn new_diff(rig: &mut Rig, before: &[String]) -> Value {
+    let fresh = |d: &Driver, line: &Value| {
+        line["type"] == "ch_diff"
+            && line["id"].as_str().is_some_and(|id| {
+                matches!(d.open.get(id), Some(Request::Diff)) && !before.iter().any(|b| b == id)
+            })
+    };
+    rig.pump_until("a new diff", |d, sent| {
+        sent.iter().any(|line| fresh(d, line))
+    });
+    rig.sent()
+        .into_iter()
+        .find(|line| fresh(&rig.driver, line))
+        .expect("the new diff was written")
 }
 
 /// Starts a session and lets one run end. `listed` says whether the runner keeps checkpoints.
@@ -234,8 +253,9 @@ fn a_restore_holds_the_session_until_it_ends_then_refreshes_the_diff() {
         "the restore ended at its first frame"
     );
 
+    let before = open_diffs(&rig);
     rig.say(&json!({"type":"ch_restored","id":id,"turn":1}));
-    let refresh = wait_sent(&mut rig, "ch_diff", 1).remove(0);
+    let refresh = new_diff(&mut rig, &before);
     assert!(
         refresh.get("from").is_none() && refresh.get("to").is_none(),
         "{refresh}"
@@ -261,8 +281,9 @@ fn a_refused_restore_frees_the_session_and_refreshes_the_diff() {
     let mut omp = saved_run(&mut rig);
     assert!(rig.driver.restore(1));
     let id = omp.wait_sent(&mut rig, "ch_restore", 1)[0]["id"].clone();
+    let before = open_diffs(&rig);
     rig.say(&json!({"type":"ch_error","id":id,"stage":"restore","message":"refused"}));
-    wait_sent(&mut rig, "ch_diff", 1);
+    new_diff(&mut rig, &before);
     omp.settle(&mut rig);
     assert_eq!(
         omp.path(),
