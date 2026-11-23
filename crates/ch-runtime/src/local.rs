@@ -5,8 +5,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ch_protocol::preflight::{ModelTestRequest, PreflightReport};
+
 use crate::git::{clear_git_location, git_output, os_args, run_git};
 use crate::lock::{self, SessionLock};
+use crate::preflight;
 use crate::process::{command, runner_info};
 use crate::record::{self, SessionRecord};
 use crate::sweep::delete_checkpoints;
@@ -150,6 +153,29 @@ impl SandboxProvider for LocalProvider {
             .output()
             .map_err(|e| self.runner_spawn_error(e))?;
         runner_info(LOCATION, &output)
+    }
+
+    fn preflight(
+        &self,
+        request: Option<&ModelTestRequest>,
+    ) -> Result<PreflightReport, RuntimeError> {
+        let body = preflight::request_body(request)?;
+        // An empty repo means none is picked yet: the runner then checks only omp.
+        let repo = (!self.repo.as_os_str().is_empty())
+            .then(|| std::path::absolute(&self.repo))
+            .transpose()
+            .map_err(|source| RuntimeError::Io {
+                action: "resolve the repository path",
+                source,
+            })?;
+        // No current_dir: a missing repository would fail the spawn as "not found", which reads
+        // as a missing ch-runner. The runner reports the bad workdir itself.
+        let mut runner = command(self.runner_program()?);
+        clear_git_location(&mut runner);
+        runner.args(preflight::args(repo.as_deref(), body.is_some()));
+        let output =
+            preflight::output(runner, body.as_deref()).map_err(|e| self.runner_spawn_error(e))?;
+        preflight::report(LOCATION, &output)
     }
 
     fn start(&self, session: &str) -> Result<RunnerProcess, RuntimeError> {

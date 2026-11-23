@@ -28,6 +28,25 @@ impl Target {
         if let Some(problem) = settings.problems().into_iter().next() {
             return Err(problem.message);
         }
+        Self::build(settings, PathBuf::from(settings.repo.trim()))
+    }
+
+    /// Where the setup check runs. It needs only the runner and where sessions run, so the
+    /// engine can be checked before a repository is picked: with an empty repo, a local check
+    /// asks the runner about omp alone.
+    pub(crate) fn for_check(settings: &Settings) -> Result<Self, String> {
+        const NEEDED: [&str; 3] = ["runner", "host", "remote_workdir"];
+        let blocking = settings
+            .problems()
+            .into_iter()
+            .find(|problem| NEEDED.contains(&problem.field));
+        if let Some(problem) = blocking {
+            return Err(problem.message);
+        }
+        Self::build(settings, PathBuf::from(settings.repo.trim()))
+    }
+
+    fn build(settings: &Settings, repo: PathBuf) -> Result<Self, String> {
         match &settings.location {
             Location::Local => {
                 let worktrees_dir = settings::worktrees_dir()
@@ -35,7 +54,7 @@ impl Target {
                 let sessions_dir = settings::sessions_dir()
                     .ok_or("This system has no local data folder for session records.")?;
                 Ok(Self::Local(LocalProvider {
-                    repo: PathBuf::from(settings.repo.trim()),
+                    repo,
                     runner: runner_path(settings.runner.trim(), app_dir().as_deref()),
                     worktrees_dir,
                     sessions_dir,
@@ -55,7 +74,7 @@ impl Target {
         }
     }
 
-    fn provider(&self) -> &dyn SandboxProvider {
+    pub(crate) fn provider(&self) -> &dyn SandboxProvider {
         match self {
             Self::Local(provider) => provider,
             Self::Ssh(provider) => provider,
@@ -175,7 +194,7 @@ impl Runner {
 }
 
 /// Runs `work` on its own thread; the receiver gets its result.
-fn background<T: Send + 'static>(
+pub(crate) fn background<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Receiver<Result<T, String>> {
     let (tx, rx) = mpsc::channel();
@@ -373,6 +392,31 @@ mod tests {
             panic!("an empty repo must not start");
         };
         assert!(message.contains("repository"), "{message}");
+    }
+
+    #[test]
+    fn the_setup_check_runs_before_a_repository_is_picked() {
+        let Ok(Target::Local(provider)) = Target::for_check(&Settings::default()) else {
+            panic!("the engine check needs no repository");
+        };
+        assert_eq!(provider.repo, PathBuf::new());
+
+        let picked = Target::for_check(&ready());
+        assert!(matches!(picked, Ok(Target::Local(p)) if p.repo == Path::new("/work/demo")));
+
+        let no_host = Settings {
+            location: Location::Ssh {
+                host: String::new(),
+                port: None,
+                remote_workdir: "/srv/demo".into(),
+                remote_runner: "ch-runner".into(),
+            },
+            ..Settings::default()
+        };
+        let Err(message) = Target::for_check(&no_host) else {
+            panic!("an SSH check needs a host");
+        };
+        assert!(message.contains("SSH host"), "{message}");
     }
 
     #[test]

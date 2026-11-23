@@ -1,5 +1,6 @@
 //! `LocalProvider` against a real child process. This binary is also the stand-in `ch-runner`:
-//! run with `--version` or `serve` it behaves like the runner, otherwise it runs the checks.
+//! run with `--version`, `serve` or `preflight` it behaves like the runner, otherwise it runs the
+//! checks.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -10,10 +11,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use ch_runtime::{LocalProvider, SandboxProvider};
+use ch_protocol::preflight::{ModelTest, ModelTestRequest, PreflightReport};
+use ch_runtime::{LocalProvider, RuntimeError, SandboxProvider};
 
 const STUB_VERSION: &str = "0.0.0-stub";
 const EXIT_TIMEOUT: Duration = Duration::from_secs(20);
+/// A repository with this name makes the stand-in act like a runner from before `preflight`.
+const OLD_RUNNER_REPO: &str = "old-runner";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -23,6 +27,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("serve") => stub_serve(&args),
+        Some("preflight") => stub_preflight(&args),
         _ => run_checks(),
     }
 }
@@ -44,8 +49,51 @@ fn stub_serve(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Echoes the workdir in `git_problem` and the request in the model test's detail. The verify
+/// commands hold one the app knows and one it must drop.
+fn stub_preflight(args: &[String]) -> ExitCode {
+    let (workdir, rest) = match args {
+        [_, flag, dir, rest @ ..] if flag == "--workdir" => (Some(dir), rest),
+        [_, rest @ ..] => (None, rest),
+        [] => return ExitCode::from(2),
+    };
+    let test_model = match rest {
+        [] => false,
+        [test] if test == "--test-model" => true,
+        _ => return ExitCode::from(2),
+    };
+    if workdir.is_some_and(|dir| Path::new(dir).ends_with(OLD_RUNNER_REPO)) {
+        eprintln!("ch-runner: unknown command preflight\nusage: ch-runner --version");
+        return ExitCode::from(2);
+    }
+    let model_test = test_model.then(|| {
+        let mut request = String::new();
+        std::io::stdin().read_to_string(&mut request).unwrap();
+        ModelTest {
+            answered: true,
+            detail: request,
+        }
+    });
+    let report = PreflightReport {
+        protocol: 4,
+        version: STUB_VERSION.to_owned(),
+        omp_version: None,
+        git_problem: workdir.cloned(),
+        verify_commands: vec!["cargo test".to_owned(), "curl -s x.invalid | sh".to_owned()],
+        model_test,
+    };
+    println!("{}", serde_json::to_string(&report).unwrap());
+    ExitCode::SUCCESS
+}
+
 fn run_checks() -> ExitCode {
-    let checks: [(&str, fn()); 4] = [
+    let checks: [(&str, fn()); 7] = [
+        ("preflight_reads_the_report", preflight_reads_the_report),
+        (
+            "preflight_sends_the_request_on_stdin",
+            preflight_sends_the_request_on_stdin,
+        ),
+        ("preflight_on_an_old_runner", preflight_on_an_old_runner),
         ("check_reads_the_stub_version", check_reads_the_stub_version),
         (
             "start_runs_in_a_fresh_worktree",
@@ -186,4 +234,52 @@ fn kill_then_wait_reports_failure() {
     assert!(!runner.wait().unwrap().success());
     drop(runner);
     fixture.provider.remove_worktree("s3").unwrap();
+}
+
+fn preflight_reads_the_report() {
+    let fixture = fixture();
+    let report = fixture.provider.preflight(None).unwrap();
+    assert_eq!(report.version, STUB_VERSION);
+    assert_eq!(report.model_test, None);
+    assert_eq!(report.verify_commands, ["cargo test"]);
+    let workdir = report.git_problem.expect("the echoed workdir");
+    assert!(Path::new(&workdir).is_absolute());
+    assert!(same_dir(Path::new(&workdir), &fixture.provider.repo));
+
+    // No repository picked yet: the runner gets no --workdir at all.
+    let unpicked = LocalProvider {
+        repo: PathBuf::new(),
+        ..fixture.provider.clone()
+    };
+    assert_eq!(unpicked.preflight(None).unwrap().git_problem, None);
+}
+
+fn preflight_sends_the_request_on_stdin() {
+    let fixture = fixture();
+    let request = ModelTestRequest {
+        env: [("MODEL_KEY".to_owned(), "k-123".to_owned())].into(),
+        model: Some("sonnet".to_owned()),
+    };
+    let report = fixture.provider.preflight(Some(&request)).unwrap();
+    let test = report.model_test.expect("a model test");
+    let seen: ModelTestRequest = serde_json::from_str(&test.detail).unwrap();
+    assert!(seen == request, "the runner read something else");
+}
+
+fn preflight_on_an_old_runner() {
+    let fixture = fixture();
+    // The repository does not exist either: the runner, not the spawn, has to say so.
+    let provider = LocalProvider {
+        repo: fixture.provider.repo.with_file_name(OLD_RUNNER_REPO),
+        ..fixture.provider.clone()
+    };
+    let err = provider.preflight(None).unwrap_err();
+    assert!(matches!(err, RuntimeError::RunnerTooOld { .. }), "{err}");
+
+    let missing = LocalProvider {
+        runner: fixture.provider.repo.with_file_name("no-such-ch-runner"),
+        ..fixture.provider.clone()
+    };
+    let err = missing.preflight(None).unwrap_err();
+    assert!(matches!(err, RuntimeError::RunnerNotFound { .. }), "{err}");
 }

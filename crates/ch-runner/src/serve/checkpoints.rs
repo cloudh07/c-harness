@@ -130,6 +130,7 @@ impl Session {
                     stat: diff.stat,
                     patch: diff.patch,
                     truncated: diff.truncated,
+                    tree: diff.tree,
                 },
                 Err(e) => error(Some(id), DIFF, e),
             };

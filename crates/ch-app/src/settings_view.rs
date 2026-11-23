@@ -12,15 +12,22 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, Subscription, Window, div, px, rgb,
 };
 
-use crate::assets::provider_logo;
+use crate::assets::{Icon, provider_logo};
 use crate::settings::{self, ApprovalMode, Location, Settings, ThemePref};
 use crate::view_model::{cap_text, parse_cap, parse_port};
-use crate::widgets::{Tone, banner, button, field, muted, section};
+use crate::widgets::{Tone, banner, button, field, icon_text_button, muted, section};
+
+mod detect;
+use detect::Detect;
 
 const PROVIDER_LOGO: f32 = 16.0;
+const NO_CONFIG: &str = "This system has no config folder, so settings cannot be saved.";
 
 /// Emitted after the settings file and any new secrets are written.
 pub struct SettingsSaved(pub Settings);
+
+/// Asks for the first-run steps again.
+pub struct ReopenSetup;
 
 struct Fields {
     repo: Entity<InputState>,
@@ -137,6 +144,35 @@ fn model_secret(provider: &str) -> Result<SecretName, String> {
     SecretName::model(provider.trim()).map_err(|e| e.to_string())
 }
 
+/// The saved settings with `command` as the verify command. A command already saved or typed
+/// is never replaced, and a file that could not be read is never written over from here.
+fn verify_to_save(
+    saved: &Settings,
+    load_failed: bool,
+    typed: &str,
+    command: &str,
+) -> Result<Settings, String> {
+    if load_failed {
+        return Err("Your settings file could not be read. Fix it in Settings first.".to_owned());
+    }
+    if !saved.verify.trim().is_empty() {
+        return Err("A verify command is already saved. Change it in Settings.".to_owned());
+    }
+    if !typed.trim().is_empty() {
+        return Err(
+            "Settings has a verify command typed but not saved. Save or clear it there.".to_owned(),
+        );
+    }
+    let command = command.trim();
+    if command.is_empty() {
+        return Err("Pick a command first.".to_owned());
+    }
+    Ok(Settings {
+        verify: command.to_owned(),
+        ..saved.clone()
+    })
+}
+
 pub struct SettingsView {
     palette: Palette,
     fields: Fields,
@@ -150,10 +186,13 @@ pub struct SettingsView {
     key_stored: Result<bool, String>,
     token_stored: Result<bool, String>,
     scroll: ScrollHandle,
+    detect: Detect,
+    detect_round: u64,
     _subscriptions: Vec<Subscription>,
 }
 
 impl EventEmitter<SettingsSaved> for SettingsView {}
+impl EventEmitter<ReopenSetup> for SettingsView {}
 
 impl SettingsView {
     pub fn new(
@@ -182,6 +221,8 @@ impl SettingsView {
             key_stored: Ok(false),
             token_stored: Ok(false),
             scroll: ScrollHandle::new(),
+            detect: Detect::Idle,
+            detect_round: 0,
             _subscriptions: subscriptions,
         };
         view.refresh_stored();
@@ -213,6 +254,31 @@ impl SettingsView {
         self.saved.theme
     }
 
+    pub fn saved(&self) -> &Settings {
+        &self.saved
+    }
+
+    /// Saves a verify command picked on the first-run screen, on its own like the theme.
+    pub fn set_verify(
+        &mut self,
+        command: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let typed = value(&self.fields.verify, cx);
+        let next = verify_to_save(&self.saved, self.load_error.is_some(), &typed, command)?;
+        let path = settings::default_path().ok_or(NO_CONFIG)?;
+        settings::save(&path, &next)
+            .map_err(|e| format!("Could not save the verify command: {e}"))?;
+        self.saved = next.clone();
+        let verify = next.verify.clone();
+        self.fields
+            .verify
+            .update(cx, |state, cx| state.set_value(verify, window, cx));
+        cx.emit(SettingsSaved(next));
+        Ok(())
+    }
+
     fn refresh_stored(&mut self) {
         self.key_stored = stored(model_secret(&self.saved.provider));
         self.token_stored = stored(Ok(SecretName::github()));
@@ -236,6 +302,18 @@ impl SettingsView {
                     .key_env
                     .update(cx, |state, cx| state.set_value(env, window, cx));
             }
+        }
+        let f = &self.fields;
+        let place = [
+            &f.repo,
+            &f.runner,
+            &f.ssh_host,
+            &f.ssh_port,
+            &f.ssh_workdir,
+            &f.ssh_runner,
+        ];
+        if place.contains(&input) {
+            self.forget_detected();
         }
         self.status = None;
         cx.notify();
@@ -302,8 +380,7 @@ impl SettingsView {
 
     fn try_save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<String, String> {
         let settings = self.draft(cx)?;
-        let path = settings::default_path()
-            .ok_or("This system has no config folder, so settings cannot be saved.")?;
+        let path = settings::default_path().ok_or(NO_CONFIG)?;
         settings::save(&path, &settings).map_err(|e| format!("Could not save settings: {e}"))?;
         self.saved = settings.clone();
         self.load_error = None;
@@ -338,6 +415,14 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn set_use_ssh(&mut self, use_ssh: bool, cx: &mut Context<Self>) {
+        if self.use_ssh != use_ssh {
+            self.use_ssh = use_ssh;
+            self.forget_detected();
+        }
+        cx.notify();
+    }
+
     fn location_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
         let tone = |on: bool| if on { Tone::Primary } else { Tone::Plain };
@@ -346,19 +431,13 @@ impl SettingsView {
             .gap_2()
             .child(
                 button(p, "where-local", "This computer", tone(!self.use_ssh), true).on_click(
-                    cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.use_ssh = false;
-                        cx.notify();
-                    }),
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.set_use_ssh(false, cx)),
                 ),
             )
             .child(
-                button(p, "where-ssh", "SSH host", tone(self.use_ssh), true).on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.use_ssh = true;
-                        cx.notify();
-                    },
-                )),
+                button(p, "where-ssh", "SSH host", tone(self.use_ssh), true).on_click(
+                    cx.listener(|this, _: &ClickEvent, _, cx| this.set_use_ssh(true, cx)),
+                ),
             )
     }
 
@@ -577,6 +656,32 @@ impl SettingsView {
     }
 }
 
+impl SettingsView {
+    fn title_row(&self, cx: &mut Context<Self>) -> Div {
+        let run_setup = icon_text_button(
+            self.palette,
+            "run-setup",
+            Icon::ListChecks,
+            "Run setup again",
+            Tone::Plain,
+            true,
+        )
+        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ReopenSetup)));
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex_1()
+                    .text_xl()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Settings"),
+            )
+            .child(run_setup)
+    }
+}
+
 impl Render for SettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette;
@@ -594,7 +699,7 @@ impl Render for SettingsView {
             .max_w(px(640.0))
             .mx_auto()
             .p_6()
-            .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child("Settings"))
+            .child(self.title_row(cx))
             .child(muted(p, path))
             .children(self.load_error.as_ref().map(|err| {
                 banner(
@@ -618,12 +723,7 @@ impl Render for SettingsView {
             .child(section("Approvals"))
             .child(self.approval_toggle(cx))
             .child(section("Checks"))
-            .child(field(
-                p,
-                "Verify command",
-                Some("Runs in the session's checkout when you press Verify. Leave empty to hide the button."),
-                Input::new(&f.verify),
-            ))
+            .child(self.verify_field(&draft, cx))
             .child(section("Landing"))
             .child(field(p, "Commit author name", None, Input::new(&f.author_name)))
             .child(field(p, "Commit author email", None, Input::new(&f.author_email)))
@@ -661,5 +761,39 @@ mod tests {
     fn an_unknown_provider_cannot_name_a_secret() {
         assert!(model_secret("openai").is_ok());
         assert!(model_secret("not a provider").is_err());
+    }
+
+    #[test]
+    fn a_picked_verify_command_is_saved_with_nothing_else_changed() {
+        let saved = Settings {
+            repo: "/work/repo".to_owned(),
+            ..Settings::default()
+        };
+        let next = verify_to_save(&saved, false, "", "  cargo test ").unwrap();
+        assert_eq!(
+            next,
+            Settings {
+                verify: "cargo test".to_owned(),
+                ..saved
+            }
+        );
+    }
+
+    #[test]
+    fn a_picked_verify_command_never_replaces_one_saved_or_typed() {
+        let saved = Settings {
+            verify: "make check".to_owned(),
+            ..Settings::default()
+        };
+        assert!(verify_to_save(&saved, false, "", "cargo test").is_err());
+        let empty = Settings::default();
+        assert!(verify_to_save(&empty, false, "just test", "cargo test").is_err());
+    }
+
+    #[test]
+    fn a_picked_verify_command_is_refused_over_an_unreadable_file_or_when_blank() {
+        let empty = Settings::default();
+        assert!(verify_to_save(&empty, true, "", "cargo test").is_err());
+        assert!(verify_to_save(&empty, false, "", "   ").is_err());
     }
 }
