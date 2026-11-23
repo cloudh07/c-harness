@@ -226,8 +226,8 @@ impl Git {
         self.diff_since(base, &base.id, index, (stat_budget, patch_budget))
     }
 
-    /// The working tree's changes against `since`, a commit or tree id. `index` is scratch,
-    /// filled from `base`, and removed afterwards.
+    /// The working tree's changes against `since`, a commit or tree id, with the working tree's
+    /// own tree. `index` is scratch, filled from `base`, and removed afterwards.
     pub fn diff_since(
         &self,
         base: &Base,
@@ -236,12 +236,16 @@ impl Git {
         budgets: (usize, usize),
     ) -> Result<Diff, String> {
         let result = self.stage(base, index).and_then(|()| {
-            capped_diff(budgets, |stat| {
+            // Like verify's trees: a tree that cannot be written is sent as none, which reads as
+            // "not the checked tree", and the diff itself still goes out.
+            let tree = self.write_tree(index).ok();
+            let diff = capped_diff(budgets, |stat| {
                 let mut command = self.with_index(index);
                 diff_args(&mut command, stat);
                 command.arg("--cached").arg(since).arg("--");
                 command
-            })
+            })?;
+            Ok(Diff { tree, ..diff })
         });
         // The index is scratch; leaving it would only waste the temp dir until the session ends.
         let _ = fs::remove_file(index);
@@ -275,6 +279,7 @@ fn capped_diff(
         stat,
         patch,
         truncated: stat_cut || patch_cut,
+        tree: None,
     })
 }
 
@@ -304,6 +309,8 @@ pub struct Diff {
     pub stat: String,
     pub patch: String,
     pub truncated: bool,
+    /// The working tree's tree, for a diff that ends at the working tree.
+    pub tree: Option<String>,
 }
 
 /// Runs a git command to completion and returns its stdout.

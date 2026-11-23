@@ -24,6 +24,14 @@ pub enum RuntimeError {
         code: Option<i32>,
         stderr: String,
     },
+    /// `ch-runner` at `location` predates `ch-runner preflight`.
+    RunnerTooOld { location: String },
+    /// `ch-runner preflight` ran at `location` but failed or printed no report.
+    PreflightFailed {
+        location: String,
+        code: Option<i32>,
+        stderr: String,
+    },
     /// A program this machine needs, `git` or `ssh`, is not installed.
     ToolNotFound { tool: &'static str },
     /// `ssh` could not connect or log in.
@@ -86,6 +94,26 @@ impl fmt::Display for RuntimeError {
                     write!(f, ": {stderr}")?;
                 }
                 write!(f, ". Reinstall it with `{RUNNER_INSTALL_COMMAND}`")
+            }
+            Self::RunnerTooOld { location } => write!(
+                f,
+                "ch-runner on {location} is too old to run the setup check. Reinstall it with \
+                 `{RUNNER_INSTALL_COMMAND} --force`"
+            ),
+            Self::PreflightFailed {
+                location,
+                code,
+                stderr,
+            } => {
+                write!(f, "the setup check on {location} ")?;
+                match code {
+                    Some(code) => write!(f, "exited with code {code}")?,
+                    None => f.write_str("was killed by a signal")?,
+                }
+                if !stderr.is_empty() {
+                    write!(f, ": {stderr}")?;
+                }
+                Ok(())
             }
             Self::ToolNotFound { tool } => write!(
                 f,
@@ -169,5 +197,24 @@ mod tests {
             stderr: "bad".into(),
         };
         assert!(exited.to_string().contains("exited with code 3: bad"));
+    }
+
+    #[test]
+    fn preflight_errors_say_what_to_do() {
+        let old = RuntimeError::RunnerTooOld {
+            location: "box".into(),
+        }
+        .to_string();
+        assert!(old.contains("on box is too old"));
+        assert!(old.contains(&format!("{RUNNER_INSTALL_COMMAND} --force")));
+        let failed = RuntimeError::PreflightFailed {
+            location: "box".into(),
+            code: Some(1),
+            stderr: "boom".into(),
+        };
+        assert_eq!(
+            failed.to_string(),
+            "the setup check on box exited with code 1: boom"
+        );
     }
 }

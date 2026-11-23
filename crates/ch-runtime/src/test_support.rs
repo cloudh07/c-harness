@@ -1,11 +1,32 @@
-//! Helpers for tests that need a real git repository.
+//! Helpers for tests that need a real git repository or a finished process.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Output};
 
 use crate::LocalProvider;
 use crate::git::clear_git_location;
+
+#[cfg(unix)]
+fn status(code: i32) -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    ExitStatus::from_raw(code << 8)
+}
+
+#[cfg(windows)]
+fn status(code: i32) -> ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    ExitStatus::from_raw(code.cast_unsigned())
+}
+
+/// What a process that exited with `code` left behind.
+pub(crate) fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+    Output {
+        status: status(code),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: stderr.as_bytes().to_vec(),
+    }
+}
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
     let mut git = Command::new("git");

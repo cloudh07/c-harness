@@ -24,6 +24,13 @@ A session works like this:
    config ignored, and the pull request is opened by `curl` reading its config, token included,
    from stdin.
 
+The setup check takes the same path for the model test: the key goes to `ch-runner preflight`
+over stdin and into omp's environment only, and omp's answer is scrubbed of it before it comes
+back. The keychain check writes, reads back and deletes its own throwaway entry. The model key
+check only looks at whether a key is stored and drops the value unused. Neither touches the
+GitHub token. The test commands a runner suggests are kept only when they are on the app's own
+short list, so a runner on an SSH machine cannot offer a command of its choosing.
+
 ## Known limits
 
 **Local sessions are not sandboxed.** The agent runs as your user and can read whatever you can

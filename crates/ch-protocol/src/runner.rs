@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Bumped when a frame changes shape or a request gains a guarantee. The runner announces it
-/// in [`RunnerFrame::Hello`]. 3 added the secret scan to land.
-pub const RUNNER_PROTOCOL_VERSION: u32 = 3;
+/// in [`RunnerFrame::Hello`]. 3 added the secret scan to land; 4 added `ch-runner preflight`.
+pub const RUNNER_PROTOCOL_VERSION: u32 = 4;
 
 /// The oldest runner protocol whose land scans for secrets. The app refuses to land through an
 /// older runner, since one would commit and push without the scan and could not say so.
@@ -35,7 +35,7 @@ pub const MAX_CHECKPOINTS: usize = 1000;
 /// The most findings a refused land lists in [`SecretScan::findings`]; the rest are counted.
 pub const MAX_SECRET_FINDINGS: usize = 50;
 
-const MASKED: &str = "<hidden>";
+pub(crate) const MASKED: &str = "<hidden>";
 
 /// What the client sends the runner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +231,11 @@ pub enum RunnerFrame {
         stat: String,
         patch: String,
         truncated: bool,
+        /// The working tree as a git tree, written the way [`Evidence`]'s trees are, when the
+        /// range ends at the working tree. `None` for a range between two checkpoints, when the
+        /// runner could not write the tree, and from a runner older than protocol 4.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tree: Option<String>,
     },
     /// Sent after a start when this working tree keeps checkpoints, with the ones it has.
     #[serde(rename = "ch_checkpoints")]
@@ -532,6 +537,7 @@ mod tests {
                 stat: String::new(),
                 patch: String::new(),
                 truncated: false,
+                tree: Some("t2".into()),
             },
             RunnerFrame::Checkpoints {
                 checkpoints: vec![checkpoint(1, CheckpointKind::Run)],
@@ -651,6 +657,18 @@ mod tests {
         match route_runner_line(result) {
             Ok(RunnerLine::Runner(RunnerFrame::DiffResult { from, to, .. })) => {
                 assert_eq!((from, to), (None, None));
+            }
+            other => panic!("expected a diff result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_diff_result_from_an_older_runner_has_no_tree() {
+        let line = r#"{"type":"ch_diff_result","id":"d1","base":"b","stat":"","patch":"",
+            "truncated":false}"#;
+        match route_runner_line(line) {
+            Ok(RunnerLine::Runner(RunnerFrame::DiffResult { tree, .. })) => {
+                assert_eq!(tree, None);
             }
             other => panic!("expected a diff result, got {other:?}"),
         }
