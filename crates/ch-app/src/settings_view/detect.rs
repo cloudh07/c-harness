@@ -9,7 +9,7 @@ use gpui_kit::{
 
 use super::{SettingsView, value};
 use crate::assets::Icon;
-use crate::first_run::{row, when_done};
+use crate::first_run::checks::{row, when_done};
 use crate::preflight::{self, Engine, Suggestion};
 use crate::settings::Settings;
 use crate::widgets::{Tone, button, field, icon_text_button, muted, tip};

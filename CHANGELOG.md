@@ -160,13 +160,16 @@ Notable changes to C-Harness. The format follows
   the tree that was scanned, up to 50 findings, how many more there were, and whether the
   change was too large to read.
 - `ch-app`: a first run in three steps, shown while setup is missing: the engine check, then
-  the repository and keys, then the verify command. Settings has "Run setup again".
+  the repository and keys, then the verify command. Settings has "Run setup again". Finish
+  stays off, and says why, while step 2 still has something to fix. Skip with setup still
+  missing opens Settings instead of a session that cannot start.
 - The engine check runs `ch-runner preflight` where sessions run. It reports whether omp is on
   the runner's `PATH` and new enough for `--approval-mode always-ask-cached`, and whether git
   works in the folder. The app checks that the keychain can hold a key by writing and deleting
   a throwaway entry, and that a model key is stored. Each check says pass, fail or not known,
   and every failure has a one-line fix. A runner too old for the check says so and names the
-  install command with `--force`.
+  install command with `--force`. A check still running after 3 minutes, or 5 with the
+  model test, is stopped, and the error names the machine where it stalled.
 - The model test sends one short prompt with tools off, through omp's print mode with
   `--max-cost` set to $0.05. It runs only when you press its button, which states the cost
   first; a request already sent can still cost more than the cap.
@@ -229,6 +232,8 @@ Notable changes to C-Harness. The format follows
   sessions need git 2.33 or newer.
 - `ch-runtime`: a session id is claimed by creating its record with create-new, so two starts
   of one id cannot both win.
+- `ch-runtime`: ssh gives up on a host that does not answer within 15 seconds
+  (`ConnectTimeout=15`), for sessions and the setup check alike.
 - `ch-app`: New session moved to the sidebar. It waits until the agent is stopped, and a land
   in flight keeps the session open unless the runner is gone.
 - The session screen calls the coding agent "the agent". Settings, install help and error

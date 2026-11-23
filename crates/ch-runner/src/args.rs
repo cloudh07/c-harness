@@ -195,6 +195,8 @@ mod tests {
     #[test]
     fn refuses_unknown_commands() {
         assert!(parse_strs(&[]).is_err());
-        assert!(parse_strs(&["run"]).is_err());
+        // The app reads this wording, exit code 2 and `unknown command preflight`, to tell a
+        // runner that predates a command from one that failed. Keep it for new commands too.
+        assert_eq!(parse_strs(&["run"]), Err("unknown command run".to_owned()));
     }
 }

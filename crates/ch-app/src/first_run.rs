@@ -1,6 +1,7 @@
 //! First run: the engine check, the repository and keys, then the verify command.
 
-use std::sync::mpsc::{Receiver, TryRecvError};
+pub mod checks;
+
 use std::time::Duration;
 
 use ch_ui::{Palette, Status};
@@ -11,13 +12,13 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, Window, div, ease_out_quint, px, rgb,
 };
 
+use self::checks::{Checks, Model, needs_recheck, row, rows_status, when_done};
 use crate::assets::{Icon, icon, status_glyph};
-use crate::preflight::{self, Check, Engine, Outcome, Suggestion};
+use crate::preflight::{self, Outcome, Suggestion};
 use crate::session_view::OpenSettings;
 use crate::settings::Settings;
 use crate::widgets::{MONO, Tone, button, card, icon_text_button, muted, tip};
 
-const TICK: Duration = Duration::from_millis(50);
 const STEP_FADE: Duration = Duration::from_millis(200);
 const STEP_FLOOR: f32 = 0.25;
 const GLYPH: f32 = 16.0;
@@ -63,128 +64,11 @@ impl Step {
     }
 }
 
-enum Model {
-    Untested,
-    Testing,
-    Done(Outcome),
-}
-
-/// One row of the engine check. `None` while it runs.
-#[derive(Debug, PartialEq)]
-struct Row {
-    name: &'static str,
-    outcome: Option<Outcome>,
-}
-
-fn engine_rows(engine: Option<&Engine>, keychain: Option<&[Check; 2]>) -> Vec<Row> {
-    let runner = match engine {
-        Some(engine) => engine
-            .checks
-            .iter()
-            .map(|c| Row {
-                name: c.name,
-                outcome: Some(c.outcome.clone()),
-            })
-            .collect(),
-        None => [preflight::RUNNER, preflight::OMP, preflight::GIT]
-            .into_iter()
-            .map(|name| Row {
-                name,
-                outcome: None,
-            })
-            .collect(),
-    };
-    let keychain = Row {
-        name: preflight::KEYCHAIN,
-        outcome: keychain.map(|k| k[0].outcome.clone()),
-    };
-    let mut rows: Vec<Row> = runner;
-    rows.push(keychain);
-    rows
-}
-
-fn state_word(outcome: Option<&Outcome>) -> &'static str {
-    match outcome {
-        None => "Checking",
-        Some(Outcome::Pass(_)) => "Passed",
-        Some(Outcome::Fail { .. }) => "Failed",
-        Some(Outcome::Unknown(_)) => "Not checked",
-    }
-}
-
-fn outcome_status(outcome: Option<&Outcome>) -> Status {
-    match outcome {
-        None => Status::Running,
-        Some(Outcome::Pass(_)) => Status::Done,
-        Some(Outcome::Fail { .. }) => Status::Error,
-        Some(Outcome::Unknown(_)) => Status::Idle,
-    }
-}
-
-/// The worst of the rows, for the step header.
-fn rows_status<'a>(outcomes: impl IntoIterator<Item = Option<&'a Outcome>>) -> Status {
-    let mut status = Status::Done;
-    for outcome in outcomes {
-        match outcome {
-            Some(Outcome::Fail { .. }) => return Status::Error,
-            None => status = Status::Running,
-            Some(Outcome::Unknown(_)) if status == Status::Done => status = Status::Idle,
-            Some(_) => {}
-        }
-    }
-    status
-}
-
-/// Only a change that can move a check's result starts the checks again. A save with nothing
-/// changed may have stored a new key, so it counts.
-fn needs_recheck(old: &Settings, new: &Settings) -> bool {
-    let ignoring_verify_and_theme = Settings {
-        verify: old.verify.clone(),
-        theme: old.theme,
-        ..new.clone()
-    };
-    old == new || ignoring_verify_and_theme != *old
-}
-
-fn unknown_keychain(why: &str) -> [Check; 2] {
-    [preflight::KEYCHAIN, preflight::MODEL_KEY].map(|name| Check {
-        name,
-        outcome: Outcome::unknown(why),
-    })
-}
-
-/// Polls `rx` on the UI thread and hands the result to `done` once.
-pub fn when_done<V: 'static, T: 'static>(
-    rx: Receiver<Result<T, String>>,
-    cx: &mut Context<V>,
-    done: impl FnOnce(&mut V, Result<T, String>, &mut Context<V>) + 'static,
-) {
-    cx.spawn(async move |this, cx| {
-        let result = loop {
-            match rx.try_recv() {
-                Ok(result) => break result,
-                Err(TryRecvError::Disconnected) => {
-                    break Err("The check stopped without saying why.".to_owned());
-                }
-                Err(TryRecvError::Empty) => cx.background_executor().timer(TICK).await,
-            }
-        };
-        this.update(cx, |view, cx| done(view, result, cx)).ok();
-    })
-    .detach();
-}
-
 pub struct FirstRunView {
     palette: Palette,
     settings: Settings,
     step: Step,
-    engine: Option<Engine>,
-    keychain: Option<[Check; 2]>,
-    model: Model,
-    /// Bumped by each recheck so a slower, older result never lands.
-    round: u64,
-    /// Bumped when the settings change, so a model answer for the old ones is dropped.
-    model_round: u64,
+    checks: Checks,
     verify_error: Option<String>,
 }
 
@@ -192,17 +76,30 @@ impl EventEmitter<OpenSettings> for FirstRunView {}
 impl EventEmitter<UseVerify> for FirstRunView {}
 impl EventEmitter<SetupDone> for FirstRunView {}
 
+/// The glyph each step shows in the header.
+fn step_status(step: Step, checks: &Checks, settings: &Settings) -> Status {
+    match step {
+        Step::Engine => rows_status(checks.engine_rows().iter().map(|r| r.outcome.as_ref())),
+        Step::Repo if settings.problems().is_empty() => rows_status([checks.model_key()]),
+        Step::Repo => Status::NeedsYou,
+        Step::Verify if settings.verify.trim().is_empty() => Status::Idle,
+        Step::Verify => Status::Done,
+    }
+}
+
+/// Why Finish is off: a session cannot start until step 2 is clear.
+fn finish_blocked(settings: &Settings) -> Option<&'static str> {
+    (!settings.problems().is_empty())
+        .then_some("Finish turns on once step 2 has nothing left to fix.")
+}
+
 impl FirstRunView {
     pub fn new(settings: Settings, palette: Palette, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             palette,
             settings,
             step: Step::Engine,
-            engine: None,
-            keychain: None,
-            model: Model::Untested,
-            round: 0,
-            model_round: 0,
+            checks: Checks::default(),
             verify_error: None,
         };
         view.recheck(cx);
@@ -219,11 +116,7 @@ impl FirstRunView {
         self.settings = settings;
         self.verify_error = None;
         if recheck {
-            self.model_round += 1;
-            // A test already sent keeps the button off until it returns.
-            if !matches!(self.model, Model::Testing) {
-                self.model = Model::Untested;
-            }
+            self.checks.settings_changed();
             self.recheck(cx);
         }
         cx.notify();
@@ -243,16 +136,12 @@ impl FirstRunView {
 
     /// Runs the free checks again. Never the model test: that one costs money.
     fn recheck(&mut self, cx: &mut Context<Self>) {
-        self.round += 1;
-        let round = self.round;
-        self.engine = None;
-        self.keychain = None;
+        let round = self.checks.start_round();
         when_done(
             preflight::check_engine(self.settings.clone()),
             cx,
             move |view, result, cx| {
-                if view.round == round {
-                    view.engine = Some(result.unwrap_or_else(|why| Engine::unknown(&why)));
+                if view.checks.engine_done(round, result) {
                     cx.notify();
                 }
             },
@@ -261,8 +150,7 @@ impl FirstRunView {
             preflight::check_keychain(self.settings.clone()),
             cx,
             move |view, result, cx| {
-                if view.round == round {
-                    view.keychain = Some(result.unwrap_or_else(|why| unknown_keychain(&why)));
+                if view.checks.keychain_done(round, result) {
                     cx.notify();
                 }
             },
@@ -271,20 +159,14 @@ impl FirstRunView {
     }
 
     fn test_model(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.model, Model::Testing) {
+        let Some(round) = self.checks.start_model_test() else {
             return;
-        }
-        self.model = Model::Testing;
-        let round = self.model_round;
+        };
         when_done(
             preflight::test_model(self.settings.clone()),
             cx,
             move |view, result, cx| {
-                view.model = if view.model_round == round {
-                    Model::Done(result.unwrap_or_else(Outcome::unknown))
-                } else {
-                    Model::Untested
-                };
+                view.checks.model_done(round, result);
                 cx.notify();
             },
         );
@@ -295,85 +177,10 @@ impl FirstRunView {
         self.step = step;
         cx.notify();
     }
-
-    fn runner_ready(&self) -> bool {
-        self.engine.as_ref().is_some_and(|e| {
-            e.checks
-                .iter()
-                .any(|c| c.name == preflight::RUNNER && matches!(c.outcome, Outcome::Pass(_)))
-        })
-    }
-
-    fn model_key(&self) -> Option<&Outcome> {
-        self.keychain.as_ref().map(|k| &k[1].outcome)
-    }
-
-    fn step_status(&self, step: Step) -> Status {
-        match step {
-            Step::Engine => {
-                let rows = engine_rows(self.engine.as_ref(), self.keychain.as_ref());
-                rows_status(rows.iter().map(|r| r.outcome.as_ref()))
-            }
-            Step::Repo if self.settings.problems().is_empty() => rows_status([self.model_key()]),
-            Step::Repo => Status::NeedsYou,
-            Step::Verify if self.settings.verify.trim().is_empty() => Status::Idle,
-            Step::Verify => Status::Done,
-        }
-    }
-}
-
-pub fn row(p: Palette, id: &'static str, name: &'static str, outcome: Option<&Outcome>) -> Div {
-    let word = state_word(outcome);
-    let (detail, fix) = match outcome {
-        None => ("Checking\u{2026}", None),
-        Some(Outcome::Pass(detail) | Outcome::Unknown(detail)) => (detail.as_str(), None),
-        Some(Outcome::Fail { why, fix }) => (why.as_str(), Some(fix.clone())),
-    };
-    div()
-        .flex()
-        .gap_3()
-        .items_start()
-        .py_2()
-        .child(
-            div()
-                .pt(px(2.0))
-                .child(status_glyph(p, outcome_status(outcome), px(GLYPH))),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .flex_1()
-                .min_w_0()
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .items_baseline()
-                        .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(name))
-                        .child(muted(p, word)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(p.text_muted))
-                        .child(detail.to_owned()),
-                )
-                .children(fix.map(|fix| {
-                    div()
-                        .text_sm()
-                        .text_color(rgb(p.text))
-                        .child(SelectableText::new(id, SharedString::from(fix)))
-                })),
-        )
-}
-
-impl FirstRunView {
     fn header(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let steps = Step::ALL.map(|step| {
-            let status = self.step_status(step);
+            let status = step_status(step, &self.checks, &self.settings);
             let current = step == self.step;
             let label = format!(
                 "Step {} of 3: {}{}",
@@ -421,8 +228,8 @@ impl FirstRunView {
 
     fn engine_step(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
-        let rows = engine_rows(self.engine.as_ref(), self.keychain.as_ref());
-        let checking = self.engine.is_none() || self.keychain.is_none();
+        let rows = self.checks.engine_rows();
+        let checking = self.checks.engine.is_none() || self.checks.keychain.is_none();
         let ids = [
             "setup-fix-runner",
             "setup-fix-omp",
@@ -450,13 +257,13 @@ impl FirstRunView {
     fn model_card(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let untested = preflight::model_test_untested();
-        let (outcome, label) = match &self.model {
+        let (outcome, label) = match &self.checks.model {
             Model::Untested => (Some(&untested), "Test the model"),
             Model::Testing => (None, "Testing\u{2026}"),
             Model::Done(outcome) => (Some(outcome), "Test again"),
         };
-        let testing = matches!(self.model, Model::Testing);
-        let ready = self.runner_ready();
+        let testing = matches!(self.checks.model, Model::Testing);
+        let ready = self.checks.runner_ready();
         let test = icon_text_button(
             p,
             "setup-test-model",
@@ -523,7 +330,7 @@ impl FirstRunView {
                     p,
                     "setup-fix-key",
                     preflight::MODEL_KEY,
-                    self.model_key(),
+                    self.checks.model_key(),
                 ))
                 .child(
                     div().pt_2().child(
@@ -554,7 +361,10 @@ impl FirstRunView {
             )
             .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(OpenSettings)))
         };
-        let body = match preflight::verify_suggestion(&self.settings.verify, self.engine.as_ref()) {
+        let body = match preflight::verify_suggestion(
+            &self.settings.verify,
+            self.checks.engine.as_ref(),
+        ) {
             Suggestion::Checking => row(p, "setup-fix-verify", "Test command", None),
             Suggestion::Unavailable(outcome) => {
                 row(p, "setup-fix-verify", "Test command", Some(&outcome))
@@ -628,20 +438,36 @@ impl FirstRunView {
             button(p, "setup-skip", "Skip setup", Tone::Ghost, true)
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SetupDone)))
         });
+        let blocked = self
+            .step
+            .next()
+            .is_none()
+            .then(|| finish_blocked(&self.settings))
+            .flatten();
         let forward = match self.step.next() {
             Some(step) => button(p, "setup-next", "Next", Tone::Primary, true)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.go(step, cx))),
+            None if blocked.is_some() => {
+                button(p, "setup-finish", "Finish setup", Tone::Primary, false)
+            }
             None => button(p, "setup-finish", "Finish setup", Tone::Primary, true)
                 .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(SetupDone))),
         };
         div()
             .flex()
-            .items_center()
+            .flex_col()
             .gap_2()
-            .children(back)
-            .child(div().flex_1())
-            .children(skip)
-            .child(forward)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .children(back)
+                    .child(div().flex_1())
+                    .children(skip)
+                    .child(forward),
+            )
+            .children(blocked.map(|why| div().flex().justify_end().child(muted(p, why))))
     }
 }
 
@@ -712,13 +538,74 @@ impl Render for FirstRunView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preflight::Check;
 
-    fn check(name: &'static str, outcome: Outcome) -> Check {
-        Check { name, outcome }
+    fn filled_in() -> Settings {
+        Settings {
+            repo: "D:/work/app".into(),
+            ..Settings::default()
+        }
     }
 
-    fn pass() -> Outcome {
-        Outcome::Pass("ok".into())
+    fn keychain(model_key: Outcome) -> [Check; 2] {
+        [
+            Check {
+                name: preflight::KEYCHAIN,
+                outcome: Outcome::Pass("ok".into()),
+            },
+            Check {
+                name: preflight::MODEL_KEY,
+                outcome: model_key,
+            },
+        ]
+    }
+
+    #[test]
+    fn step_two_needs_you_until_its_fields_are_filled_in() {
+        let mut checks = Checks::default();
+        assert_eq!(
+            step_status(Step::Repo, &checks, &Settings::default()),
+            Status::NeedsYou
+        );
+        // Filled in, with the key row still checking.
+        assert_eq!(
+            step_status(Step::Repo, &checks, &filled_in()),
+            Status::Running
+        );
+
+        let round = checks.start_round();
+        checks.keychain_done(round, Ok(keychain(Outcome::Pass("found".into()))));
+        assert_eq!(step_status(Step::Repo, &checks, &filled_in()), Status::Done);
+        assert_eq!(
+            step_status(Step::Repo, &checks, &Settings::default()),
+            Status::NeedsYou
+        );
+        // The engine row is still out, so step 1 keeps spinning.
+        assert_eq!(
+            step_status(Step::Engine, &checks, &filled_in()),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn step_three_is_done_once_a_verify_command_is_set() {
+        let checks = Checks::default();
+        let blank = Settings {
+            verify: "   ".into(),
+            ..filled_in()
+        };
+        let verify = Settings {
+            verify: "cargo test".into(),
+            ..filled_in()
+        };
+        assert_eq!(step_status(Step::Verify, &checks, &blank), Status::Idle);
+        assert_eq!(step_status(Step::Verify, &checks, &verify), Status::Done);
+    }
+
+    #[test]
+    fn finish_stays_off_while_step_two_has_problems() {
+        assert!(finish_blocked(&Settings::default()).is_some());
+        assert_eq!(finish_blocked(&filled_in()), None);
     }
 
     #[test]
@@ -728,73 +615,5 @@ mod tests {
         assert_eq!(Step::Verify.next(), None);
         assert_eq!(Step::Engine.back(), None);
         assert_eq!(Step::Verify.back(), Some(Step::Repo));
-    }
-
-    #[test]
-    fn rows_say_checking_until_each_check_answers() {
-        let rows = engine_rows(None, None);
-        assert_eq!(rows.len(), 4);
-        assert!(rows.iter().all(|r| r.outcome.is_none()));
-        assert_eq!(rows[3].name, preflight::KEYCHAIN);
-
-        let keychain = [
-            check(preflight::KEYCHAIN, pass()),
-            check(preflight::MODEL_KEY, pass()),
-        ];
-        let rows = engine_rows(None, Some(&keychain));
-        assert_eq!(rows[3].outcome, Some(pass()));
-        assert_eq!(
-            rows_status(rows.iter().map(|r| r.outcome.as_ref())),
-            Status::Running
-        );
-    }
-
-    #[test]
-    fn one_failed_row_marks_the_step_failed() {
-        let fail = Outcome::Fail {
-            why: "no git".into(),
-            fix: "install git".into(),
-        };
-        let unknown = Outcome::unknown("no repo");
-        assert_eq!(
-            rows_status([Some(&pass()), None, Some(&fail)]),
-            Status::Error
-        );
-        assert_eq!(rows_status([Some(&pass()), Some(&unknown)]), Status::Idle);
-        assert_eq!(rows_status([Some(&unknown), None]), Status::Running);
-        assert_eq!(rows_status([Some(&pass())]), Status::Done);
-        assert_eq!(state_word(Some(&fail)), "Failed");
-        assert_eq!(state_word(None), "Checking");
-    }
-
-    #[test]
-    fn only_changes_that_move_a_check_run_it_again() {
-        let old = Settings {
-            repo: "D:/work/app".into(),
-            ..Settings::default()
-        };
-        let verify = Settings {
-            verify: "cargo test".into(),
-            ..old.clone()
-        };
-        assert!(!needs_recheck(&old, &verify));
-        let repo = Settings {
-            repo: "D:/work/other".into(),
-            ..old.clone()
-        };
-        assert!(needs_recheck(&old, &repo));
-        // Saved with no visible change: a new key may have gone into the keychain.
-        assert!(needs_recheck(&old, &old.clone()));
-    }
-
-    #[test]
-    fn a_failed_keychain_job_leaves_both_rows_unknown() {
-        let rows = unknown_keychain("stopped");
-        assert_eq!(rows[0].name, preflight::KEYCHAIN);
-        assert_eq!(rows[1].name, preflight::MODEL_KEY);
-        assert!(
-            rows.iter()
-                .all(|r| r.outcome == Outcome::unknown("stopped"))
-        );
     }
 }
