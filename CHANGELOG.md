@@ -250,8 +250,9 @@ Notable changes to C-Harness. The format follows
 
 ### Fixed
 
-- `ch-app`: the transcript stays where you are reading while the agent writes. It follows new
-  output only from the end, and Jump to latest (or End) brings you back.
+- `ch-app`: the transcript follows new output only while you are at the end. Scrolling up stops
+  the follow, and Jump to latest (or End) brings you back. A reply that grows above where you are
+  reading can still push the content below it down.
 
 ### Security
 
