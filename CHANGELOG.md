@@ -253,6 +253,12 @@ Notable changes to C-Harness. The format follows
   the host, which moved to the new line. A session keeps the host and folder it started with
   when you change Settings.
 
+### Fixed
+
+- `ch-app`: the transcript follows new output only while you are at the end. Scrolling up stops
+  the follow, and Jump to latest (or End) brings you back. A reply that grows above where you are
+  reading can still push the content below it down.
+
 ### Security
 
 - `ch-runner` pins git to the session's own repository and working tree, and refuses a working
