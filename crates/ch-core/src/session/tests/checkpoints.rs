@@ -51,6 +51,7 @@ fn diff(stat: &str) -> Diff {
         stat: stat.into(),
         patch: "+x".into(),
         truncated: false,
+        tree: None,
     }
 }
 

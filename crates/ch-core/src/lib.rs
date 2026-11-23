@@ -8,6 +8,7 @@ mod checkpoints;
 mod context;
 mod failure;
 mod history;
+mod ledger_report;
 mod redact;
 mod risk;
 mod secret_shape;
@@ -25,6 +26,10 @@ pub use failure::{FailureKind, Retrying};
 pub use history::{
     HISTORY_COMMAND, HISTORY_PAGE_LIMIT, History, HistoryPage, MAX_HISTORY_TURNS, history_request,
     read_page,
+};
+pub use ledger_report::{
+    COST_TOLERANCE_USD, Gap, LedgerLine, LedgerMark, OmpTotals, Reading, SessionLedger, dollars,
+    reconcile, report,
 };
 pub use redact::{MASK, redact_secrets};
 pub use risk::{Assessment, Risk, classify};

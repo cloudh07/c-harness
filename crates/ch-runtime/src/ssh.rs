@@ -1,9 +1,12 @@
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Output, Stdio};
+
+use ch_protocol::preflight::{ModelTestRequest, PreflightReport};
 
 use crate::local::validate_session;
+use crate::preflight;
 use crate::process::{command, runner_info, stderr_tail};
 use crate::{RunnerInfo, RunnerProcess, RuntimeError, SandboxProvider};
 
@@ -59,6 +62,29 @@ impl SshProvider {
     fn version_command(&self) -> Result<String, RuntimeError> {
         let runner = remote_word("remote ch-runner command", &self.remote_runner)?;
         Ok(format!("{runner} --version"))
+    }
+
+    fn preflight_command(&self, test_model: bool) -> Result<String, RuntimeError> {
+        let runner = remote_word("remote ch-runner command", &self.remote_runner)?;
+        let workdir = remote_word("remote working directory", &self.remote_workdir)?;
+        let test_model = if test_model { " --test-model" } else { "" };
+        Ok(format!(
+            "{runner} preflight --workdir {workdir}{test_model}"
+        ))
+    }
+
+    /// Maps the codes ssh and the remote shell use for their own failures.
+    fn remote_failure(&self, output: &Output) -> Option<RuntimeError> {
+        match output.status.code() {
+            Some(SSH_FAILED) => Some(RuntimeError::SshFailed {
+                host: self.host.clone(),
+                stderr: stderr_tail(&output.stderr),
+            }),
+            Some(COMMAND_NOT_FOUND) => Some(RuntimeError::RunnerNotFound {
+                location: self.host.clone(),
+            }),
+            _ => None,
+        }
     }
 
     /// The arguments for the local `ssh` that runs `remote_command` on the host.
@@ -120,15 +146,23 @@ impl SandboxProvider for SshProvider {
             .stdin(Stdio::null())
             .output()
             .map_err(ssh_spawn_error)?;
-        match output.status.code() {
-            Some(SSH_FAILED) => Err(RuntimeError::SshFailed {
-                host: self.host.clone(),
-                stderr: stderr_tail(&output.stderr),
-            }),
-            Some(COMMAND_NOT_FOUND) => Err(RuntimeError::RunnerNotFound {
-                location: self.host.clone(),
-            }),
-            _ => runner_info(&self.host, &output),
+        match self.remote_failure(&output) {
+            Some(err) => Err(err),
+            None => runner_info(&self.host, &output),
+        }
+    }
+
+    fn preflight(
+        &self,
+        request: Option<&ModelTestRequest>,
+    ) -> Result<PreflightReport, RuntimeError> {
+        let body = preflight::request_body(request)?;
+        let mut ssh = command("ssh");
+        ssh.args(self.ssh_args(self.preflight_command(body.is_some())?)?);
+        let output = preflight::output(ssh, body.as_deref()).map_err(ssh_spawn_error)?;
+        match self.remote_failure(&output) {
+            Some(err) => Err(err),
+            None => preflight::report(&self.host, &output),
         }
     }
 

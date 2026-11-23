@@ -569,6 +569,7 @@ fn stderr_is_masked_before_display() {
 }
 
 mod checkpoints;
+mod cost;
 mod first_reply;
 mod projection;
 mod restore;

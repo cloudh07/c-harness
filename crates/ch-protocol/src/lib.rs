@@ -8,6 +8,7 @@
 //! (`rpc_chunk`) and nothing else, so new omp commands cost the host zero Rust changes.
 
 mod frames;
+pub mod preflight;
 mod probe;
 pub mod runner;
 
