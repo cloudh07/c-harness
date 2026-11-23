@@ -252,6 +252,20 @@ Notable changes to C-Harness. The format follows
 - `ch-app`: the header names an SSH session after the folder of its remote checkout instead of
   the host, which moved to the new line. A session keeps the host and folder it started with
   when you change Settings.
+- `ch-app`: Restore moves the agent's conversation back to the same checkpoint as the code, so
+  the agent no longer sees turns from after it. After each saved run, the app labels omp's
+  conversation at that point (`c-harness:turn:<n>`), and the next prompt waits for the label as
+  it waits for the save. A restore moves the conversation first, then the code. If the runner
+  refuses the code, or omp takes more than 15 seconds to move, the conversation is moved back
+  and nothing changes. omp older than 18.13.2 cannot label or move the conversation, so a
+  restore is refused there with that reason, as it is for a checkpoint that has no label. When
+  that move back fails or runs late, the app reads where the conversation is and tries again
+  about once a second, for up to 15 seconds, before it reports a conversation left at the
+  checkpoint. After a restore the thread is read again from omp, so it shows the same turns a
+  resume would, a new prompt waits for that read, and the transcript goes back to its end. Usage
+  and cost are not rewound, and no model call is made. If the app closes between the code restore
+  and omp saving the move, the two can disagree after a resume; nothing detects that yet.
+- `ch-core`: the transcript does not keep omp's `get_entries` requests or their answers.
 
 ### Fixed
 

@@ -14,6 +14,8 @@ const PAGE_TIMEOUT_MS: u64 = 30_000;
 /// only stops a cursor that never ends.
 const MAX_HISTORY_PAGES: usize = 1024;
 const PARTIAL: &str = "Only part of the earlier conversation was loaded.";
+const NOT_RELOADED: &str = "The thread was not reloaded after the restore, so it may still show \
+                            turns after the restored checkpoint.";
 
 /// The earlier conversation, as (prompt, reply) pairs for the screen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -23,6 +25,9 @@ pub struct EarlierTurns {
     pub hidden: usize,
     /// Why some or all of the conversation is missing.
     pub problem: Option<String>,
+    /// A restore moved the conversation, so these turns replace the thread on screen, unless
+    /// `problem` says the reload failed and the thread stays as it was.
+    pub replaces: bool,
 }
 
 #[derive(Default)]
@@ -41,6 +46,7 @@ pub(super) struct Load {
     cursor: Option<String>,
     seen: HashSet<String>,
     pages: usize,
+    replaces: bool,
 }
 
 /// What the load should do next.
@@ -69,19 +75,42 @@ impl Driver {
         sent
     }
 
+    /// Reads the conversation again from omp, the way a resume does, to replace the thread on
+    /// screen after a restore moved it.
+    pub(super) fn reload_history(&mut self) {
+        self.earlier = Earlier::Loading(Load {
+            replaces: true,
+            ..Load::default()
+        });
+    }
+
     /// The earlier conversation is still being read.
     pub fn loading_history(&self) -> bool {
         matches!(self.earlier, Earlier::Loading(_))
     }
 
-    /// The earlier conversation, once, when it has been read.
+    /// The earlier conversation, once, when it has been read. A reload after a restore also
+    /// hides the last reply, since the thread it returns already holds what omp kept of it.
     pub fn take_history(&mut self) -> Option<EarlierTurns> {
         if !matches!(self.earlier, Earlier::Done(_)) {
             return None;
         }
         match std::mem::take(&mut self.earlier) {
-            Earlier::Done(turns) => Some(turns),
+            Earlier::Done(turns) => {
+                self.rewind.reply_dropped |= turns.replaces && turns.problem.is_none();
+                Some(turns)
+            }
             _ => None,
+        }
+    }
+
+    /// The reply to the last prompt, or nothing once a restore reloaded the thread and until the
+    /// next prompt goes out.
+    pub fn reply(&self) -> &str {
+        if self.rewind.reply_dropped {
+            ""
+        } else {
+            self.session.reply()
         }
     }
 
@@ -179,11 +208,16 @@ impl Driver {
             return;
         }
         if let Earlier::Loading(load) = std::mem::take(&mut self.earlier) {
+            let problem = match problem {
+                Some(problem) if load.replaces => Some(format!("{NOT_RELOADED} {problem}")),
+                problem => problem,
+            };
             let hidden = load.history.dropped();
             self.earlier = Earlier::Done(EarlierTurns {
                 turns: load.history.into_turns(),
                 hidden,
                 problem,
+                replaces: load.replaces,
             });
         }
     }

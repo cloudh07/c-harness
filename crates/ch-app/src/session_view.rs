@@ -264,24 +264,27 @@ impl SessionView {
             Phase::Live(live) => {
                 let before = follow::Shown::of(live.driver.session());
                 let pumped = live.driver.pump();
-                let (caught_up, history_problem) = live.catch_up();
+                let caught_up = live.catch_up();
                 let capped = live
                     .driver
                     .enforce_cost_cap(self.settings.cost_cap_cents)
                     .map(crate::view_model::cap_stopped);
                 let after = follow::Shown::of(live.driver.session());
                 self.follow.saw(before, after);
+                if caught_up.replaced {
+                    self.follow.reset();
+                }
                 let problems: Vec<String> = [
                     live.ledger.sync(live.driver.usage().rows()),
                     live.ledger.sync_marks(live.driver.marks()),
-                    history_problem,
+                    caught_up.problem,
                     capped,
                 ]
                 .into_iter()
                 .flatten()
                 .collect();
                 if problems.is_empty() {
-                    pumped || caught_up
+                    pumped || caught_up.changed
                 } else {
                     self.message = Some(Err(problems.join(" ")));
                     true
@@ -377,7 +380,7 @@ impl SessionView {
             return;
         }
         let accepted = if let Phase::Live(live) = &mut self.phase {
-            let previous = live.driver.session().reply().to_string();
+            let previous = live.driver.reply().to_string();
             let sent = live.driver.prompt(&text);
             if sent {
                 if live.first_prompt.is_empty() {

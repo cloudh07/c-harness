@@ -572,4 +572,5 @@ mod checkpoints;
 mod cost;
 mod first_reply;
 mod projection;
+mod restore;
 mod resume;
