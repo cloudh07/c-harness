@@ -22,7 +22,7 @@ pub(super) struct Row {
     pub(super) outcome: Option<Outcome>,
 }
 
-pub(super) fn engine_rows(engine: Option<&Engine>, keychain: Option<&[Check; 2]>) -> Vec<Row> {
+fn engine_rows(engine: Option<&Engine>, keychain: Option<&[Check; 2]>) -> Vec<Row> {
     let runner = match engine {
         Some(engine) => engine
             .checks
@@ -97,6 +97,97 @@ pub(super) fn unknown_keychain(why: &str) -> [Check; 2] {
         name,
         outcome: Outcome::unknown(why),
     })
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub(super) enum Model {
+    #[default]
+    Untested,
+    Testing,
+    Done(Outcome),
+}
+
+/// What the free checks and the model test have said so far. Each answer carries the round
+/// it was asked in, and one from an older round is dropped.
+#[derive(Debug, Default)]
+pub(super) struct Checks {
+    pub(super) engine: Option<Engine>,
+    pub(super) keychain: Option<[Check; 2]>,
+    pub(super) model: Model,
+    /// Bumped by each recheck so a slower, older result never lands.
+    round: u64,
+    /// Bumped when the settings change, so a model answer for the old ones is dropped.
+    model_round: u64,
+}
+
+impl Checks {
+    /// Clears the free checks and returns the round their answers must carry.
+    pub(super) fn start_round(&mut self) -> u64 {
+        self.round += 1;
+        self.engine = None;
+        self.keychain = None;
+        self.round
+    }
+
+    /// False when the answer belongs to an older round and was dropped.
+    pub(super) fn engine_done(&mut self, round: u64, result: Result<Engine, String>) -> bool {
+        let current = round == self.round;
+        if current {
+            self.engine = Some(result.unwrap_or_else(|why| Engine::unknown(&why)));
+        }
+        current
+    }
+
+    /// False when the answer belongs to an older round and was dropped.
+    pub(super) fn keychain_done(&mut self, round: u64, result: Result<[Check; 2], String>) -> bool {
+        let current = round == self.round;
+        if current {
+            self.keychain = Some(result.unwrap_or_else(|why| unknown_keychain(&why)));
+        }
+        current
+    }
+
+    pub(super) fn settings_changed(&mut self) {
+        self.model_round += 1;
+        // A test already sent keeps the button off until it returns.
+        if self.model != Model::Testing {
+            self.model = Model::Untested;
+        }
+    }
+
+    /// The round the answer must carry, or `None` while a test is already out.
+    pub(super) fn start_model_test(&mut self) -> Option<u64> {
+        if self.model == Model::Testing {
+            return None;
+        }
+        self.model = Model::Testing;
+        Some(self.model_round)
+    }
+
+    /// An answer for settings that have since changed says nothing about the new ones.
+    pub(super) fn model_done(&mut self, round: u64, result: Result<Outcome, String>) {
+        self.model = if round == self.model_round {
+            Model::Done(result.unwrap_or_else(Outcome::unknown))
+        } else {
+            Model::Untested
+        };
+    }
+
+    pub(super) fn runner_ready(&self) -> bool {
+        self.engine.as_ref().is_some_and(|e| {
+            e.checks
+                .iter()
+                .any(|c| c.name == preflight::RUNNER && matches!(c.outcome, Outcome::Pass(_)))
+        })
+    }
+
+    pub(super) fn model_key(&self) -> Option<&Outcome> {
+        self.keychain.as_ref().map(|k| &k[1].outcome)
+    }
+
+    pub(super) fn engine_rows(&self) -> Vec<Row> {
+        engine_rows(self.engine.as_ref(), self.keychain.as_ref())
+    }
 }
 
 /// Polls `rx` on the UI thread and hands the result to `done` once.
@@ -234,6 +325,70 @@ mod tests {
         assert!(needs_recheck(&old, &repo));
         // Saved with no visible change: a new key may have gone into the keychain.
         assert!(needs_recheck(&old, &old.clone()));
+    }
+
+    fn engine(runner: Outcome) -> Engine {
+        Engine {
+            checks: vec![
+                check(preflight::RUNNER, runner),
+                check(preflight::OMP, pass()),
+                check(preflight::GIT, pass()),
+            ],
+            verify_commands: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_answer_from_an_older_round_is_dropped() {
+        let mut checks = Checks::default();
+        let old = checks.start_round();
+        let new = checks.start_round();
+        assert!(!checks.engine_done(old, Ok(engine(pass()))));
+        assert!(!checks.keychain_done(old, Err("late".into())));
+        assert_eq!((&checks.engine, &checks.keychain), (&None, &None));
+
+        assert!(checks.engine_done(new, Err("stopped".into())));
+        assert!(checks.keychain_done(new, Err("stopped".into())));
+        assert_eq!(checks.engine, Some(Engine::unknown("stopped")));
+        assert_eq!(checks.keychain, Some(unknown_keychain("stopped")));
+    }
+
+    #[test]
+    fn a_model_answer_for_settings_that_changed_meanwhile_is_dropped() {
+        let mut checks = Checks::default();
+        let round = checks.start_model_test().expect("the first test starts");
+        assert_eq!(checks.start_model_test(), None, "one paid test at a time");
+
+        checks.settings_changed();
+        // The sent test still holds the button until it returns.
+        assert_eq!(checks.model, Model::Testing);
+        checks.model_done(round, Ok(pass()));
+        assert_eq!(checks.model, Model::Untested);
+
+        let round = checks.start_model_test().expect("a new test starts");
+        checks.model_done(round, Err("stopped".into()));
+        assert_eq!(checks.model, Model::Done(Outcome::unknown("stopped")));
+        checks.settings_changed();
+        assert_eq!(checks.model, Model::Untested);
+    }
+
+    #[test]
+    fn the_model_test_waits_for_a_passing_runner() {
+        let mut checks = Checks::default();
+        assert!(!checks.runner_ready());
+        let round = checks.start_round();
+        let too_old = Outcome::Fail {
+            why: "too old".into(),
+            fix: "update ch-runner".into(),
+        };
+        checks.engine_done(round, Ok(engine(too_old)));
+        assert!(!checks.runner_ready());
+
+        let round = checks.start_round();
+        checks.engine_done(round, Ok(engine(pass())));
+        assert!(checks.runner_ready());
+        checks.start_round();
+        assert!(!checks.runner_ready(), "a recheck clears the last answer");
     }
 
     #[test]

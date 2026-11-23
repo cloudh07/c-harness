@@ -106,6 +106,16 @@ fn first_screen(setup_missing: bool, load_failed: bool) -> Screen {
     }
 }
 
+/// Where leaving setup goes. Skipping with fields still missing opens Settings, where they are
+/// filled in, instead of a session that cannot start.
+fn setup_exit(problems_remain: bool) -> Screen {
+    if problems_remain {
+        Screen::Settings
+    } else {
+        Screen::Session
+    }
+}
+
 struct Shell {
     palette: Palette,
     screen: Screen,
@@ -220,7 +230,8 @@ impl Shell {
                 shell.back_to_setup = true;
             }),
             cx.subscribe(&view, |shell, _, _: &SetupDone, cx| {
-                shell.show(Screen::Session, cx);
+                let problems_remain = !shell.settings.read(cx).saved().problems().is_empty();
+                shell.show(setup_exit(problems_remain), cx);
             }),
         ];
         (view, subscriptions)
@@ -479,6 +490,12 @@ mod tests {
         // A file that could not be read is fixed in Settings before anything else.
         assert_eq!(first_screen(true, true), Screen::Settings);
         assert_eq!(first_screen(false, true), Screen::Settings);
+    }
+
+    #[test]
+    fn leaving_setup_with_fields_missing_opens_settings() {
+        assert_eq!(setup_exit(true), Screen::Settings);
+        assert_eq!(setup_exit(false), Screen::Session);
     }
 
     #[test]
