@@ -335,6 +335,7 @@ fn a_prompt_after_the_diff_takes_the_pass_away() {
     };
     session.apply_action(&ClientAction::StartSent);
     feed(&mut session, r#"{"type":"ready"}"#);
+    session.apply_action(&ClientAction::DiffSent { id: "d1".into() });
     feed(
         &mut session,
         r#"{"type":"ch_diff_result","id":"d1","base":"abc","stat":"","patch":"","truncated":false,"tree":"t1"}"#,

@@ -1,4 +1,5 @@
-//! Which working tree the latest diff shows, and whether the agent has run since.
+//! Which working tree the latest diff shows, and whether the agent may have run since it was
+//! asked for.
 
 use serde_json::{Value, json};
 
@@ -21,8 +22,18 @@ fn diff_result(tree: Option<&str>, range: &Value) -> String {
     frame.to_string()
 }
 
+fn ask(session: &mut Session, id: &str) {
+    session.apply_action(&ClientAction::DiffSent { id: id.into() });
+}
+
+fn answer(session: &mut Session, id: &str, tree: Option<&str>) {
+    feed(session, &diff_result(tree, &json!({ "id": id })));
+}
+
+/// A plain diff asked for and answered with nothing in between.
 fn plain_diff(session: &mut Session, tree: Option<&str>) {
-    feed(session, &diff_result(tree, &json!({})));
+    ask(session, "d1");
+    answer(session, "d1", tree);
 }
 
 fn reviewing() -> Session {
@@ -103,6 +114,62 @@ fn a_diff_that_arrives_while_the_agent_runs_is_not_current() {
     plain_diff(&mut session, Some("t1"));
     assert_eq!(session.current_diff(), None);
     feed(&mut session, SETTLED);
+    assert_eq!(session.current_diff(), None);
+}
+
+#[test]
+fn a_diff_asked_before_a_prompt_is_not_current_when_it_lands_after_the_run() {
+    let mut session = reviewing();
+    ask(&mut session, "d1");
+    session.apply_action(&ClientAction::PromptSent);
+    feed(&mut session, SETTLED);
+    answer(&mut session, "d1", Some("t1"));
+    assert_eq!(session.current_diff(), None);
+    assert_eq!(
+        session.last_diff().and_then(|d| d.tree.as_deref()),
+        Some("t1"),
+        "the diff view still shows it"
+    );
+}
+
+#[test]
+fn only_a_diff_asked_after_the_run_is_current() {
+    let mut session = reviewing();
+    ask(&mut session, "d1");
+    session.apply_action(&ClientAction::PromptSent);
+    feed(&mut session, SETTLED);
+    ask(&mut session, "d2");
+    answer(&mut session, "d1", Some("t1"));
+    assert_eq!(session.current_diff(), None);
+    answer(&mut session, "d2", Some("t2"));
+    assert_eq!(current_tree(&session), Ok(Some("t2")));
+}
+
+#[test]
+fn a_diff_asked_while_the_agent_runs_is_not_current_after_it_settles() {
+    let mut session = running();
+    ask(&mut session, "d1");
+    feed(&mut session, SETTLED);
+    answer(&mut session, "d1", Some("t1"));
+    assert_eq!(session.current_diff(), None);
+}
+
+#[test]
+fn a_diff_reply_nobody_asked_for_is_not_current() {
+    let mut session = reviewing();
+    answer(&mut session, "d9", Some("t1"));
+    assert_eq!(session.current_diff(), None);
+}
+
+#[test]
+fn a_failed_diff_is_no_longer_waited_for() {
+    let mut session = reviewing();
+    ask(&mut session, "d1");
+    feed(
+        &mut session,
+        r#"{"type":"ch_error","id":"d1","stage":"diff","message":"git diff failed"}"#,
+    );
+    answer(&mut session, "d1", Some("t1"));
     assert_eq!(session.current_diff(), None);
 }
 
