@@ -185,9 +185,27 @@ Notable changes to C-Harness. The format follows
   with the last check's `tree_after` before Land. The app does not read it yet. The user's index
   is untouched, and a runner older than protocol 4, or one that could not write the tree, sends
   none.
+- `ch-app`: an optional cost cap per session in Settings, in dollars and off by default. It is
+  checked when a turn ends, so one long turn can go past it. Once the turns omp priced reach
+  it, an abort goes to the running prompt, the session says why, and no new prompt goes out
+  until you raise or clear the cap; the line under the prompt says so while the cap alone holds
+  it back. Turns omp could not price are not counted, and the header says how many there are.
+- `ch-app`: the session header shows the cost as its own item. A session with no priced turn
+  reads "Cost unknown", never $0, and turns omp could not price are named beside the sum
+  ("$0.12 + 2 unpriced turns"). With a cap set it reads "$1.50 of $5.00 cap", in the warning
+  color once the cap is reached.
+- `ch-app`: the usage file also keeps omp's own session totals after each turn and a line for
+  each passing Verify the app asked for. A check result the app did not ask for is not kept.
+- `ch-core`: the usage file read back as totals by token kind and by model, the cost up to each
+  session's last passing Verify (averaged over those sessions), and a check of the summed turns
+  against omp's totals that names each turn where they differ, without guessing why. `cargo run -p ch-core --example usage_report -- <usage folder>` prints
+  the report, or says it was not run when no file holds a turn.
 
 ### Changed
 
+- `ch-app`: the header shows the share of input read from the cache (`99% cached`) instead
+  of the cached token count. When some turns went uncounted, the share is of the counted ones
+  and marked `~`.
 - `ch-runtime`: local worktrees are created locked, with the reason
   `c-harness session <session>`, at the commit their record names. `git worktree prune` no
   longer drops a session whose folder went missing; removing the session still does. Local

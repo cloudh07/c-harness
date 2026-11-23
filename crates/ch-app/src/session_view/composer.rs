@@ -10,6 +10,7 @@ use gpui_kit::{
 use super::{OpenSettings, Phase, SessionView, is_working};
 use crate::approval_card::approval_card;
 use crate::assets::{Icon, icon, provider_logo};
+use crate::view_model::cap_hint;
 use crate::widgets::{Tone, icon_button, tip};
 
 const APPROVALS_HEIGHT: f32 = 360.0;
@@ -45,6 +46,24 @@ fn checkpoint_hint(restoring: bool, saving: bool) -> Option<&'static str> {
     }
 }
 
+/// The line under a live session's prompt. A disconnected runner outranks a checkpoint, and
+/// a checkpoint outranks the cost cap, which only shows while it alone holds prompts back.
+fn session_hint(
+    closed: bool,
+    checkpoint: Option<&'static str>,
+    held_at_cap: Option<u32>,
+    state: SessionState,
+    can_prompt: bool,
+) -> String {
+    if closed {
+        return live_hint(closed, state, can_prompt).into();
+    }
+    checkpoint
+        .map(String::from)
+        .or_else(|| held_at_cap.map(cap_hint))
+        .unwrap_or_else(|| live_hint(closed, state, can_prompt).into())
+}
+
 impl SessionView {
     pub(super) fn approvals(&self, cx: &Context<Self>) -> Option<Stateful<Div>> {
         let Phase::Live(live) = &self.phase else {
@@ -76,21 +95,25 @@ impl SessionView {
                 let driver = &live.driver;
                 let state = driver.session().state();
                 let can_prompt = driver.can_prompt();
-                let hint = checkpoint_hint(driver.restoring(), driver.saving_checkpoint())
-                    .filter(|_| !driver.closed())
-                    .unwrap_or_else(|| live_hint(driver.closed(), state, can_prompt));
+                let hint = session_hint(
+                    driver.closed(),
+                    checkpoint_hint(driver.restoring(), driver.saving_checkpoint()),
+                    driver.held_at_cap(),
+                    state,
+                    can_prompt,
+                );
                 (
                     can_prompt,
                     hint,
                     is_working(state) && !driver.stopping() && !driver.closed(),
                 )
             }
-            Phase::Launching { .. } => (false, "Starting the session.", false),
-            Phase::Resuming { .. } => (false, "Resuming the session.", false),
+            Phase::Launching { .. } => (false, "Starting the session.".into(), false),
+            Phase::Resuming { .. } => (false, "Resuming the session.".into(), false),
             Phase::Empty | Phase::LaunchFailed { .. } if needs_setup => {
-                (false, "Finish Settings to start a session.", false)
+                (false, "Finish Settings to start a session.".into(), false)
             }
-            Phase::Empty | Phase::LaunchFailed { .. } => (true, SEND_HINT, false),
+            Phase::Empty | Phase::LaunchFailed { .. } => (true, SEND_HINT.into(), false),
         };
         let action = if can_stop {
             icon_button(
@@ -203,5 +226,24 @@ mod tests {
         assert!(live_hint(false, SessionState::Landed, false).contains("landed"));
         assert_eq!(live_hint(false, SessionState::NeedsReview, true), SEND_HINT);
         assert!(live_hint(false, SessionState::Failed, false).contains("cannot"));
+    }
+
+    #[test]
+    fn the_cap_hint_lasts_until_something_more_pressing_shows() {
+        let review = SessionState::NeedsReview;
+        let restoring = checkpoint_hint(true, false);
+        assert!(session_hint(true, restoring, Some(500), review, false).contains("disconnected"));
+        assert!(session_hint(false, restoring, Some(500), review, false).contains("Restoring"));
+
+        let held = session_hint(false, None, Some(500), review, false);
+        assert!(held.contains("$5.00 cost cap"), "{held}");
+        assert!(held.contains("raise or clear it in Settings"), "{held}");
+
+        let running = session_hint(false, None, None, SessionState::Running, false);
+        assert!(
+            running.contains("working"),
+            "the cap waits for the run to end"
+        );
+        assert_eq!(session_hint(false, None, None, review, true), SEND_HINT);
     }
 }

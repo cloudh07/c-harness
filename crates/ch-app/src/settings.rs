@@ -87,6 +87,8 @@ pub struct Settings {
     pub github_repo: String,
     pub base_branch: String,
     pub theme: ThemePref,
+    /// Aborts the run once the priced turns of a session cost this many cents. `None` is off.
+    pub cost_cap_cents: Option<u32>,
 }
 
 impl Default for Settings {
@@ -105,6 +107,7 @@ impl Default for Settings {
             github_repo: String::new(),
             base_branch: "main".to_string(),
             theme: ThemePref::System,
+            cost_cap_cents: None,
         }
     }
 }
@@ -566,6 +569,12 @@ mod tests {
             assert!(serde_json::from_str::<Settings>(&text).is_err(), "{mode:?}");
         }
         assert_eq!(Settings::default().approval_mode, ApprovalMode::Write);
+    }
+
+    #[test]
+    fn a_file_from_before_the_cost_cap_has_no_cap() {
+        let old: Settings = serde_json::from_str(r#"{"repo": "/work/app"}"#).expect("parses");
+        assert_eq!(old.cost_cap_cents, None);
     }
 
     #[test]

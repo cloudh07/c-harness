@@ -14,7 +14,7 @@ use gpui_kit::{
 
 use crate::assets::{Icon, provider_logo};
 use crate::settings::{self, ApprovalMode, Location, Settings, ThemePref};
-use crate::view_model::parse_port;
+use crate::view_model::{cap_text, parse_cap, parse_port};
 use crate::widgets::{Tone, banner, button, field, icon_text_button, muted, section};
 
 mod detect;
@@ -44,6 +44,7 @@ struct Fields {
     author_email: Entity<InputState>,
     github_repo: Entity<InputState>,
     base_branch: Entity<InputState>,
+    cost_cap: Entity<InputState>,
 }
 
 impl Fields {
@@ -89,10 +90,11 @@ impl Fields {
             author_email: text(s.author_email.clone(), "you@example.com"),
             github_repo: text(s.github_repo.clone(), "owner/name"),
             base_branch: text(s.base_branch.clone(), "main"),
+            cost_cap: text(s.cost_cap_cents.map(cap_text).unwrap_or_default(), "No cap"),
         }
     }
 
-    fn all(&self) -> [&Entity<InputState>; 14] {
+    fn all(&self) -> [&Entity<InputState>; 15] {
         [
             &self.repo,
             &self.runner,
@@ -108,6 +110,7 @@ impl Fields {
             &self.author_email,
             &self.github_repo,
             &self.base_branch,
+            &self.cost_cap,
         ]
     }
 }
@@ -347,6 +350,7 @@ impl SettingsView {
             github_repo: value(&f.github_repo, cx),
             base_branch: value(&f.base_branch, cx),
             theme: self.saved.theme,
+            cost_cap_cents: parse_cap(&value(&f.cost_cap, cx))?,
         })
     }
 
@@ -566,6 +570,52 @@ impl SettingsView {
             .children(status)
     }
 
+    /// Provider, key and model, and what a session may spend.
+    fn model_fields(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let f = &self.fields;
+        let provider = f.provider.read(cx).value().to_string();
+        let key_what = format!(
+            "A key for `{}` is stored in the system keychain.",
+            self.saved.provider
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(field(
+                p,
+                "Provider",
+                Some("omp's provider id, such as openai, anthropic or openrouter."),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .children(provider_logo(&provider, px(PROVIDER_LOGO), p.text))
+                    .child(div().flex_1().min_w_0().child(Input::new(&f.provider))),
+            ))
+            .child(field(
+                p,
+                "Key variable",
+                Some("The variable omp reads the key from. It follows the provider until you type your own."),
+                Input::new(&f.key_env),
+            ))
+            .child(field(p, "Model", Some("Leave empty for omp's default."), Input::new(&f.model)))
+            .child(field(
+                p,
+                "API key",
+                Some("Goes to the system keychain, never to the settings file. Leave empty to keep what is stored."),
+                Input::new(&self.model_key),
+            ))
+            .child(self.stored_row("remove-model-key", &self.key_stored, key_what, Self::remove_model_key, cx))
+            .child(field(
+                p,
+                "Cost cap per session",
+                Some("In dollars. Checked when a turn ends, so one long turn can go past it. Once a session's priced turns reach it, an abort goes to the running prompt and no new prompt goes out until you raise or clear it. Turns omp cannot price are not counted. Leave empty for no cap."),
+                Input::new(&f.cost_cap),
+            ))
+    }
+
     fn where_fields(&self) -> Div {
         let p = self.palette;
         let f = &self.fields;
@@ -637,14 +687,9 @@ impl Render for SettingsView {
         let p = self.palette;
         let draft = self.draft(cx);
         let f = &self.fields;
-        let provider = f.provider.read(cx).value().to_string();
         let path = settings::default_path().map_or_else(
             || "No config folder on this system.".to_string(),
             |path| format!("Saved to {}", path.display()),
-        );
-        let key_what = format!(
-            "A key for `{}` is stored in the system keychain.",
-            self.saved.provider
         );
         let body = div()
             .flex()
@@ -674,31 +719,7 @@ impl Render for SettingsView {
                 Input::new(&f.runner),
             ))
             .child(section("Model"))
-            .child(field(
-                p,
-                "Provider",
-                Some("omp's provider id, such as openai, anthropic or openrouter."),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .children(provider_logo(&provider, px(PROVIDER_LOGO), p.text))
-                    .child(div().flex_1().min_w_0().child(Input::new(&f.provider))),
-            ))
-            .child(field(
-                p,
-                "Key variable",
-                Some("The variable omp reads the key from. It follows the provider until you type your own."),
-                Input::new(&f.key_env),
-            ))
-            .child(field(p, "Model", Some("Leave empty for omp's default."), Input::new(&f.model)))
-            .child(field(
-                p,
-                "API key",
-                Some("Goes to the system keychain, never to the settings file. Leave empty to keep what is stored."),
-                Input::new(&self.model_key),
-            ))
-            .child(self.stored_row("remove-model-key", &self.key_stored, key_what, Self::remove_model_key, cx))
+            .child(self.model_fields(cx))
             .child(section("Approvals"))
             .child(self.approval_toggle(cx))
             .child(section("Checks"))
