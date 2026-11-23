@@ -32,6 +32,8 @@ pub enum RuntimeError {
         code: Option<i32>,
         stderr: String,
     },
+    /// `ch-runner preflight` at `location` was still running after `seconds` and was killed.
+    PreflightTimedOut { location: String, seconds: u64 },
     /// A program this machine needs, `git` or `ssh`, is not installed.
     ToolNotFound { tool: &'static str },
     /// `ssh` could not connect or log in.
@@ -86,13 +88,7 @@ impl fmt::Display for RuntimeError {
                 stderr,
             } => {
                 write!(f, "`ch-runner --version` on {location} ")?;
-                match code {
-                    Some(code) => write!(f, "exited with code {code}")?,
-                    None => f.write_str("was killed by a signal")?,
-                }
-                if !stderr.is_empty() {
-                    write!(f, ": {stderr}")?;
-                }
+                write_exit(f, *code, stderr)?;
                 write!(f, ". Reinstall it with `{RUNNER_INSTALL_COMMAND}`")
             }
             Self::RunnerTooOld { location } => write!(
@@ -106,15 +102,13 @@ impl fmt::Display for RuntimeError {
                 stderr,
             } => {
                 write!(f, "the setup check on {location} ")?;
-                match code {
-                    Some(code) => write!(f, "exited with code {code}")?,
-                    None => f.write_str("was killed by a signal")?,
-                }
-                if !stderr.is_empty() {
-                    write!(f, ": {stderr}")?;
-                }
-                Ok(())
+                write_exit(f, *code, stderr)
             }
+            Self::PreflightTimedOut { location, seconds } => write!(
+                f,
+                "the setup check on {location} did not finish within {seconds} seconds and was \
+                 stopped"
+            ),
             Self::ToolNotFound { tool } => write!(
                 f,
                 "`{tool}` was not found on this machine. Install it and make sure it is on PATH, \
@@ -158,6 +152,18 @@ impl fmt::Display for RuntimeError {
             ),
         }
     }
+}
+
+/// How a child process ended, then what it printed on stderr, if anything.
+fn write_exit(f: &mut fmt::Formatter<'_>, code: Option<i32>, stderr: &str) -> fmt::Result {
+    match code {
+        Some(code) => write!(f, "exited with code {code}")?,
+        None => f.write_str("was killed by a signal")?,
+    }
+    if !stderr.is_empty() {
+        write!(f, ": {stderr}")?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for RuntimeError {
@@ -215,6 +221,14 @@ mod tests {
         assert_eq!(
             failed.to_string(),
             "the setup check on box exited with code 1: boom"
+        );
+        let stuck = RuntimeError::PreflightTimedOut {
+            location: "box".into(),
+            seconds: 120,
+        };
+        assert_eq!(
+            stuck.to_string(),
+            "the setup check on box did not finish within 120 seconds and was stopped"
         );
     }
 }

@@ -121,6 +121,18 @@ commit the session began from.
 - Files come back with your repository's line-ending settings, as `git checkout` writes them.
 - Restore waits while the agent works and while a check, diff or another restore runs. A new
   prompt waits for a restore, and up to 15 seconds for the save of the last run.
+- Restore also moves the agent's conversation back to the same checkpoint, so code and
+  conversation agree. This needs omp 18.13.2 or newer. With an older omp, or for a checkpoint
+  saved before it, Restore is refused and neither changes. The conversation moves first: if omp
+  will not move it, the code is left alone, and if the runner then refuses the code, the
+  conversation is moved back. When omp is busy or slow with that move back, the app reads where
+  the conversation is and tries again about once a second, for up to 15 seconds, before it
+  reports a problem. After a restore the thread is read again from omp, so it shows the same
+  turns a resume would, a new prompt waits for that read, and the transcript scrolls to its
+  end. Usage is not rewound.
+- Known limit: if C-Harness closes after the code is restored but before omp saves the moved
+  conversation, the code stays at the checkpoint and the conversation reopens where it was.
+  Nothing records this yet.
 - A run that ends with no reply and no tool calls saves no checkpoint, and the thread says so.
 - A session keeps at most 1000 checkpoints. Only a worktree C-Harness made for the session
   keeps them, so an SSH session has none.
@@ -179,8 +191,10 @@ held against them.
    vendor allows it, and the cloud. C-Harness sells no tokens and never sits on your bill.
 2. **Keys stay with you.** Credentials live in the OS keychain. A key goes only into your own
    sandbox, one session at a time, and is wiped when the sandbox ends.
-3. **No telemetry by default.** Nothing is collected unless you turn it on, and the list of
-   events is published.
+3. **No telemetry from C-Harness.** The app collects nothing and has no HTTP client of its
+   own. omp, the agent it runs, keeps a few network features on by default.
+   [PRIVACY.md](PRIVACY.md) lists everything that leaves your machine, and Settings shows the
+   same list.
 4. **Cost is always visible.** Each session shows tokens, estimated cost and sandbox time. You
    can cap spending per session and per day.
 5. **Leaving is easy.** Tasks, transcripts and settings export to open formats. Your work lives

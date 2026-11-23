@@ -101,6 +101,7 @@ fn a_resume_starts_omp_on_the_saved_conversation_and_reads_it_back() {
             turns: vec![pair("Fix it", "Done."), pair("Thanks", "")],
             hidden: 0,
             problem: None,
+            replaces: false,
         }
     );
     assert!(rig.driver.can_prompt());

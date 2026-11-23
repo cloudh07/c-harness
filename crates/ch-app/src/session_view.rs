@@ -3,6 +3,8 @@
 
 mod composer;
 mod exit;
+mod finished;
+mod follow;
 mod header;
 mod leftovers;
 mod resume;
@@ -19,9 +21,8 @@ use ch_ui::{Palette, Status};
 use ch_vault::{SecretName, Vault};
 use gpui_kit::base::input::{InputEvent, TextareaState};
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Div, Entity, EventEmitter, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, StatefulInteractiveElement, Styled, Subscription, Task,
-    Window, div, px,
+    AnyWindowHandle, AppContext, ClickEvent, Context, Div, Entity, EventEmitter, IntoElement,
+    ParentElement, Render, Styled, Subscription, Task, Window, div, px,
 };
 
 use crate::assets::Icon;
@@ -80,6 +81,7 @@ struct Live {
     noted_file: Option<String>,
     /// Whether the session was waiting for an answer at the last tick.
     waiting: bool,
+    finished: finished::Run,
 }
 
 pub struct SessionView {
@@ -90,9 +92,11 @@ pub struct SessionView {
     message: Option<Result<String, String>>,
     review_open: bool,
     leftovers: Leftovers,
-    scroll: ScrollHandle,
+    follow: follow::Follow,
     /// Minutes since the Unix epoch at the last tick, so ages on screen move on with the clock.
     minute: u64,
+    /// Asked whether it has focus when a run finishes.
+    window: AnyWindowHandle,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -178,8 +182,9 @@ impl SessionView {
             message: None,
             review_open: true,
             leftovers,
-            scroll: ScrollHandle::new(),
+            follow: follow::Follow::new(cx),
             minute: driver::epoch_ms() / 60_000,
+            window: window.window_handle(),
             _ticker: ticker,
             _subscriptions: subscriptions,
         }
@@ -262,23 +267,31 @@ impl SessionView {
             Phase::Launching { .. } => self.poll_launch(),
             Phase::Resuming { .. } => self.poll_resume(),
             Phase::Live(live) => {
+                let state = live.driver.session().state();
+                live.finished = live.finished.before(state, live.driver.stopping());
+                let before = follow::Shown::of(live.driver.session());
                 let pumped = live.driver.pump();
-                let (caught_up, history_problem) = live.catch_up();
+                let caught_up = live.catch_up();
                 let capped = live
                     .driver
                     .enforce_cost_cap(self.settings.cost_cap_cents)
                     .map(crate::view_model::cap_stopped);
+                let after = follow::Shown::of(live.driver.session());
+                self.follow.saw(before, after);
+                if caught_up.replaced {
+                    self.follow.reset();
+                }
                 let problems: Vec<String> = [
                     live.ledger.sync(live.driver.usage().rows()),
                     live.ledger.sync_marks(live.driver.marks()),
-                    history_problem,
+                    caught_up.problem,
                     capped,
                 ]
                 .into_iter()
                 .flatten()
                 .collect();
                 if problems.is_empty() {
-                    pumped || caught_up
+                    pumped || caught_up.changed
                 } else {
                     self.message = Some(Err(problems.join(" ")));
                     true
@@ -287,6 +300,7 @@ impl SessionView {
             Phase::Empty | Phase::LaunchFailed { .. } => false,
         };
         let waiting = self.track_waiting(cx);
+        self.track_finished(cx);
         let swept = self.leftovers.poll();
         let minute = driver::epoch_ms() / 60_000;
         let new_minute = minute != self.minute;
@@ -320,6 +334,7 @@ impl SessionView {
             Ok(launched) => self.go_live(session, prompt, place, launched),
             Err(message) => Phase::LaunchFailed { prompt, message },
         };
+        self.follow.reset();
         true
     }
 
@@ -352,6 +367,7 @@ impl SessionView {
             hidden: 0,
             noted_file: None,
             waiting: false,
+            finished: finished::Run::default(),
         }))
     }
 
@@ -373,7 +389,7 @@ impl SessionView {
             return;
         }
         let accepted = if let Phase::Live(live) = &mut self.phase {
-            let previous = live.driver.session().reply().to_string();
+            let previous = live.driver.reply().to_string();
             let sent = live.driver.prompt(&text);
             if sent {
                 if live.first_prompt.is_empty() {
@@ -593,22 +609,7 @@ impl Render for SessionView {
             .min_w_0()
             .h_full()
             .child(self.header(cx))
-            .child(
-                div()
-                    .id("session-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(
-                        div()
-                            .mx_auto()
-                            .w_full()
-                            .max_w(px(CONTENT_WIDTH))
-                            .px_6()
-                            .py_6()
-                            .child(self.body(cx)),
-                    ),
-            )
+            .child(self.transcript(cx))
             .child(
                 div()
                     .mx_auto()

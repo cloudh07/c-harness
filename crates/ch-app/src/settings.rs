@@ -89,6 +89,10 @@ pub struct Settings {
     pub theme: ThemePref,
     /// Aborts the run once the priced turns of a session cost this many cents. `None` is off.
     pub cost_cap_cents: Option<u32>,
+    /// Tell the OS when a run ends while the window is in the background.
+    pub notify_finished: bool,
+    /// Play the OS alert sound with that notice.
+    pub finished_sound: bool,
 }
 
 impl Default for Settings {
@@ -108,6 +112,8 @@ impl Default for Settings {
             base_branch: "main".to_string(),
             theme: ThemePref::System,
             cost_cap_cents: None,
+            notify_finished: true,
+            finished_sound: false,
         }
     }
 }
@@ -419,6 +425,8 @@ mod tests {
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.repo, "/x");
         assert_eq!(loaded.base_branch, "main");
+        assert!(loaded.notify_finished);
+        assert!(!loaded.finished_sound);
     }
 
     #[test]

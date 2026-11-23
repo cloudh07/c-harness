@@ -160,13 +160,16 @@ Notable changes to C-Harness. The format follows
   the tree that was scanned, up to 50 findings, how many more there were, and whether the
   change was too large to read.
 - `ch-app`: a first run in three steps, shown while setup is missing: the engine check, then
-  the repository and keys, then the verify command. Settings has "Run setup again".
+  the repository and keys, then the verify command. Settings has "Run setup again". Finish
+  stays off, and says why, while step 2 still has something to fix. Skip with setup still
+  missing opens Settings instead of a session that cannot start.
 - The engine check runs `ch-runner preflight` where sessions run. It reports whether omp is on
   the runner's `PATH` and new enough for `--approval-mode always-ask-cached`, and whether git
   works in the folder. The app checks that the keychain can hold a key by writing and deleting
   a throwaway entry, and that a model key is stored. Each check says pass, fail or not known,
   and every failure has a one-line fix. A runner too old for the check says so and names the
-  install command with `--force`.
+  install command with `--force`. A check still running after 3 minutes, or 5 with the
+  model test, is stopped, and the error names the machine where it stalled.
 - The model test sends one short prompt with tools off, through omp's print mode with
   `--max-cost` set to $0.05. It runs only when you press its button, which states the cost
   first; a request already sent can still cost more than the cap.
@@ -210,6 +213,19 @@ Notable changes to C-Harness. The format follows
   during the land. The GitHub token is checked when you press Land. Below the list are the pull
   request title and the start of its description. They are not edited in the app; edit them on
   GitHub once the pull request is open.
+- `PRIVACY.md` and Settings, What leaves this machine: every place data goes without you
+  sending it, with what goes, when, why, whether you can turn it off, and whether the row was
+  read in code or seen on the wire. The list lives in `ch-core` (`outbound`), and a test fails
+  when `PRIVACY.md` misses a row of it.
+- `ch-runner`: an ignored test, `omp_headers`, runs omp against a listener on 127.0.0.1 with a
+  fake key and records the request lines and header names it sends to Anthropic and OpenAI,
+  with values only for harmless headers. `CONTRIBUTING.md` says to run it before each release.
+  Checked against omp 18.13.1.
+- `ch-app`: a notification when a run ends, so a session is ready for review, while the window
+  is in the background. It comes once per run, never for a run you stopped, a land, a crash or
+  a start that failed, and says nothing about the work. The next run, a land or closing the
+  session takes it down. Settings, Notifications turns it off and can add the system alert
+  sound, which is off by default. Both switches save as soon as they are flipped.
 
 ### Changed
 
@@ -230,6 +246,8 @@ Notable changes to C-Harness. The format follows
   sessions need git 2.33 or newer.
 - `ch-runtime`: a session id is claimed by creating its record with create-new, so two starts
   of one id cannot both win.
+- `ch-runtime`: ssh gives up on a host that does not answer within 15 seconds
+  (`ConnectTimeout=15`), for sessions and the setup check alike.
 - `ch-app`: New session moved to the sidebar. It waits until the agent is stopped, and a land
   in flight keeps the session open unless the runner is gone.
 - The session screen calls the coding agent "the agent". Settings, install help and error
@@ -248,9 +266,26 @@ Notable changes to C-Harness. The format follows
 - `ch-app`: the header names an SSH session after the folder of its remote checkout instead of
   the host, which moved to the new line. A session keeps the host and folder it started with
   when you change Settings.
+- `ch-app`: Restore moves the agent's conversation back to the same checkpoint as the code, so
+  the agent no longer sees turns from after it. After each saved run, the app labels omp's
+  conversation at that point (`c-harness:turn:<n>`), and the next prompt waits for the label as
+  it waits for the save. A restore moves the conversation first, then the code. If the runner
+  refuses the code, or omp takes more than 15 seconds to move, the conversation is moved back
+  and nothing changes. omp older than 18.13.2 cannot label or move the conversation, so a
+  restore is refused there with that reason, as it is for a checkpoint that has no label. When
+  that move back fails or runs late, the app reads where the conversation is and tries again
+  about once a second, for up to 15 seconds, before it reports a conversation left at the
+  checkpoint. After a restore the thread is read again from omp, so it shows the same turns a
+  resume would, a new prompt waits for that read, and the transcript goes back to its end. Usage
+  and cost are not rewound, and no model call is made. If the app closes between the code restore
+  and omp saving the move, the two can disagree after a resume; nothing detects that yet.
+- `ch-core`: the transcript does not keep omp's `get_entries` requests or their answers.
 
 ### Fixed
 
+- `ch-app`: the transcript follows new output only while you are at the end. Scrolling up stops
+  the follow, and Jump to latest (or End) brings you back. A reply that grows above where you are
+  reading can still push the content below it down.
 - `ch-app`: a diff asked for in review that arrives after you sent a prompt and the agent
   settled no longer counts as current, so the Checks row can't read pass on work that changed
   after the diff was asked for.

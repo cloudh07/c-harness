@@ -9,6 +9,7 @@ mod context;
 mod failure;
 mod history;
 mod ledger_report;
+mod outbound;
 mod redact;
 mod risk;
 mod secret_shape;
@@ -31,6 +32,9 @@ pub use ledger_report::{
     COST_TOLERANCE_USD, Gap, LedgerLine, LedgerMark, OmpTotals, Reading, SessionLedger, dollars,
     reconcile, report,
 };
+pub use outbound::{
+    Control, Evidence, OMP_VERSION_SEEN, OUTBOUND, OUTBOUND_SUMMARY, Outbound, outbound_markdown,
+};
 pub use redact::{MASK, redact_secrets};
 pub use risk::{Assessment, Risk, classify};
 pub use secret_shape::{holds_provider_secret, secret_kind};
@@ -38,5 +42,5 @@ pub use session::{
     ClientAction, Diff, Failure, Landing, Notice, ReplyWait, Session, SessionState, ToolCall,
     ToolStatus, TurnDiff,
 };
-pub use transcript::Transcript;
+pub use transcript::{ENTRIES_COMMAND, Transcript};
 pub use usage::{Usage, UsageRow, UsageStatus, UsageTotals};

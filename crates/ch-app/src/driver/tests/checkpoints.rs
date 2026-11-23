@@ -4,29 +4,30 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ch_core::RESTORE_NOTICE;
 
+use super::restore::{FakeOmp, saved_run_on};
 use super::*;
 
-fn checkpoint(turn: u32, kind: &str) -> Value {
+pub(super) fn checkpoint(turn: u32, kind: &str) -> Value {
     json!({ "turn": turn, "commit": format!("{turn:040}"), "kind": kind, "at": 1 })
 }
 
 /// Pumps until `count` frames of `kind` were written, and returns them. The link writes on
 /// its own thread, so a frame the driver sent may not be in `sent` yet.
-fn wait_sent(rig: &mut Rig, kind: &str, count: usize) -> Vec<Value> {
+pub(super) fn wait_sent(rig: &mut Rig, kind: &str, count: usize) -> Vec<Value> {
     rig.pump_until(kind, |_, sent| of_type(sent, kind).len() == count);
     of_type(&rig.sent(), kind).into_iter().cloned().collect()
 }
 
 /// Waits until everything sent so far was written. The writer keeps order, so once a probe
 /// diff is out, no earlier frame is still on its way. Leaves the probe open.
-fn flush(rig: &mut Rig) {
+pub(super) fn flush(rig: &mut Rig) {
     let count = of_type(&rig.sent(), "ch_diff").len();
     assert!(rig.driver.diff());
     wait_sent(rig, "ch_diff", count + 1);
 }
 
 /// Starts a session and lets one run end. `listed` says whether the runner keeps checkpoints.
-fn first_run(rig: &mut Rig, listed: bool) {
+pub(super) fn first_run(rig: &mut Rig, listed: bool) {
     rig.hello();
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
@@ -42,7 +43,7 @@ fn first_run(rig: &mut Rig, listed: bool) {
 }
 
 /// Lets a run end with a reply, so it counts as a turn worth a checkpoint.
-fn end_run(rig: &mut Rig) {
+pub(super) fn end_run(rig: &mut Rig) {
     rig.say(&json!({"type":"agent_start"}));
     rig.say(&json!({"type":"message_update",
         "assistantMessageEvent":{"type":"text_delta","delta":"Done."}}));
@@ -52,21 +53,19 @@ fn end_run(rig: &mut Rig) {
     });
 }
 
-/// One run, saved as checkpoint 1.
-fn saved_run(rig: &mut Rig) {
-    first_run(rig, true);
-    let request = saves(rig)[0].clone();
-    answer_save(rig, &request, 1);
+/// One run, saved as checkpoint 1 and marked in omp's conversation.
+fn saved_run(rig: &mut Rig) -> FakeOmp {
+    saved_run_on(rig, FakeOmp::new())
 }
 
-fn saves(rig: &Rig) -> Vec<Value> {
+pub(super) fn saves(rig: &Rig) -> Vec<Value> {
     of_type(&rig.sent(), "ch_checkpoint")
         .into_iter()
         .cloned()
         .collect()
 }
 
-fn answer_save(rig: &mut Rig, request: &Value, turn: u32) {
+pub(super) fn answer_save(rig: &mut Rig, request: &Value, turn: u32) {
     rig.say(&json!({"type":"ch_checkpointed","id":request["id"],
         "checkpoint":checkpoint(turn, "run")}));
     rig.pump_until("the saved checkpoint", |d, _| {
@@ -77,7 +76,9 @@ fn answer_save(rig: &mut Rig, request: &Value, turn: u32) {
 #[test]
 fn each_run_that_ends_saves_a_checkpoint() {
     let mut rig = Rig::new();
+    let mut omp = FakeOmp::new();
     first_run(&mut rig, true);
+    omp.ran(1);
     let first = saves(&rig);
     assert_eq!(first.len(), 1, "{:?}", rig.sent());
     assert!(rig.driver.saving_checkpoint());
@@ -87,6 +88,11 @@ fn each_run_that_ends_saves_a_checkpoint() {
     );
 
     answer_save(&mut rig, &first[0], 1);
+    assert!(
+        rig.driver.saving_checkpoint(),
+        "a prompt could go ahead of the save's mark in the conversation"
+    );
+    omp.settle(&mut rig);
     assert!(!rig.driver.saving_checkpoint());
     assert!(rig.driver.can_prompt());
 
@@ -180,10 +186,10 @@ fn a_slow_save_holds_prompts_for_a_while_only() {
 #[test]
 fn a_restore_holds_the_session_until_it_ends_then_refreshes_the_diff() {
     let mut rig = Rig::new();
-    saved_run(&mut rig);
+    let mut omp = saved_run(&mut rig);
     assert!(rig.driver.can_restore());
     assert!(rig.driver.restore(1));
-    let request = wait_sent(&mut rig, "ch_restore", 1).remove(0);
+    let request = omp.wait_sent(&mut rig, "ch_restore", 1).remove(0);
     assert_eq!(request["turn"], 1);
     let id = request["id"].clone();
     assert!(!rig.driver.can_prompt());
@@ -208,6 +214,11 @@ fn a_restore_holds_the_session_until_it_ends_then_refreshes_the_diff() {
         refresh.get("from").is_none() && refresh.get("to").is_none(),
         "{refresh}"
     );
+    assert!(
+        rig.driver.restoring(),
+        "omp has not yet saved the conversation's move"
+    );
+    omp.settle(&mut rig);
     assert!(rig.driver.can_prompt());
     assert!(rig.driver.can_review());
     assert_eq!(drops(&rig.driver), 0);
@@ -221,11 +232,17 @@ fn a_restore_holds_the_session_until_it_ends_then_refreshes_the_diff() {
 #[test]
 fn a_refused_restore_frees_the_session_and_refreshes_the_diff() {
     let mut rig = Rig::new();
-    saved_run(&mut rig);
+    let mut omp = saved_run(&mut rig);
     assert!(rig.driver.restore(1));
-    let id = wait_sent(&mut rig, "ch_restore", 1)[0]["id"].clone();
+    let id = omp.wait_sent(&mut rig, "ch_restore", 1)[0]["id"].clone();
     rig.say(&json!({"type":"ch_error","id":id,"stage":"restore","message":"refused"}));
     wait_sent(&mut rig, "ch_diff", 1);
+    omp.settle(&mut rig);
+    assert_eq!(
+        omp.path(),
+        ["prompt 1", "reply 1"],
+        "the conversation moved back"
+    );
     assert!(rig.driver.can_review());
     assert!(rig.driver.can_prompt());
     assert_eq!(rig.driver.session().state(), SessionState::NeedsReview);
