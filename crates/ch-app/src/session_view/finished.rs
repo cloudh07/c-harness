@@ -2,7 +2,8 @@
 //! to review it.
 //!
 //! No notice when the user stopped the run or asked to land it (they are already here), when it
-//! failed or never started (the session screen says why), or while the window has focus.
+//! failed or never started (the session screen says why), or while the window has focus. A run
+//! the cost cap ended is told like any other: nobody here stopped it.
 
 use ch_core::SessionState;
 use gpui_kit::{Context, SystemNotification};
