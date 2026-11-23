@@ -44,6 +44,52 @@ fn after_earlier(
     (turns, title)
 }
 
+/// The conversation on screen: the turns, the title, the prompt of the turn under way and how
+/// many older turns are left out.
+#[derive(Debug, Default, PartialEq)]
+struct Thread {
+    turns: Vec<(String, String)>,
+    title: String,
+    prompt: String,
+    hidden: usize,
+}
+
+/// Puts a read of the earlier conversation into the thread. A resume puts it before this run's
+/// turns. After a restore it replaces the thread, unless the reload failed, which leaves the
+/// thread as it was. Also returns whether the thread was replaced, and any problem.
+fn with_earlier(thread: Thread, earlier: EarlierTurns) -> (Thread, bool, Option<String>) {
+    let EarlierTurns {
+        turns,
+        hidden,
+        problem,
+        replaces,
+    } = earlier;
+    if replaces && problem.is_some() {
+        return (thread, false, problem);
+    }
+    let (current, prompt) = if replaces {
+        (Vec::new(), String::new())
+    } else {
+        (thread.turns, thread.prompt)
+    };
+    let (turns, title) = after_earlier(turns, current, thread.title);
+    let thread = Thread {
+        turns,
+        title,
+        prompt,
+        hidden,
+    };
+    (thread, replaces, problem)
+}
+
+/// What `catch_up` did on a tick.
+pub(super) struct CaughtUp {
+    pub(super) changed: bool,
+    /// A reload after a restore replaced the thread.
+    pub(super) replaced: bool,
+    pub(super) problem: Option<String>,
+}
+
 impl SessionView {
     pub(super) fn resume_leftover(&mut self, session: &str, cx: &mut Context<Self>) {
         if matches!(self.phase, Phase::Empty) {
@@ -123,32 +169,35 @@ fn go_live_resumed(session: &str, place: Place, resumed: Resumed) -> Result<Live
 impl Live {
     /// Puts the earlier conversation before this run's turns once it has been read, and saves
     /// where omp keeps the conversation. After a restore the conversation read back replaces
-    /// the thread instead, and a reload that failed leaves it as it was. Returns whether
-    /// anything changed, and any problem.
-    pub(super) fn catch_up(&mut self) -> (bool, Option<String>) {
+    /// the thread instead, and a reload that failed leaves it as it was.
+    pub(super) fn catch_up(&mut self) -> CaughtUp {
         let noted = self.note_session_file();
         let Some(earlier) = self.driver.take_history() else {
-            return (false, noted);
-        };
-        let EarlierTurns {
-            turns,
-            hidden,
-            problem,
-            replaces,
-        } = earlier;
-        if !replaces || problem.is_none() {
-            let current = if replaces {
-                self.prompt.clear();
-                Vec::new()
-            } else {
-                std::mem::take(&mut self.turns)
+            return CaughtUp {
+                changed: false,
+                replaced: false,
+                problem: noted,
             };
-            (self.turns, self.first_prompt) =
-                after_earlier(turns, current, std::mem::take(&mut self.first_prompt));
-            self.hidden = hidden;
-        }
+        };
+        let thread = Thread {
+            turns: std::mem::take(&mut self.turns),
+            title: std::mem::take(&mut self.first_prompt),
+            prompt: std::mem::take(&mut self.prompt),
+            hidden: self.hidden,
+        };
+        let (thread, replaced, problem) = with_earlier(thread, earlier);
+        Thread {
+            turns: self.turns,
+            title: self.first_prompt,
+            prompt: self.prompt,
+            hidden: self.hidden,
+        } = thread;
         let problems: Vec<String> = [problem, noted].into_iter().flatten().collect();
-        (true, (!problems.is_empty()).then(|| problems.join(" ")))
+        CaughtUp {
+            changed: true,
+            replaced,
+            problem: (!problems.is_empty()).then(|| problems.join(" ")),
+        }
     }
 
     /// Saves the omp session file to the record the first time omp names it, or when it changes.
@@ -226,5 +275,68 @@ mod tests {
         assert_eq!(title, "Now test it", "this run already has a title");
         let (turns, title) = after_earlier(Vec::new(), Vec::new(), String::new());
         assert_eq!((turns.len(), title.as_str()), (0, ""));
+    }
+
+    fn on_screen() -> Thread {
+        Thread {
+            turns: vec![pair("Fix it", "Fixed."), pair("Now test it", "Tested.")],
+            title: "Fix it".to_string(),
+            prompt: "Now ship it".to_string(),
+            hidden: 0,
+        }
+    }
+
+    fn read(problem: Option<&str>, replaces: bool) -> EarlierTurns {
+        EarlierTurns {
+            turns: vec![pair("Fix it", "Fixed.")],
+            hidden: 2,
+            problem: problem.map(str::to_string),
+            replaces,
+        }
+    }
+
+    #[test]
+    fn a_reload_after_a_restore_replaces_the_thread() {
+        let (thread, replaced, problem) = with_earlier(on_screen(), read(None, true));
+        assert!(replaced);
+        assert_eq!(problem, None);
+        assert_eq!(
+            thread,
+            Thread {
+                turns: vec![pair("Fix it", "Fixed.")],
+                title: "Fix it".to_string(),
+                prompt: String::new(),
+                hidden: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_reload_leaves_the_thread_as_it_was() {
+        let (thread, replaced, problem) =
+            with_earlier(on_screen(), read(Some("Could not read it."), true));
+        assert!(!replaced);
+        assert_eq!(problem.as_deref(), Some("Could not read it."));
+        assert_eq!(thread, on_screen());
+    }
+
+    #[test]
+    fn a_resume_puts_the_read_before_this_runs_turns() {
+        let (thread, replaced, problem) = with_earlier(on_screen(), read(None, false));
+        assert!(!replaced);
+        assert_eq!(problem, None);
+        assert_eq!(
+            thread,
+            Thread {
+                turns: vec![
+                    pair("Fix it", "Fixed."),
+                    pair("Fix it", "Fixed."),
+                    pair("Now test it", "Tested."),
+                ],
+                title: "Fix it".to_string(),
+                prompt: "Now ship it".to_string(),
+                hidden: 2,
+            }
+        );
     }
 }

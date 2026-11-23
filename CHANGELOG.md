@@ -196,9 +196,9 @@ Notable changes to C-Harness. The format follows
   that move back fails or runs late, the app reads where the conversation is and tries again
   about once a second, for up to 15 seconds, before it reports a conversation left at the
   checkpoint. After a restore the thread is read again from omp, so it shows the same turns a
-  resume would, and a new prompt waits for that read. Usage and cost are not rewound, and no
-  model call is made. If the app closes between the code restore and omp saving the move, the
-  two can disagree after a resume; nothing detects that yet.
+  resume would, a new prompt waits for that read, and the transcript goes back to its end. Usage
+  and cost are not rewound, and no model call is made. If the app closes between the code restore
+  and omp saving the move, the two can disagree after a resume; nothing detects that yet.
 - `ch-core`: the transcript does not keep omp's `get_entries` requests or their answers.
 
 ### Fixed

@@ -262,18 +262,21 @@ impl SessionView {
             Phase::Live(live) => {
                 let before = follow::Shown::of(live.driver.session());
                 let pumped = live.driver.pump();
-                let (caught_up, history_problem) = live.catch_up();
+                let caught_up = live.catch_up();
                 let after = follow::Shown::of(live.driver.session());
                 self.follow.saw(before, after);
+                if caught_up.replaced {
+                    self.follow.reset();
+                }
                 let problems: Vec<String> = [
                     live.ledger.sync(live.driver.usage().rows()),
-                    history_problem,
+                    caught_up.problem,
                 ]
                 .into_iter()
                 .flatten()
                 .collect();
                 if problems.is_empty() {
-                    pumped || caught_up
+                    pumped || caught_up.changed
                 } else {
                     self.message = Some(Err(problems.join(" ")));
                     true

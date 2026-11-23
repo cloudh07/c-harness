@@ -128,7 +128,8 @@ commit the session began from.
   conversation is moved back. When omp is busy or slow with that move back, the app reads where
   the conversation is and tries again about once a second, for up to 15 seconds, before it
   reports a problem. After a restore the thread is read again from omp, so it shows the same
-  turns a resume would, and a new prompt waits for that read. Usage is not rewound.
+  turns a resume would, a new prompt waits for that read, and the transcript scrolls to its
+  end. Usage is not rewound.
 - Known limit: if C-Harness closes after the code is restored but before omp saves the moved
   conversation, the code stays at the checkpoint and the conversation reopens where it was.
   Nothing records this yet.
