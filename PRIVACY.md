@@ -92,7 +92,7 @@ C-Harness itself sends no telemetry, crash reports or update checks, and it has 
 ### Model test in first run
 
 - **Goes to:** Your model provider
-- **What:** One short prompt, "Reply with the single word ok.", with your model key. omp runs it with tools off, no session saved and its spending cap at $0.05. omp starts for it, so the rows above that happen when omp starts apply too.
+- **What:** One short prompt, "Reply with the single word ok.", with your model key. omp runs it with tools off, no session saved and its spending cap at $0.05. omp starts for it, so the rows above that happen when omp starts apply too. It runs in the system temp folder, which on Windows is inside your home folder, so skill descriptions found there can go with it.
 - **When:** Only when you press Test the model in first run.
 - **Why:** It checks that the key and the model answer before your first session.
 - **Turning it off:** Only when you choose. Don't press it. The other first-run checks only ask omp for its version.
