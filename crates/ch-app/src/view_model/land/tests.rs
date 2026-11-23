@@ -232,8 +232,8 @@ fn a_passed_check_with_no_diff_reads_unknown_and_does_not_block() {
     assert!(!checks.blocks);
     assert_eq!(
         checks.reason,
-        "`cargo test` passed in 1.5s. Take a fresh diff to match the check to the work as it is \
-         now."
+        "`cargo test` passed in 1.5s. Press Show diff or Refresh diff under Changes to match the \
+         check to the work as it is now."
     );
     assert_eq!(list.blocked(), None);
 }
@@ -335,6 +335,7 @@ fn a_prompt_after_the_diff_takes_the_pass_away() {
     };
     session.apply_action(&ClientAction::StartSent);
     feed(&mut session, r#"{"type":"ready"}"#);
+    session.apply_action(&ClientAction::DiffSent { id: "d1".into() });
     feed(
         &mut session,
         r#"{"type":"ch_diff_result","id":"d1","base":"abc","stat":"","patch":"","truncated":false,"tree":"t1"}"#,
@@ -528,7 +529,7 @@ fn failures_outside_the_land_do_not_touch_the_checklist() {
         None,
     );
     let checks = item(&list, "Checks");
-    assert!(checks.reason.contains("Take a fresh diff"), "{checks:?}");
+    assert!(checks.reason.contains("Press Show diff"), "{checks:?}");
     assert_eq!(item(&list, "Secret scan").mark, Mark::Unknown);
 }
 

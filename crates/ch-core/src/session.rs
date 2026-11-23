@@ -53,6 +53,9 @@ pub enum ClientAction {
     StopSent,
     /// `ch_land`. The runner stops omp itself before landing. Also the retry after a failed land.
     LandSent,
+    /// `ch_diff` of the working tree, under the id its reply echoes. A plain diff reply counts as
+    /// current only when it answers one of these and the agent has not started since.
+    DiffSent { id: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -123,8 +126,7 @@ pub struct Diff {
     pub tree: Option<String>,
 }
 
-/// The latest plain diff, and whether the agent has run since it was taken, so the work may no
-/// longer match it.
+/// The latest plain diff, and whether the agent may have changed the work after it was asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LatestDiff {
     diff: Diff,
@@ -179,6 +181,9 @@ pub struct Session {
     tool_calls: Vec<ToolCall>,
     evidence: Vec<Evidence>,
     last_diff: Option<LatestDiff>,
+    // Plain diffs asked for while the agent was not working, by request id. Starting the agent
+    // empties it, since the runner may write a diff's tree before or after the agent's edits.
+    diffs_asked: Vec<String>,
     turn_diff: Option<TurnDiff>,
     // `None` until the runner lists them, which it does only for a session worktree.
     checkpoints: Option<Vec<Checkpoint>>,
@@ -245,7 +250,7 @@ impl Session {
         self.last_diff.as_ref().map(|latest| &latest.diff)
     }
 
-    /// The latest diff of the working tree, unless the agent has run since it was taken.
+    /// The latest diff of the working tree, unless the agent has started since it was asked for.
     pub fn current_diff(&self) -> Option<&Diff> {
         self.last_diff
             .as_ref()
@@ -346,6 +351,11 @@ impl Session {
                 self.exit_expected = true;
                 self.clear_failure(LAND_STAGE);
             }
+            ClientAction::DiffSent { id } => {
+                if self.phase != Phase::Running {
+                    self.diffs_asked.push(id.clone());
+                }
+            }
         }
     }
 
@@ -400,6 +410,7 @@ impl Session {
             }),
             RunnerFrame::Evidence(evidence) => self.evidence.push(evidence.clone()),
             RunnerFrame::DiffResult {
+                id,
                 base,
                 from,
                 to,
@@ -407,7 +418,6 @@ impl Session {
                 patch,
                 truncated,
                 tree,
-                ..
             } => {
                 let diff = Diff {
                     base: base.clone(),
@@ -416,18 +426,7 @@ impl Session {
                     truncated: *truncated,
                     tree: tree.clone(),
                 };
-                if from.is_none() && to.is_none() {
-                    self.last_diff = Some(LatestDiff {
-                        diff,
-                        stale: self.phase == Phase::Running,
-                    });
-                } else {
-                    self.turn_diff = Some(TurnDiff {
-                        from: from.unwrap_or(0),
-                        to: *to,
-                        diff,
-                    });
-                }
+                self.on_diff(id, *from, *to, diff);
             }
             RunnerFrame::Checkpoints { checkpoints } => {
                 let mut list = Vec::new();
@@ -476,11 +475,14 @@ impl Session {
                 });
             }
             RunnerFrame::Error {
+                id,
                 stage,
                 message,
                 secret_scan,
-                ..
             } => {
+                if let Some(id) = id {
+                    self.diffs_asked.retain(|asked| asked != id);
+                }
                 let problem = Failure::from_runner(stage, message, secret_scan.as_ref());
                 // A line sent just before omp died is dropped, which says nothing new and must
                 // not replace why omp ended.
@@ -605,6 +607,22 @@ impl Session {
         }
     }
 
+    fn on_diff(&mut self, id: &str, from: Option<u32>, to: Option<u32>, diff: Diff) {
+        if from.is_some() || to.is_some() {
+            self.turn_diff = Some(TurnDiff {
+                from: from.unwrap_or(0),
+                to,
+                diff,
+            });
+            return;
+        }
+        let asked = self.diffs_asked.iter().position(|asked| asked == id);
+        self.last_diff = Some(LatestDiff {
+            diff,
+            stale: asked.map(|i| self.diffs_asked.swap_remove(i)).is_none(),
+        });
+    }
+
     fn on_ui_request(&mut self, frame: &Value) {
         if let Some(target) = withdrawn_approval(frame) {
             self.pending.retain(|r| r.id() != target);
@@ -621,6 +639,7 @@ impl Session {
     fn run(&mut self) {
         if self.is_live() {
             self.phase = Phase::Running;
+            self.diffs_asked.clear();
             if let Some(latest) = &mut self.last_diff {
                 latest.stale = true;
             }

@@ -203,7 +203,8 @@ Notable changes to C-Harness. The format follows
   against omp's totals that names each turn where they differ, without guessing why. `cargo run -p ch-core --example usage_report -- <usage folder>` prints
   the report, or says it was not run when no file holds a turn.
 - `ch-core`: a diff keeps the tree it shows, and `Session::current_diff` returns the latest diff
-  only while the agent has not run since it was taken. The diff view still shows the last one.
+  only when the app asked for it and the agent has not started since it asked. The diff view
+  still shows the last one.
 - `ch-app`: the Land section opens with a checklist: Checks, Secret scan, Branch and Pull
   request. Each reads pass, fail or unknown with the reason in words, and a screen reader reads
   the same. A passed check reads pass when it ran on the tree the current diff shows. With no
@@ -285,6 +286,11 @@ Notable changes to C-Harness. The format follows
 - `ch-app`: the transcript follows new output only while you are at the end. Scrolling up stops
   the follow, and Jump to latest (or End) brings you back. A reply that grows above where you are
   reading can still push the content below it down.
+- `ch-app`: a diff asked for in review that arrives after you sent a prompt and the agent
+  settled no longer counts as current, so the Checks row can't read pass on work that changed
+  after the diff was asked for.
+- `ch-app`: with no current diff, the Checks row names the button to press, Show diff or
+  Refresh diff under Changes, instead of asking for "a fresh diff".
 
 ### Security
 

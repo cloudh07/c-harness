@@ -275,7 +275,7 @@ fn runs_one_session_from_start_to_landed() {
         "patch":"+x","truncated":false}),
     );
     rig.pump_until("evidence and diff", |d, _| {
-        d.session().evidence().len() == 1 && d.session().last_diff().is_some()
+        d.session().evidence().len() == 1 && d.session().current_diff().is_some()
     });
 
     assert!(rig.driver.land(land_request()));

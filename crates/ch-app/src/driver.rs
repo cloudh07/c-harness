@@ -334,7 +334,8 @@ impl Driver {
             from: None,
             to: None,
         };
-        self.send_request(id, Request::Diff, &frame, None)
+        let asked = ClientAction::DiffSent { id: id.clone() };
+        self.send_request(id, Request::Diff, &frame, Some(asked))
     }
 
     pub fn stop(&mut self) -> bool {
