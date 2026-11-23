@@ -19,9 +19,11 @@ use serde_json::{Value, json};
 use crate::link::{Link, LinkEvent};
 
 mod checkpoints;
+mod cost;
 mod first_reply;
 mod history;
 
+pub use cost::CapReached;
 pub use first_reply::FIRST_REPLY_MS;
 use history::Earlier;
 pub use history::EarlierTurns;
@@ -123,6 +125,9 @@ pub struct Driver {
     first_reply: first_reply::FirstReply,
     /// The protocol the runner announced in its first hello. A later hello changes nothing.
     runner_protocol: Option<u32>,
+    /// The cost cap, in cents, the session reached and is held at.
+    cap_hit: Option<u32>,
+    marks: Vec<ch_core::LedgerMark>,
 }
 
 impl Driver {
@@ -149,6 +154,8 @@ impl Driver {
             saves: checkpoints::Saves::default(),
             first_reply: first_reply::FirstReply::default(),
             runner_protocol: None,
+            cap_hit: None,
+            marks: Vec::new(),
         }
     }
 
@@ -190,6 +197,11 @@ impl Driver {
     /// Whether a prompt sent now would start a run. A restore or the save of the last run
     /// must finish first, or the agent would work on a tree that is about to change.
     pub fn can_prompt(&self) -> bool {
+        self.cap_hit.is_none() && self.ready_for_prompt()
+    }
+
+    /// Whether a prompt could go out if the session were not held at its cost cap.
+    fn ready_for_prompt(&self) -> bool {
         if self.closed || self.omp != OmpState::Running || self.loading_history() {
             return false;
         }
@@ -433,6 +445,7 @@ impl Driver {
             }
             RunnerLine::Runner(_) => {}
         }
+        self.mark_ledger(line);
         if let (Some(kind), RunnerLine::Runner(frame)) = (answered, line) {
             match kind {
                 Request::Land => self.land_in_flight = false,

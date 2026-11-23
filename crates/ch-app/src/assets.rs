@@ -45,6 +45,7 @@ icons! {
     CircleAlert => "circle-alert",
     CircleCheck => "circle-check",
     CircleDashed => "circle-dashed",
+    CircleDollarSign => "circle-dollar-sign",
     CircleDot => "circle-dot",
     CircleX => "circle-x",
     Download => "download",

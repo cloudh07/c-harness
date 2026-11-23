@@ -159,9 +159,70 @@ Notable changes to C-Harness. The format follows
 - `ch-protocol`: `ch_land` takes `acknowledged_tree`, and `ch_error` can carry `secret_scan`:
   the tree that was scanned, up to 50 findings, how many more there were, and whether the
   change was too large to read.
+- `ch-app`: a first run in three steps, shown while setup is missing: the engine check, then
+  the repository and keys, then the verify command. Settings has "Run setup again".
+- The engine check runs `ch-runner preflight` where sessions run. It reports whether omp is on
+  the runner's `PATH` and new enough for `--approval-mode always-ask-cached`, and whether git
+  works in the folder. The app checks that the keychain can hold a key by writing and deleting
+  a throwaway entry, and that a model key is stored. Each check says pass, fail or not known,
+  and every failure has a one-line fix. A runner too old for the check says so and names the
+  install command with `--force`.
+- The model test sends one short prompt with tools off, through omp's print mode with
+  `--max-cost` set to $0.05. It runs only when you press its button, which states the cost
+  first; a request already sent can still cost more than the cap.
+- `ch-runner`: the verify command is guessed from the project files: `Cargo.toml` gives
+  `cargo test`, a `package.json` test script gives `npm test`, `pnpm test` or `yarn test` by
+  lockfile, `go.mod` gives `go test ./...`, and a `[tool.pytest]` table in `pyproject.toml`
+  gives `pytest`. Settings offers what it finds under the verify field. Picking one fills the
+  field only while it is empty, and a typed command is never replaced. The app drops any
+  suggestion that is not one of these six commands.
+- `ch-runner preflight` takes `--workdir` as optional. Without it only omp is checked, which
+  is how the engine check runs before a local repository is picked.
+- `ch-protocol`: runner protocol 4, with `PreflightReport` and `ModelTestRequest` for
+  `ch-runner preflight`. The request's `Debug` output hides the key.
+- `ch_diff_result` carries `tree`, the working tree as a git tree, for a diff that ends at the
+  working tree. It is written on a private index like the evidence trees, so it can be compared
+  with the last check's `tree_after` before Land. The user's index is untouched, and a runner
+  older than protocol 4, or one that could not write the tree, sends none.
+- `ch-app`: an optional cost cap per session in Settings, in dollars and off by default. It is
+  checked when a turn ends, so one long turn can go past it. Once the turns omp priced reach
+  it, an abort goes to the running prompt, the session says why, and no new prompt goes out
+  until you raise or clear the cap; the line under the prompt says so while the cap alone holds
+  it back. Turns omp could not price are not counted, and the header says how many there are.
+- `ch-app`: the session header shows the cost as its own item. A session with no priced turn
+  reads "Cost unknown", never $0, and turns omp could not price are named beside the sum
+  ("$0.12 + 2 unpriced turns"). With a cap set it reads "$1.50 of $5.00 cap", in the warning
+  color once the cap is reached.
+- `ch-app`: the usage file also keeps omp's own session totals after each turn and a line for
+  each passing Verify the app asked for. A check result the app did not ask for is not kept.
+- `ch-core`: the usage file read back as totals by token kind and by model, the cost up to each
+  session's last passing Verify (averaged over those sessions), and a check of the summed turns
+  against omp's totals that names each turn where they differ, without guessing why. `cargo run -p ch-core --example usage_report -- <usage folder>` prints
+  the report, or says it was not run when no file holds a turn.
+- `ch-core`: a diff keeps the tree it shows, and `Session::current_diff` returns the latest diff
+  only while the agent has not run since it was taken. The diff view still shows the last one.
+- `ch-app`: the Land section opens with a checklist: Checks, Secret scan, Branch and Pull
+  request. Each reads pass, fail or unknown with the reason in words, and a screen reader reads
+  the same. A passed check reads pass when it ran on the tree the current diff shows. With no
+  current diff, a diff on other work, or a runner that sent no tree, it reads unknown and says
+  what to do. The secret scan reads unknown until you press Land, because the runner scans
+  during the land. The GitHub token is checked when you press Land. Below the list are the pull
+  request title and the start of its description. They are not edited in the app; edit them on
+  GitHub once the pull request is open.
 
 ### Changed
 
+- `ch-app`: Land is off while a checklist item blocks it: the last check failed or timed out,
+  the work changed while the check ran, the runner never recorded which work it checked, the
+  runner is too old to scan, the branch name is one git refuses or is the base branch, or the
+  Landing settings are not finished. A session where no check has run still lands, and its pull
+  request says so. A refused secret scan still leaves Land anyway. Once the runner has refused a
+  land, for secrets or anything else, a bad check no longer blocks the next try, since checks
+  only run in review; the pull request says what the check found. While the agent still works,
+  the section says Land waits for review.
+- `ch-app`: the header shows the share of input read from the cache (`99% cached`) instead
+  of the cached token count. When some turns went uncounted, the share is of the counted ones
+  and marked `~`.
 - `ch-runtime`: local worktrees are created locked, with the reason
   `c-harness session <session>`, at the commit their record names. `git worktree prune` no
   longer drops a session whose folder went missing; removing the session still does. Local
@@ -228,6 +289,9 @@ Notable changes to C-Harness. The format follows
   Settings does not offer that mode.
 - The host overlay turns omp's memory off (`memory.backend: "off"`), so omp keeps nothing of
   its own between sessions.
+- The host overlay pins omp's `ask.timeout` to 0, so a question from the agent waits for you.
+  With a timeout set in your own omp config, omp would pick the recommended answer after that
+  many seconds, and deny an approval nobody answered.
 - Verify evidence names the work it ran on: `ch-runner` writes the working tree as a git tree
   (on a private index) when the command starts and when it ends, and sends both as
   `tree_before` and `tree_after`. Land is refused, with the reason, when the work changed while

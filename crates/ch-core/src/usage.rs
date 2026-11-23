@@ -98,6 +98,49 @@ pub struct UsageTotals {
     pub tokens_complete: bool,
     /// Every turn had a known cost.
     pub cost_complete: bool,
+    /// Turns without a known cost. No cost total, and so no cost cap, counts them.
+    pub unpriced_turns: u32,
+}
+
+impl UsageTotals {
+    /// Sums `rows`. With no rows, nothing counts as complete.
+    pub fn of<'a>(rows: impl IntoIterator<Item = &'a UsageRow>) -> Self {
+        let mut totals = Self {
+            tokens_complete: true,
+            cost_complete: true,
+            ..Self::default()
+        };
+        for row in rows {
+            totals.turns = totals.turns.saturating_add(1);
+            totals.input = totals.input.saturating_add(row.input.unwrap_or(0));
+            totals.output = totals.output.saturating_add(row.output.unwrap_or(0));
+            totals.cache_read = totals
+                .cache_read
+                .saturating_add(row.cache_read.unwrap_or(0));
+            totals.cache_write = totals
+                .cache_write
+                .saturating_add(row.cache_write.unwrap_or(0));
+            match row.cost_usd {
+                Some(cost) => totals.cost_usd = Some(totals.cost_usd.unwrap_or(0.0) + cost),
+                None => totals.unpriced_turns = totals.unpriced_turns.saturating_add(1),
+            }
+            totals.tokens_complete &= row.status == UsageStatus::Complete;
+            totals.cost_complete &= row.cost_usd.is_some();
+        }
+        if totals.turns == 0 {
+            totals.tokens_complete = false;
+            totals.cost_complete = false;
+        }
+        totals
+    }
+
+    /// The share of input read from the cache, `cache_read / (input + cache_read)`, as a
+    /// percent rounded to the nearest whole one. `None` when neither count was reported.
+    pub fn cache_percent(&self) -> Option<u64> {
+        let read = u128::from(self.input) + u128::from(self.cache_read);
+        let percent = (u128::from(self.cache_read) * 100 + read / 2).checked_div(read)?;
+        Some(u64::try_from(percent).unwrap_or(100))
+    }
 }
 
 /// The rows of one session, in turn order.
@@ -127,32 +170,7 @@ impl Usage {
     }
 
     pub fn totals(&self) -> UsageTotals {
-        let mut totals = UsageTotals {
-            turns: u32::try_from(self.rows.len()).unwrap_or(u32::MAX),
-            tokens_complete: true,
-            cost_complete: true,
-            ..UsageTotals::default()
-        };
-        for row in &self.rows {
-            totals.input = totals.input.saturating_add(row.input.unwrap_or(0));
-            totals.output = totals.output.saturating_add(row.output.unwrap_or(0));
-            totals.cache_read = totals
-                .cache_read
-                .saturating_add(row.cache_read.unwrap_or(0));
-            totals.cache_write = totals
-                .cache_write
-                .saturating_add(row.cache_write.unwrap_or(0));
-            if let Some(cost) = row.cost_usd {
-                totals.cost_usd = Some(totals.cost_usd.unwrap_or(0.0) + cost);
-            }
-            totals.tokens_complete &= row.status == UsageStatus::Complete;
-            totals.cost_complete &= row.cost_usd.is_some();
-        }
-        if self.rows.is_empty() {
-            totals.tokens_complete = false;
-            totals.cost_complete = false;
-        }
-        totals
+        UsageTotals::of(&self.rows)
     }
 }
 
@@ -322,6 +340,33 @@ mod tests {
         assert_eq!(gaps.cost_usd, Some(0.25));
         assert!(!gaps.tokens_complete);
         assert!(!gaps.cost_complete);
+        assert_eq!((clean.unpriced_turns, gaps.unpriced_turns), (0, 2));
+    }
+
+    fn counts(input: Option<u64>, cache_read: Option<u64>) -> UsageRow {
+        let mut row = UsageRow::from_turn_end(1, 1, &turn_end("stop", &priced(1, 1, 0.0)));
+        row.input = input;
+        row.cache_read = cache_read;
+        row
+    }
+
+    #[test]
+    fn cache_share_is_cached_over_all_input_read() {
+        let share = |rows: &[UsageRow]| UsageTotals::of(rows).cache_percent();
+        assert_eq!(share(&[]), None, "no turns");
+        assert_eq!(share(&[counts(Some(0), Some(0))]), None, "zero counts");
+        assert_eq!(share(&[counts(None, None)]), None, "missing counts");
+        assert_eq!(share(&[counts(Some(100), Some(0))]), Some(0));
+        assert_eq!(
+            share(&[counts(None, Some(100))]),
+            Some(100),
+            "input missing"
+        );
+        assert_eq!(share(&[counts(Some(1), Some(3))]), Some(75));
+        assert_eq!(share(&[counts(Some(999), Some(1))]), Some(0), "rounds down");
+        assert_eq!(share(&[counts(Some(1), Some(199))]), Some(100), "rounds up");
+        let max = counts(Some(u64::MAX), Some(u64::MAX));
+        assert_eq!(share(&[max.clone(), max]), Some(50), "no overflow");
     }
 
     #[test]

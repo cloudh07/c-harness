@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use ch_protocol::preflight::{MODEL_TEST_MAX_COST, ModelTest};
 use ch_protocol::runner::{RUNNER_FRAME_PREFIX, RunnerFrame, StartSession};
 use ch_protocol::{
     ANTHROPIC_PROVIDER, LineSplitter, SUBSCRIPTION_TOKEN_ENV, parse_disabled_providers,
@@ -26,6 +27,10 @@ use crate::tail::cut_head;
 const STDERR_LINES: usize = 50;
 const STDERR_LINE_BYTES: usize = 2048;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// A model's first reply can take a while when the provider is busy.
+const MODEL_TEST_TIMEOUT: Duration = Duration::from_secs(90);
+const MODEL_TEST_PROMPT: &str = "Reply with the single word ok.";
+const MODEL_TEST_DETAIL_CHARS: usize = 300;
 const PROBE_OUTPUT_BYTES: u64 = 64 * 1024;
 const JOIN_WAIT: Duration = Duration::from_secs(2);
 const READ_BUFFER: usize = 8192;
@@ -61,7 +66,7 @@ pub fn check_start(start: &StartSession) -> Result<&str, String> {
     Ok(mode)
 }
 
-fn check_env(env: &BTreeMap<String, String>) -> Result<(), String> {
+pub fn check_env(env: &BTreeMap<String, String>) -> Result<(), String> {
     for (name, value) in env {
         if name.is_empty() || name.contains(['=', '\0']) {
             return Err(format!(
@@ -206,6 +211,66 @@ fn probe(
     workdir: &Path,
     env: &BTreeMap<String, String>,
 ) -> Option<ProbeAnswer> {
+    run_capped(program, args, workdir, env, PROBE_TIMEOUT).ok()
+}
+
+/// Asks the model for one word through omp's print mode, with tools off and omp's spending
+/// cap set. The provider bills the key for this.
+pub fn test_model(
+    program: &OsStr,
+    workdir: &Path,
+    env: &BTreeMap<String, String>,
+    model: Option<&str>,
+    host_overlay: &Path,
+) -> ModelTest {
+    let mut args: Vec<OsString> = vec![
+        "-p".into(),
+        "--no-session".into(),
+        "--no-tools".into(),
+        format!("--max-cost={MODEL_TEST_MAX_COST}").into(),
+    ];
+    if let Some(model) = model {
+        args.extend(["--model".into(), model.into()]);
+    }
+    args.extend([
+        "--config".into(),
+        host_overlay.as_os_str().to_owned(),
+        MODEL_TEST_PROMPT.into(),
+    ]);
+    let (answered, detail) = match run_capped(program, &args, workdir, env, MODEL_TEST_TIMEOUT) {
+        Err(e) => (false, e),
+        Ok(answer) if answer.success => match last_line(&answer.stdout) {
+            Some(line) => (true, line.to_owned()),
+            None => (false, "omp exited without an answer".to_owned()),
+        },
+        Ok(answer) => {
+            let said = last_line(&answer.stderr).or_else(|| last_line(&answer.stdout));
+            (
+                false,
+                said.unwrap_or("omp failed and printed nothing").to_owned(),
+            )
+        }
+    };
+    // Scrubbed before it is cut, so a cut never leaves part of a key behind.
+    let detail = Scrubber::for_env(env.values()).scrub(&detail);
+    ModelTest {
+        answered,
+        detail: detail.chars().take(MODEL_TEST_DETAIL_CHARS).collect(),
+    }
+}
+
+fn last_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).rfind(|line| !line.is_empty())
+}
+
+/// Runs `omp <args>` to completion with the session's environment minus subscription logins.
+fn run_capped<S: AsRef<OsStr>>(
+    program: &OsStr,
+    args: &[S],
+    workdir: &Path,
+    env: &BTreeMap<String, String>,
+    limit: Duration,
+) -> Result<ProbeAnswer, String> {
     let mut command = proc_tree::command(program);
     proc_tree::own_group(&mut command);
     command.args(args).current_dir(workdir).envs(env);
@@ -217,16 +282,25 @@ fn probe(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .ok()?;
-    let stdout = read_capped(child.stdout.take()?);
-    let stderr = read_capped(child.stderr.take()?);
-    let Ok(Some(status)) = proc_tree::wait_for(&mut child, PROBE_TIMEOUT) else {
+        .map_err(|e| format!("omp could not start: {e}"))?;
+    let unreadable = || "omp's output could not be read".to_owned();
+    let stdout = read_capped(child.stdout.take().ok_or_else(unreadable)?);
+    let stderr = read_capped(child.stderr.take().ok_or_else(unreadable)?);
+    let Ok(Some(status)) = proc_tree::wait_for(&mut child, limit) else {
         let _ = proc_tree::kill_tree(&mut child);
-        return None;
+        return Err(format!(
+            "omp did not finish within {} seconds",
+            limit.as_secs()
+        ));
     };
-    let stdout = proc_tree::join_within(stdout, JOIN_WAIT)?.ok()?;
-    let stderr = proc_tree::join_within(stderr, JOIN_WAIT)?.ok()?;
-    Some(ProbeAnswer {
+    let read = |pipe| {
+        proc_tree::join_within(pipe, JOIN_WAIT)
+            .and_then(Result::ok)
+            .ok_or_else(unreadable)
+    };
+    let stdout = read(stdout)?;
+    let stderr = read(stderr)?;
+    Ok(ProbeAnswer {
         success: status.success(),
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),

@@ -11,8 +11,8 @@ use gpui_kit::{
 use super::{Phase, SessionView, header_status};
 use crate::assets::{Icon, icon, status_icon};
 use crate::view_model::{
-    Place, Sandbox, branch_for, context_label, context_near_full, elide_middle, live_title,
-    session_title, usage_label,
+    Place, Sandbox, branch_for, context_label, context_near_full, cost_label, elide_middle,
+    live_title, session_title, usage_label,
 };
 use crate::widgets::{MONO, Tone, icon_button};
 
@@ -122,17 +122,23 @@ impl SessionView {
         }
     }
 
-    /// The line under the title: state, repository, branch and, once a turn ends, usage and
-    /// context, the context drawn as a warning when the window is nearly full.
+    /// The line under the title: state, repository, branch and, once a turn ends, usage, cost
+    /// and context. The cost is drawn as a warning once it reaches the cap, the context when the
+    /// window is nearly full.
     fn meta(&self, color: u32, label: &'static str, repo: &str, branch: Option<String>) -> Div {
         let p = self.palette;
-        let (usage, context, near_full) = match &self.phase {
-            Phase::Live(live) => (
-                usage_label(&live.driver.usage().totals()),
-                context_label(live.driver.context()),
-                context_near_full(live.driver.context()),
-            ),
-            _ => (None, None, false),
+        let (usage, cost, capped, context, near_full) = match &self.phase {
+            Phase::Live(live) => {
+                let totals = live.driver.usage().totals();
+                (
+                    usage_label(&totals),
+                    cost_label(&totals, self.settings.cost_cap_cents),
+                    live.driver.cap_hit().is_some(),
+                    context_label(live.driver.context()),
+                    context_near_full(live.driver.context()),
+                )
+            }
+            _ => (None, None, false, None, false),
         };
         div()
             .flex()
@@ -162,6 +168,13 @@ impl SessionView {
             .when_some(usage, |row, usage| {
                 row.child(dot(p.text_faint))
                     .child(meta_item(p, Icon::Sparkles, usage, None))
+            })
+            .when_some(cost, |row, cost| {
+                row.child(dot(p.text_faint)).child(
+                    meta_item(p, Icon::CircleDollarSign, cost, None).when(capped, |item| {
+                        item.text_color(rgb(p.status(Status::NearCap)))
+                    }),
+                )
             })
             .when_some(context, |row, context| {
                 row.child(dot(p.text_faint)).child(
