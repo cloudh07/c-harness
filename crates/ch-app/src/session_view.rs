@@ -29,7 +29,9 @@ use crate::driver::{self, Driver};
 use crate::launch::{self, Launched, Resumed, Runner};
 use crate::ledger::Ledger;
 use crate::settings::{self, Problem, Settings};
-use crate::view_model::{Place, land_request, session_id, state_label, transcript_file_name};
+use crate::view_model::{
+    Place, checklist, land_request, session_id, state_label, transcript_file_name,
+};
 use crate::widgets::{Tone, banner, icon_button};
 use leftovers::Leftovers;
 
@@ -487,12 +489,20 @@ impl SessionView {
         if !live.driver.can_land() {
             return Ok(());
         }
-        let problems = self.settings.land_problems();
-        if !problems.is_empty() {
-            return Err(format!(
-                "Finish the Landing settings first. {}",
-                list(&problems)
-            ));
+        // Unfinished Landing settings block here too, through the Pull request row.
+        let session = live.driver.session();
+        let blocked = checklist(
+            &self.settings,
+            &live.session,
+            &live.first_prompt,
+            session.evidence(),
+            session.current_diff(),
+            session.failure(),
+            live.driver.runner_block(),
+        )
+        .blocked();
+        if let Some(reason) = blocked {
+            return Err(format!("Land is off. {reason}"));
         }
         let token = Vault::os()
             .get(&SecretName::github())

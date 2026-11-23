@@ -1,12 +1,12 @@
 //! The review panel on the right: what changed, whether the checks pass, and the land.
 
+mod checklist;
 mod checkpoints;
 
 use std::time::Duration;
 
 use ch_core::{Diff, Landing};
 use ch_protocol::runner::SecretScan;
-use ch_runtime::RUNNER_INSTALL_COMMAND;
 use ch_ui::{Palette, Status};
 use gpui_kit::{
     Animation, AnimationElement, AnimationExt, App, ClickEvent, Context, Div, InteractiveElement,
@@ -14,12 +14,11 @@ use gpui_kit::{
     div, ease_out_quint, px, rgb,
 };
 
-use super::{Live, OpenSettings, SessionView, list};
+use super::{Live, OpenSettings, SessionView};
 use crate::assets::{Icon, icon};
-use crate::driver::RunnerBlock;
 use crate::view_model::{
-    branch_for, check_outcome, check_passed, diff_files, diff_totals, elide_middle, first_chars,
-    pr_link_allowed, secret_rows,
+    LAND_STAGE, branch_for, check_outcome, check_passed, checklist, diff_files, diff_totals,
+    elide_middle, first_chars, pr_link_allowed, secret_rows,
 };
 use crate::widgets::{MONO, Tone, button, eyebrow, icon_text_button, muted};
 
@@ -30,13 +29,11 @@ const SHOWN_SECRETS: usize = 6;
 /// Characters of `path:line` a finding row shows before it drops the middle, so the line number
 /// stays in view.
 const PLACE_LIMIT: usize = 34;
-/// The runner stage a refused land reports, which is the one the findings belong to.
-const LAND_STAGE: &str = "land";
-/// The findings fade in after a refused land so the change in the panel reads as the answer to
-/// the click. GPUI shows the end state at once when reduce motion is set.
-const FINDINGS_FADE: Duration = Duration::from_millis(200);
-/// The findings start this visible, so reading them never waits on the fade.
-const FINDINGS_FLOOR: f32 = 0.25;
+/// What a land changes fades in, so the change in the panel reads as the answer to the click.
+/// GPUI shows the end state at once when reduce motion is set.
+const FADE: Duration = Duration::from_millis(200);
+/// Faded parts start this visible, so reading them never waits on the fade.
+const FADE_FLOOR: f32 = 0.25;
 const SHORT_COMMIT: usize = 12;
 const ROW_ICON: f32 = 14.0;
 
@@ -163,10 +160,18 @@ impl SessionView {
         if let Some(landing) = driver.session().landing() {
             return section.child(landed(p, landing, &self.settings.github_repo));
         }
-        let problems = self.settings.land_problems();
-        let can_land = driver.can_land() && problems.is_empty();
-        let refused = driver
-            .session()
+        let session = driver.session();
+        let list = checklist(
+            &self.settings,
+            &live.session,
+            &live.first_prompt,
+            session.evidence(),
+            session.current_diff(),
+            session.failure(),
+            driver.runner_block(),
+        );
+        let can_land = driver.can_land() && list.blocked().is_none();
+        let refused = session
             .failure()
             .filter(|failure| failure.stage == LAND_STAGE)
             .and_then(|failure| failure.secret_scan.as_ref());
@@ -174,52 +179,23 @@ impl SessionView {
             Some("Landing. The agent is stopped first, then the runner commits and pushes.")
         } else if driver.stopping() {
             Some("Stopping the agent.")
+        } else if !driver.closed() && !driver.can_land() && driver.runner_block().is_none() {
+            // The checklist can pass while the agent still works, so say why Land waits.
+            Some("Land is off until the session is ready for review.")
         } else {
             None
         };
-        let s = &self.settings;
-        let detail = if problems.is_empty() {
-            muted(
-                p,
-                format!(
-                    "Commits as {}, pushes {}, and opens a pull request into {} on {}.",
-                    s.author_name.trim(),
-                    branch_for(&live.session),
-                    s.base_branch.trim(),
-                    s.github_repo.trim(),
-                ),
-            )
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .items_start()
-                .gap_2()
-                .child(muted(p, format!("Before landing: {}", list(&problems))))
-                .child(
-                    button(p, "land-settings", "Open Settings", Tone::Plain, true)
-                        .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(OpenSettings))),
-                )
-        };
-        let runner_note = driver.runner_block().map(|block| {
-            let why = match block {
-                RunnerBlock::Outdated => "This ch-runner is too old to scan a land for secrets",
-                RunnerBlock::Silent => {
-                    "This ch-runner never said which version it is and may not scan a land for \
-                     secrets"
-                }
-            };
-            muted(
-                p,
-                format!(
-                    "{why}, so landing is off. Reinstall it where the session runs with \
-                     `{RUNNER_INSTALL_COMMAND} --force`, then start the session again."
-                ),
+        let settings = (!self.settings.land_problems().is_empty()).then(|| {
+            start(
+                button(p, "land-settings", "Open Settings", Tone::Plain, true)
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(OpenSettings))),
             )
         });
         section
+            .child(checklist::checklist_rows(p, &list))
+            .children(settings)
             .children(refused.map(|scan| self.secret_findings(scan, can_land, cx)))
-            .children(runner_note)
+            .child(checklist::pr_preview(p, &list))
             .child(
                 icon_text_button(
                     p,
@@ -234,7 +210,6 @@ impl SessionView {
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.land(cx))),
             )
             .children(busy.map(|text| muted(p, text)))
-            .child(detail)
     }
 
     /// What the secret scan found in a refused land: where each hit is and what it looks like,
@@ -304,8 +279,8 @@ impl SessionView {
             ))
             .with_animation(
                 SharedString::from(format!("secret-findings-{}", scan.tree)),
-                Animation::new(FINDINGS_FADE).with_easing(ease_out_quint()),
-                |findings, delta| findings.opacity(FINDINGS_FLOOR + (1.0 - FINDINGS_FLOOR) * delta),
+                Animation::new(FADE).with_easing(ease_out_quint()),
+                |findings, delta| findings.opacity(FADE_FLOOR + (1.0 - FADE_FLOOR) * delta),
             )
     }
 }

@@ -340,6 +340,7 @@ fn records_evidence_diffs_and_notices() {
             stat: "2 files".into(),
             patch: "+y".into(),
             truncated: true,
+            tree: None,
         })
     );
     assert_eq!(session.state(), SessionState::Running);
@@ -482,3 +483,4 @@ fn a_land_error_that_only_mentions_secrets_stays_permanent() {
 mod checkpoints;
 mod empty_run;
 mod retry;
+mod work_tree;

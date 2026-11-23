@@ -118,6 +118,17 @@ pub struct Diff {
     pub stat: String,
     pub patch: String,
     pub truncated: bool,
+    /// The working tree the diff shows, as a git tree. `None` when the runner could not write it
+    /// or is too old to send it.
+    pub tree: Option<String>,
+}
+
+/// The latest plain diff, and whether the agent has run since it was taken, so the work may no
+/// longer match it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LatestDiff {
+    diff: Diff,
+    stale: bool,
 }
 
 /// The latest diff over a range of checkpoints.
@@ -167,7 +178,7 @@ pub struct Session {
     reply: String,
     tool_calls: Vec<ToolCall>,
     evidence: Vec<Evidence>,
-    last_diff: Option<Diff>,
+    last_diff: Option<LatestDiff>,
     turn_diff: Option<TurnDiff>,
     // `None` until the runner lists them, which it does only for a session worktree.
     checkpoints: Option<Vec<Checkpoint>>,
@@ -231,7 +242,15 @@ impl Session {
     }
 
     pub fn last_diff(&self) -> Option<&Diff> {
-        self.last_diff.as_ref()
+        self.last_diff.as_ref().map(|latest| &latest.diff)
+    }
+
+    /// The latest diff of the working tree, unless the agent has run since it was taken.
+    pub fn current_diff(&self) -> Option<&Diff> {
+        self.last_diff
+            .as_ref()
+            .filter(|latest| !latest.stale)
+            .map(|latest| &latest.diff)
     }
 
     pub fn turn_diff(&self) -> Option<&TurnDiff> {
@@ -311,7 +330,7 @@ impl Session {
                 self.clear_failure(LAND_STAGE);
                 self.retrying = None;
                 if self.is_live() {
-                    self.phase = Phase::Running;
+                    self.run();
                     self.reply.clear();
                     self.reply_mark = 0;
                     self.run_tools = Some(self.tool_calls.len());
@@ -387,6 +406,7 @@ impl Session {
                 stat,
                 patch,
                 truncated,
+                tree,
                 ..
             } => {
                 let diff = Diff {
@@ -394,9 +414,13 @@ impl Session {
                     stat: stat.clone(),
                     patch: patch.clone(),
                     truncated: *truncated,
+                    tree: tree.clone(),
                 };
                 if from.is_none() && to.is_none() {
-                    self.last_diff = Some(diff);
+                    self.last_diff = Some(LatestDiff {
+                        diff,
+                        stale: self.phase == Phase::Running,
+                    });
                 } else {
                     self.turn_diff = Some(TurnDiff {
                         from: from.unwrap_or(0),
@@ -597,6 +621,9 @@ impl Session {
     fn run(&mut self) {
         if self.is_live() {
             self.phase = Phase::Running;
+            if let Some(latest) = &mut self.last_diff {
+                latest.stale = true;
+            }
         }
     }
 
