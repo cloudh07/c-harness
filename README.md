@@ -179,8 +179,10 @@ held against them.
    vendor allows it, and the cloud. C-Harness sells no tokens and never sits on your bill.
 2. **Keys stay with you.** Credentials live in the OS keychain. A key goes only into your own
    sandbox, one session at a time, and is wiped when the sandbox ends.
-3. **No telemetry by default.** Nothing is collected unless you turn it on, and the list of
-   events is published.
+3. **No telemetry from C-Harness.** The app collects nothing and has no HTTP client of its
+   own. omp, the agent it runs, keeps a few network features on by default.
+   [PRIVACY.md](PRIVACY.md) lists everything that leaves your machine, and Settings shows the
+   same list.
 4. **Cost is always visible.** Each session shows tokens, estimated cost and sandbox time. You
    can cap spending per session and per day.
 5. **Leaving is easy.** Tasks, transcripts and settings export to open formats. Your work lives
