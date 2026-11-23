@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use ch_protocol::SUBSCRIPTION_TOKEN_ENV;
 use ch_protocol::runner::{Evidence, MAX_OUTPUT_TAIL_BYTES};
 
-use crate::proc_tree;
 use crate::tail::TailBuffer;
+use ch_proc as proc_tree;
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
 

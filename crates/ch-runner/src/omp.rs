@@ -20,9 +20,9 @@ use ch_protocol::{
 use serde_json::Value;
 
 use crate::out::Out;
-use crate::proc_tree;
 use crate::scrub::Scrubber;
 use crate::tail::cut_head;
+use ch_proc as proc_tree;
 
 const STDERR_LINES: usize = 50;
 const STDERR_LINE_BYTES: usize = 2048;

@@ -319,6 +319,11 @@ Notable changes to C-Harness. The format follows
 - What leaves this machine: the row for commands the agent runs no longer says your approval
   mode can let them run without asking, since both Approvals choices ask before each command.
   What can is approving a tool for the session, and the row now says so.
+- `ch-runtime`: a setup check that runs out of time now ends the omp and git it started too,
+  not only the runner. On a machine reached over SSH it still ends only the local `ssh`.
+- `ch-runner`: stopping a step that runs too long also ends children that moved to a process
+  group of their own on macOS and Linux. The code that does this now lives in `ch-proc`, which
+  `ch-runtime` shares.
 
 ### Security
 

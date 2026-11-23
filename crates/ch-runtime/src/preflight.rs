@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -81,8 +81,8 @@ pub(crate) fn timed_out(location: &str, limit: Duration) -> RuntimeError {
 }
 
 /// Runs `command` with `body` on its stdin, or with no stdin, and keeps the first
-/// [`MAX_OUTPUT_BYTES`] of each output. `None` means it was still running at `limit` and
-/// was killed.
+/// [`MAX_OUTPUT_BYTES`] of each output. `None` means it was still running at `limit`, and it
+/// and everything it started were ended.
 pub(crate) fn output(
     mut command: Command,
     body: Option<&[u8]>,
@@ -93,6 +93,7 @@ pub(crate) fn output(
     } else {
         Stdio::null()
     };
+    ch_proc::own_group(&mut command);
     let mut child = command
         .stdin(stdin)
         .stdout(Stdio::piped())
@@ -109,10 +110,10 @@ pub(crate) fn output(
     }
     let stdout = child.stdout.take().map(Capture::start);
     let stderr = child.stderr.take().map(Capture::start);
-    let Some(status) = wait_until(&mut child, Instant::now() + limit)? else {
-        // Fails only when it exited in between; the wait reaps it either way.
-        let _ = child.kill();
-        child.wait()?;
+    let Some(status) = ch_proc::wait_for(&mut child, limit)? else {
+        // The runner starts omp and git in groups of their own, so ending the runner alone
+        // would leave them running. Over SSH this ends the local ssh client only.
+        let _ = ch_proc::kill_tree(&mut child);
         return Ok(None);
     };
     let pipes_close_by = Instant::now() + PIPE_WAIT;
@@ -121,18 +122,6 @@ pub(crate) fn output(
         stdout: stdout.map(|c| c.finish(pipes_close_by)).unwrap_or_default(),
         stderr: stderr.map(|c| c.finish(pipes_close_by)).unwrap_or_default(),
     }))
-}
-
-fn wait_until(child: &mut Child, deadline: Instant) -> io::Result<Option<ExitStatus>> {
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
-        }
-        if Instant::now() >= deadline {
-            return Ok(None);
-        }
-        thread::sleep(POLL);
-    }
 }
 
 /// One output pipe, read on its own thread into a capped buffer.
@@ -204,6 +193,9 @@ pub(crate) fn report(location: &str, output: &Output) -> Result<PreflightReport,
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::path::PathBuf;
+
     use super::*;
     use crate::test_support::output as finished;
 
@@ -241,6 +233,7 @@ mod tests {
     }
 
     const CHILD_ROLE: &str = "CH_RUNTIME_PREFLIGHT_CHILD";
+    const LOCK_FILE: &str = "CH_RUNTIME_PREFLIGHT_LOCK";
 
     /// A no-op as a test. The tests below run this binary again with only this test selected
     /// and `CHILD_ROLE` set, to get a child that misbehaves on every platform.
@@ -253,6 +246,26 @@ mod tests {
                 io::stdout().write_all(&block).unwrap();
                 io::stderr().write_all(&block).unwrap();
             }
+            // A runner that has started omp or git, each in a group of its own.
+            Ok("runner") => {
+                let mut omp = child("omp");
+                ch_proc::own_group(&mut omp);
+                omp.stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap()
+                    .wait()
+                    .unwrap();
+            }
+            // Holds a lock for as long as it lives, so the test can tell when it is gone.
+            Ok("omp") => {
+                let path = PathBuf::from(std::env::var_os(LOCK_FILE).unwrap());
+                let file = File::create(&path).unwrap();
+                file.lock().unwrap();
+                File::create(started(&path)).unwrap();
+                thread::sleep(Duration::from_secs(30));
+            }
             _ => {}
         }
     }
@@ -263,6 +276,26 @@ mod tests {
             .args(["--exact", "preflight::tests::child_helper", "--nocapture"])
             .env(CHILD_ROLE, role);
         command
+    }
+
+    fn started(lock: &Path) -> PathBuf {
+        lock.with_extension("started")
+    }
+
+    #[test]
+    fn a_check_still_running_at_the_limit_ends_what_the_runner_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("held");
+        let mut runner = child("runner");
+        runner.env(LOCK_FILE, &lock);
+        let output = output(runner, None, Duration::from_secs(5)).unwrap();
+        assert!(output.is_none());
+        assert!(started(&lock).exists(), "omp had not started by the limit");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !File::open(&lock).is_ok_and(|file| file.try_lock().is_ok()) {
+            assert!(Instant::now() < deadline, "omp outlived the check");
+            thread::sleep(POLL);
+        }
     }
 
     #[test]

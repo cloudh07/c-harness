@@ -11,10 +11,10 @@ a git host) and to your own runner.
 ch-app ──> ch-ui
    │
    ├────> ch-core ─────> ch-protocol
-   ├────> ch-runtime ──> ch-protocol
+   ├────> ch-runtime ──> ch-protocol, ch-proc
    └────> ch-vault
 
-ch-runner ──> ch-core, ch-protocol   (separate binary, runs next to omp)
+ch-runner ──> ch-core, ch-protocol, ch-proc   (separate binary, runs next to omp)
 ```
 
 | Crate | Owns | I/O |
@@ -25,6 +25,7 @@ ch-runner ──> ch-core, ch-protocol   (separate binary, runs next to omp)
 | `ch-core` | Session state machine, approval parsing that fails closed, risk hints, transcript records, secret redaction | none |
 | `ch-runtime` | `SandboxProvider`: a local detached worktree, or a host over the system `ssh` | processes |
 | `ch-runner` | Starts omp, forwards its frames, runs verify, builds the diff, stops the agent, lands the branch | processes, git, curl |
+| `ch-proc` | Starts a child in a process group of its own and ends the whole tree below it | processes |
 | `ch-vault` | Keys and tokens in the OS keychain | keychain |
 
 Three rules hold across the workspace:
@@ -34,8 +35,9 @@ Three rules hold across the workspace:
 - **GPUI comes from `gpui-kit` only.** `gpui-kit` pins the `gpui-pre` crate family. Adding
   `gpui` or `gpui-pre` next to it would put two copies of the framework in the build.
 - **`ch-runner` depends on nothing heavy.** It runs on machines you don't control, so it is
-  `std`, `serde`, `ch-protocol` and `ch-core` (pure logic, no I/O), plus the `git` and `curl`
-  already on the machine. Anything added to `ch-core` ships in the runner too.
+  `std`, `serde`, `ch-protocol` and `ch-core` (pure logic, no I/O), `ch-proc` (`std` only),
+  plus the `git` and `curl` already on the machine. Anything added to `ch-core` or `ch-proc`
+  ships in the runner too.
 
 ## One stream, two kinds of frame
 

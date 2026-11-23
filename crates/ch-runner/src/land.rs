@@ -11,10 +11,10 @@ use ch_protocol::runner::{GitAuthor, LandRequest, SecretScan};
 use crate::base64;
 use crate::git::{self, Base, Git};
 use crate::pr::{PrOpener, PrRequest};
-use crate::proc_tree;
 use crate::scratch::PrivateDir;
 use crate::secret_scan;
 use crate::verify::Checked;
+use ch_proc as proc_tree;
 
 /// The one place a land sends a token. Any other host, or a local path, lands without one.
 const GITHUB_PREFIX: &str = "https://github.com/";

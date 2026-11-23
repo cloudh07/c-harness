@@ -806,6 +806,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ch-proc"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "ch-protocol"
 version = "0.1.0"
 dependencies = [
@@ -819,6 +826,7 @@ name = "ch-runner"
 version = "0.1.0"
 dependencies = [
  "ch-core",
+ "ch-proc",
  "ch-protocol",
  "serde",
  "serde_json",
@@ -829,6 +837,7 @@ dependencies = [
 name = "ch-runtime"
 version = "0.1.0"
 dependencies = [
+ "ch-proc",
  "ch-protocol",
  "serde",
  "serde_json",

@@ -8,8 +8,8 @@ use std::process::Stdio;
 
 use serde_json::{Value, json};
 
-use crate::proc_tree;
 use crate::tail::cut_tail;
+use ch_proc as proc_tree;
 
 const API_VERSION: &str = "2022-11-28";
 const USER_AGENT: &str = "c-harness";

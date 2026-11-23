@@ -22,7 +22,7 @@ cargo test --workspace
 Every crate except `ch-app` builds without the GPU toolchain, so most work only needs:
 
 ```sh
-cargo test -p ch-protocol -p ch-core -p ch-runner -p ch-runtime -p ch-vault -p ch-ui
+cargo test -p ch-protocol -p ch-core -p ch-proc -p ch-runner -p ch-runtime -p ch-vault -p ch-ui
 ```
 
 CI runs the same checks on Ubuntu, macOS and Windows. A change is done when all three pass.
