@@ -17,14 +17,15 @@ use crate::process::stderr_tail;
 /// The exit code of a runner that could not parse its arguments.
 const USAGE_ERROR: i32 = 2;
 
-/// How long a check without the model test may run. The runner gives `omp --version` 10 s,
-/// then reads the repository and asks git about it; ssh may spend its connect timeout first.
-const PREFLIGHT_LIMIT: Duration = Duration::from_secs(120);
+/// How long a check without the model test may run. It has to outlast the runner's own
+/// limits, so a slow step is reported by name before this one fires: ssh's 15 s connect,
+/// 10 s for `omp --version` and up to four git commands at 30 s each, plus 2 s per pipe to
+/// drain after every child. That comes to 165 s.
+const PREFLIGHT_LIMIT: Duration = Duration::from_secs(180);
 
-/// How long a check with `--test-model` may run: everything above, plus two more 10 s omp
-/// probes and the runner's own 90 s limit on the model call. It stays longer than all of
-/// that, so the runner reports its own timeout before this one fires.
-const MODEL_TEST_LIMIT: Duration = Duration::from_secs(180);
+/// How long a check with `--test-model` may run: the 165 s above, two more omp probes (28 s)
+/// and the runner's 90 s model call (94 s with draining), 287 s in all.
+const MODEL_TEST_LIMIT: Duration = Duration::from_secs(300);
 
 /// Far more than a report needs. Output past it is read and dropped, so the runner never
 /// blocks on a full pipe.

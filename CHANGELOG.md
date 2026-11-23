@@ -168,7 +168,7 @@ Notable changes to C-Harness. The format follows
   works in the folder. The app checks that the keychain can hold a key by writing and deleting
   a throwaway entry, and that a model key is stored. Each check says pass, fail or not known,
   and every failure has a one-line fix. A runner too old for the check says so and names the
-  install command with `--force`. A check still running after 120 seconds, or 180 with the
+  install command with `--force`. A check still running after 3 minutes, or 5 with the
   model test, is stopped, and the error names the machine where it stalled.
 - The model test sends one short prompt with tools off, through omp's print mode with
   `--max-cost` set to $0.05. It runs only when you press its button, which states the cost
