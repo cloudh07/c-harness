@@ -182,9 +182,8 @@ Notable changes to C-Harness. The format follows
   `ch-runner preflight`. The request's `Debug` output hides the key.
 - `ch_diff_result` carries `tree`, the working tree as a git tree, for a diff that ends at the
   working tree. It is written on a private index like the evidence trees, so it can be compared
-  with the last check's `tree_after` before Land. The app does not read it yet. The user's index
-  is untouched, and a runner older than protocol 4, or one that could not write the tree, sends
-  none.
+  with the last check's `tree_after` before Land. The user's index is untouched, and a runner
+  older than protocol 4, or one that could not write the tree, sends none.
 - `ch-app`: an optional cost cap per session in Settings, in dollars and off by default. It is
   checked when a turn ends, so one long turn can go past it. Once the turns omp priced reach
   it, an abort goes to the running prompt, the session says why, and no new prompt goes out
@@ -200,6 +199,16 @@ Notable changes to C-Harness. The format follows
   session's last passing Verify (averaged over those sessions), and a check of the summed turns
   against omp's totals that names each turn where they differ, without guessing why. `cargo run -p ch-core --example usage_report -- <usage folder>` prints
   the report, or says it was not run when no file holds a turn.
+- `ch-core`: a diff keeps the tree it shows, and `Session::current_diff` returns the latest diff
+  only while the agent has not run since it was taken. The diff view still shows the last one.
+- `ch-app`: the Land section opens with a checklist: Checks, Secret scan, Branch and Pull
+  request. Each reads pass, fail or unknown with the reason in words, and a screen reader reads
+  the same. A passed check reads pass when it ran on the tree the current diff shows. With no
+  current diff, a diff on other work, or a runner that sent no tree, it reads unknown and says
+  what to do. The secret scan reads unknown until you press Land, because the runner scans
+  during the land. The GitHub token is checked when you press Land. Below the list are the pull
+  request title and the start of its description. They are not edited in the app; edit them on
+  GitHub once the pull request is open.
 - `PRIVACY.md` and Settings, What leaves this machine: every place data goes without you
   sending it, with what goes, when, why, whether you can turn it off, and whether the row was
   read in code or seen on the wire. The list lives in `ch-core` (`outbound`), and a test fails
@@ -216,6 +225,14 @@ Notable changes to C-Harness. The format follows
 
 ### Changed
 
+- `ch-app`: Land is off while a checklist item blocks it: the last check failed or timed out,
+  the work changed while the check ran, the runner never recorded which work it checked, the
+  runner is too old to scan, the branch name is one git refuses or is the base branch, or the
+  Landing settings are not finished. A session where no check has run still lands, and its pull
+  request says so. A refused secret scan still leaves Land anyway. Once the runner has refused a
+  land, for secrets or anything else, a bad check no longer blocks the next try, since checks
+  only run in review; the pull request says what the check found. While the agent still works,
+  the section says Land waits for review.
 - `ch-app`: the header shows the share of input read from the cache (`99% cached`) instead
   of the cached token count. When some turns went uncounted, the share is of the counted ones
   and marked `~`.
