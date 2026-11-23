@@ -45,6 +45,9 @@ Nobody has checked these yet, and each one helps:
 - Run a real session with your own model key on a throwaway repository and report what broke.
   The omp fixture was written by hand from omp's docs. A captured session, scrubbed of keys,
   tokens and personal paths, would be a better one.
+- On a live omp with `ask.timeout` set in your own config, confirm that the host overlay's
+  `ask: timeout: 0` wins. The runner passes it as the last `--config`, so a question from the
+  agent should wait for you instead of picking an answer.
 - Land a pull request on GitHub with a fine-grained token.
 - Build and run the desktop app on macOS or Linux.
 
