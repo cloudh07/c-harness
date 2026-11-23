@@ -239,6 +239,22 @@ impl FakeOmp {
         panic!("timed out waiting for {what}; sent {:?}", rig.sent());
     }
 
+    /// Answers omp's side until a request of `kind` is held. The written frames are read on
+    /// another thread, so a request can show up in `rig.sent()` before `serve` has seen it.
+    fn wait_held(&mut self, rig: &mut Rig, kind: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.held.iter().any(|request| request["type"] == kind) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for a held {kind}; sent {:?}",
+                rig.sent()
+            );
+            rig.driver.pump();
+            self.serve(rig);
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
     /// Answers omp's side until the mark or the restore under way has ended, along with the
     /// reload of the thread that follows a restore.
     pub(super) fn settle(&mut self, rig: &mut Rig) {
@@ -817,6 +833,40 @@ fn the_next_prompt_shows_its_reply_again() {
     assert_eq!(rig.driver.reply(), "");
 
     next_run(&mut rig, &mut omp, 3);
+    assert_eq!(rig.driver.reply(), "Done.");
+}
+
+#[test]
+fn a_prompt_waits_for_the_reload_after_a_restore() {
+    let mut rig = Rig::new();
+    let mut omp = saved_run_on(&mut rig, FakeOmp::new());
+    next_run(&mut rig, &mut omp, 2);
+    omp.hold.push(HISTORY_COMMAND);
+    let id = start(&mut rig, &mut omp, 1);
+    rig.say(&json!({"type":"ch_checkpointed","id":id,
+        "checkpoint":checkpoint(3, "before_restore")}));
+    let diffs = of_type(&rig.sent(), "ch_diff").len();
+    rig.say(&json!({"type":"ch_restored","id":id,"turn":1}));
+    let refresh = wait_sent(&mut rig, "ch_diff", diffs + 1).remove(diffs);
+    rig.say(&diff_result(&refresh["id"], "restored"));
+    omp.wait_held(&mut rig, HISTORY_COMMAND);
+    assert!(rig.driver.loading_history());
+
+    let prompts = of_type(&rig.sent(), "prompt").len();
+    assert!(!rig.driver.can_prompt());
+    assert!(!rig.driver.prompt("prompt 3"));
+    assert_eq!(of_type(&rig.sent(), "prompt").len(), prompts);
+
+    for held in std::mem::take(&mut omp.held) {
+        omp.reply(&rig, &held);
+    }
+    omp.settle(&mut rig);
+    let reloaded = rig
+        .driver
+        .take_history()
+        .expect("the thread was read again");
+    assert_eq!(reloaded.turns, [pair("prompt 1", "reply 1")]);
+    next_run(&mut rig, &mut omp, 4);
     assert_eq!(rig.driver.reply(), "Done.");
 }
 
