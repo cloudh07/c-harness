@@ -254,6 +254,8 @@ Notable changes to C-Harness. The format follows
 - `ch-app`: a diff asked for in review that arrives after you sent a prompt and the agent
   settled no longer counts as current, so the Checks row can't read pass on work that changed
   after the diff was asked for.
+- `ch-app`: with no current diff, the Checks row names the button to press, Show diff or
+  Refresh diff under Changes, instead of asking for "a fresh diff".
 
 ### Security
 

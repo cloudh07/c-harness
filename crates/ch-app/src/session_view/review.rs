@@ -17,8 +17,8 @@ use gpui_kit::{
 use super::{Live, OpenSettings, SessionView};
 use crate::assets::{Icon, icon};
 use crate::view_model::{
-    LAND_STAGE, branch_for, check_outcome, check_passed, checklist, diff_files, diff_totals,
-    elide_middle, first_chars, pr_link_allowed, secret_rows,
+    LAND_STAGE, REFRESH_DIFF, SHOW_DIFF, branch_for, check_outcome, check_passed, checklist,
+    diff_files, diff_totals, elide_middle, first_chars, pr_link_allowed, secret_rows,
 };
 use crate::widgets::{MONO, Tone, button, eyebrow, icon_text_button, muted};
 
@@ -62,9 +62,9 @@ impl SessionView {
         let p = self.palette;
         let diff = live.driver.session().last_diff();
         let label = if diff.is_some() {
-            "Refresh diff"
+            REFRESH_DIFF
         } else {
-            "Show diff"
+            SHOW_DIFF
         };
         section(p, "Changes")
             .child(

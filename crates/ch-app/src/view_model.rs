@@ -11,7 +11,10 @@ mod place;
 pub use cost::{cap_hint, cap_stopped, cap_text, cost_label, parse_cap};
 pub use failure::{EMPTY_RUN_NOTE, failure_text, first_reply_text, retry_text, secret_rows};
 pub use labels::{age_label, context_near_full, live_title};
-pub use land::{Checklist, LAND_STAGE, LandItem, Mark, checklist, land_request, pr_link_allowed};
+pub use land::{
+    Checklist, LAND_STAGE, LandItem, Mark, REFRESH_DIFF, SHOW_DIFF, checklist, land_request,
+    pr_link_allowed,
+};
 pub use place::{Place, Sandbox, elide_middle};
 
 /// About what fits in the session header next to its buttons.

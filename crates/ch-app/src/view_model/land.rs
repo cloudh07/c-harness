@@ -15,6 +15,10 @@ const SUBJECT_LIMIT: usize = 72;
 /// The runner stage a refused or failed land reports.
 pub const LAND_STAGE: &str = "land";
 const AGAIN: &str = "Run the checks again.";
+/// The diff button under Changes while no diff is shown.
+pub const SHOW_DIFF: &str = "Show diff";
+/// The same button once a diff is shown.
+pub const REFRESH_DIFF: &str = "Refresh diff";
 
 /// The first line of the first prompt, cut to fit a commit subject.
 pub fn commit_message(first_prompt: &str, session: &str) -> String {
@@ -291,7 +295,10 @@ fn against_diff(ran: &str, checked: &str, diff: Option<&Diff>) -> (Mark, String)
         ),
         None => (
             Mark::Unknown,
-            format!("{ran}. Take a fresh diff to match the check to the work as it is now."),
+            format!(
+                "{ran}. Press {SHOW_DIFF} or {REFRESH_DIFF} under Changes to match the check to \
+                 the work as it is now."
+            ),
         ),
     }
 }
