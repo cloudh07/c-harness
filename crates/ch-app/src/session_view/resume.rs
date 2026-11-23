@@ -121,7 +121,9 @@ fn go_live_resumed(session: &str, place: Place, resumed: Resumed) -> Result<Live
 
 impl Live {
     /// Puts the earlier conversation before this run's turns once it has been read, and saves
-    /// where omp keeps the conversation. Returns whether anything changed, and any problem.
+    /// where omp keeps the conversation. After a restore the conversation read back replaces
+    /// the thread instead, and a reload that failed leaves it as it was. Returns whether
+    /// anything changed, and any problem.
     pub(super) fn catch_up(&mut self) -> (bool, Option<String>) {
         let noted = self.note_session_file();
         let Some(earlier) = self.driver.take_history() else {
@@ -131,13 +133,19 @@ impl Live {
             turns,
             hidden,
             problem,
+            replaces,
         } = earlier;
-        (self.turns, self.first_prompt) = after_earlier(
-            turns,
-            std::mem::take(&mut self.turns),
-            std::mem::take(&mut self.first_prompt),
-        );
-        self.hidden = hidden;
+        if !replaces || problem.is_none() {
+            let current = if replaces {
+                self.prompt.clear();
+                Vec::new()
+            } else {
+                std::mem::take(&mut self.turns)
+            };
+            (self.turns, self.first_prompt) =
+                after_earlier(turns, current, std::mem::take(&mut self.first_prompt));
+            self.hidden = hidden;
+        }
         let problems: Vec<String> = [problem, noted].into_iter().flatten().collect();
         (true, (!problems.is_empty()).then(|| problems.join(" ")))
     }

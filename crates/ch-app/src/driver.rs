@@ -275,10 +275,12 @@ impl Driver {
             return false;
         }
         let id = self.next_id();
-        self.send_omp(
+        let sent = self.send_omp(
             &json!({ "id": id, "type": "prompt", "message": text }),
             Some(ClientAction::PromptSent),
-        )
+        );
+        self.rewind.reply_dropped &= !sent;
+        sent
     }
 
     pub fn answer(&mut self, id: &str, decision: ApprovalDecision) -> Result<(), String> {

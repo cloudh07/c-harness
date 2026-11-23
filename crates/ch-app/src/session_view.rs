@@ -365,7 +365,7 @@ impl SessionView {
             return;
         }
         let accepted = if let Phase::Live(live) = &mut self.phase {
-            let previous = live.driver.session().reply().to_string();
+            let previous = live.driver.reply().to_string();
             let sent = live.driver.prompt(&text);
             if sent {
                 if live.first_prompt.is_empty() {

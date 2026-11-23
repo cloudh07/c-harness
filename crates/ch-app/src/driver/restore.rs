@@ -6,7 +6,7 @@
 //! undoes the one before it, so both halves end at the same turn or both stay where they were.
 //! It needs omp 18.13.2 or newer, which knows `set_label` and `navigate_tree`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use ch_core::ENTRIES_COMMAND;
 use ch_protocol::runner::{CheckpointKind, ClientFrame, RunnerFrame};
@@ -22,6 +22,8 @@ const UNKNOWN_SINCE: &str = "unknown_since";
 const STEP_WAIT_MS: u64 = 15_000;
 /// How many times the label that keeps a restore across a resume is sent.
 const PERSIST_TRIES: u8 = 2;
+/// How long to wait before moving omp back again, after a move back that did not land.
+const RETRY_PAUSE_MS: u64 = 1_000;
 pub(super) const TOO_OLD: &str =
     "Restore needs omp 18.13.2 or newer. Code and conversation were left unchanged.";
 const UNCHANGED: &str = "Code and conversation were left unchanged.";
@@ -45,11 +47,14 @@ pub(super) struct Rewind {
     places: HashMap<u32, String>,
     /// The first prompt. Moving there leaves no message, which is checkpoint 0.
     first_user: Option<String>,
-    /// Prompts. A move to one lands just before it, so none is marked.
-    prompts: HashSet<String>,
+    /// Prompts and the entry before each. A move to one lands just before it, so none is
+    /// marked.
+    prompts: HashMap<String, Option<String>>,
     /// The last entry read, so the next read asks only for newer ones.
     cursor: Option<String>,
     job: Option<Job>,
+    /// A restore reloaded the conversation, so the last run's reply is no longer in it.
+    pub(super) reply_dropped: bool,
 }
 
 enum Job {
@@ -95,9 +100,26 @@ enum Step {
     /// Waiting for the runner to restore the code.
     Code,
     /// Moving omp back to where it was.
-    Back(Why),
+    Back(Undo),
+    /// Reading where omp is, after a move back failed with `error` or did not answer.
+    Check { undo: Undo, error: String },
+    /// Waiting until `at` to move omp back again.
+    Pause { undo: Undo, at: u64 },
     /// Labelling the entry omp left, so the move survives a resume.
     Persist { turns: Vec<u32>, tries: u8 },
+}
+
+/// A move back, tried again while omp has not moved and time is left.
+struct Undo {
+    why: Why,
+    /// When to stop trying, set when the first move back does not land.
+    until: Option<u64>,
+}
+
+impl Undo {
+    fn new(why: Why) -> Self {
+        Self { why, until: None }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -219,7 +241,9 @@ impl Rewind {
                     if entry.pointer("/message/role").and_then(Value::as_str) == Some("user") =>
                 {
                     self.first_user.get_or_insert_with(|| id.to_owned());
-                    self.prompts.insert(id.to_owned());
+                    let parent = entry.get("parentId").and_then(Value::as_str);
+                    self.prompts
+                        .insert(id.to_owned(), parent.map(str::to_owned));
                 }
                 _ => {}
             }
@@ -247,6 +271,15 @@ impl Rewind {
         turns
     }
 
+    /// Where omp's leaf is after a move to `entry`. A move to a prompt lands on the entry before
+    /// it, and `None` is an empty conversation.
+    fn landing(&self, entry: &str) -> Option<String> {
+        match self.prompts.get(entry) {
+            Some(parent) => parent.clone(),
+            None => Some(entry.to_owned()),
+        }
+    }
+
     /// Drops what was read, when omp no longer knows the last entry read.
     fn forget(&mut self) {
         self.places.clear();
@@ -260,6 +293,18 @@ impl Driver {
     /// The conversation half of a restore is under way.
     pub(super) fn rewinding(&self) -> bool {
         matches!(self.rewind.job, Some(Job::Restore(_)))
+    }
+
+    /// A move back did not land, and the next one waits for its pause to end.
+    #[cfg(test)]
+    pub(super) fn pausing_restore(&self) -> bool {
+        matches!(
+            &self.rewind.job,
+            Some(Job::Restore(Restore {
+                step: Step::Pause { .. },
+                ..
+            }))
+        )
     }
 
     /// The last checkpoint is being marked in the conversation, and omp has time left.
@@ -348,7 +393,7 @@ impl Driver {
                 ));
                 None
             }
-            _ => self.move_back(restore, Why::Refused),
+            _ => self.move_back(restore, Undo::new(Why::Refused)),
         };
     }
 
@@ -408,7 +453,7 @@ impl Driver {
         match reply {
             Reply::Done(data) => {
                 let leaf = self.rewind.read(data);
-                mark.leaf = Some(leaf.filter(|leaf| !self.rewind.prompts.contains(leaf))?);
+                mark.leaf = Some(leaf.filter(|leaf| !self.rewind.prompts.contains_key(leaf))?);
                 self.label_mark(mark)
             }
             Reply::Unknown => {
@@ -451,12 +496,13 @@ impl Driver {
         match (step, reply) {
             (Step::Read, Reply::Done(data)) => self.navigate(restore, data),
             (
-                Step::Read,
+                step @ (Step::Read | Step::Check { .. }),
                 Reply::Failed {
                     code: Some(code), ..
                 },
             ) if code == UNKNOWN_SINCE && self.rewind.cursor.is_some() => {
                 self.rewind.forget();
+                restore.step = step;
                 restore.asked = self.ask_entries();
                 if restore.asked.is_none() {
                     self.note(GONE);
@@ -475,21 +521,24 @@ impl Driver {
                 self.rewind.support = Support::Yes;
                 self.restore_code(restore)
             }
-            (Step::Back(why), Reply::Done(_)) => {
-                self.note(&format!(
-                    "{}, so the conversation was moved back. {UNCHANGED}",
-                    why.text(turn)
-                ));
+            (Step::Back(undo), Reply::Done(data))
+                if data.get("cancelled").and_then(Value::as_bool) != Some(true) =>
+            {
+                self.moved_back(turn, undo.why);
                 None
+            }
+            (Step::Check { undo, error }, Reply::Done(data)) => {
+                self.check_back(restore, undo, &error, data)
             }
             (Step::Persist { turns, .. }, Reply::Done(_)) => {
                 if let Some(place) = &restore.place {
                     self.rewind.place(&place.anchor, &turns);
                 }
                 self.note(&format!(
-                    "The conversation is back at checkpoint {turn} too. Turns after it stay on \
-                     screen, but the agent no longer sees them."
+                    "The conversation is back at checkpoint {turn} too. The thread now shows it \
+                     as the agent sees it."
                 ));
+                self.reload_history();
                 None
             }
             (step, reply) => {
@@ -541,11 +590,71 @@ impl Driver {
         Some(Job::Restore(restore))
     }
 
-    fn move_back(&mut self, mut restore: Restore, why: Why) -> Option<Job> {
+    fn move_back(&mut self, mut restore: Restore, undo: Undo) -> Option<Job> {
         let anchor = restore.place.as_ref()?.anchor.clone();
-        restore.step = Step::Back(why);
+        restore.step = Step::Back(undo);
         let frame = json!({ "type": NAVIGATE_COMMAND, "entryId": anchor, "summarize": false });
         self.ask_for(restore, frame)
+    }
+
+    /// A move back failed or is late. omp runs one command at a time, so the entries read next
+    /// show where every move sent so far left it.
+    fn verify_back(&mut self, mut restore: Restore, mut undo: Undo, error: &str) -> Option<Job> {
+        undo.until.get_or_insert((self.clock)() + STEP_WAIT_MS);
+        restore.step = Step::Check {
+            undo,
+            error: error.to_owned(),
+        };
+        let Some(asked) = self.ask_entries() else {
+            self.note(GONE);
+            return None;
+        };
+        restore.asked = Some(asked);
+        Some(Job::Restore(restore))
+    }
+
+    /// Ends the restore once omp is back where it was, or tries again while time is left.
+    fn check_back(
+        &mut self,
+        mut restore: Restore,
+        undo: Undo,
+        error: &str,
+        data: &Value,
+    ) -> Option<Job> {
+        let leaf = self.rewind.read(data);
+        let back = restore
+            .place
+            .as_ref()
+            .is_some_and(|place| leaf == self.rewind.landing(&place.anchor));
+        if back {
+            self.moved_back(restore.turn, undo.why);
+            return None;
+        }
+        let now = (self.clock)();
+        if undo.until.is_some_and(|until| now < until) {
+            restore.step = Step::Pause {
+                undo,
+                at: now + RETRY_PAUSE_MS,
+            };
+            return Some(Job::Restore(restore));
+        }
+        self.not_moved_back(restore.turn, undo.why, error);
+        None
+    }
+
+    fn moved_back(&mut self, turn: u32, why: Why) {
+        self.note(&format!(
+            "{}, so the conversation was moved back. {UNCHANGED}",
+            why.text(turn)
+        ));
+    }
+
+    fn not_moved_back(&mut self, turn: u32, why: Why, error: &str) {
+        self.note(&format!(
+            "{}, and omp would not move the conversation back: {error}. The code did not \
+             change, but the agent may now see the conversation as it was at checkpoint {turn}.",
+            why.text(turn)
+        ));
     }
 
     /// Labels the entry omp left with the checkpoint the runner saved of the tree it replaced.
@@ -578,22 +687,24 @@ impl Driver {
             .max()
     }
 
-    fn step_failed(&mut self, restore: Restore, error: &str) -> Option<Job> {
+    fn step_failed(&mut self, mut restore: Restore, error: &str) -> Option<Job> {
         let turn = restore.turn;
-        let text = match &restore.step {
+        let text = match std::mem::replace(&mut restore.step, Step::Read) {
             Step::Read => format!("omp could not list the conversation: {error}. {UNCHANGED}"),
             Step::Navigate => format!(
                 "omp would not move the conversation to checkpoint {turn}: {error}. {UNCHANGED}"
             ),
-            Step::Code => return Some(Job::Restore(restore)),
-            Step::Back(why) => format!(
-                "{}, and omp would not move the conversation back: {error}. The code did not \
-                 change, but the agent may now see the conversation as it was at checkpoint \
-                 {turn}.",
-                why.text(turn)
-            ),
-            Step::Persist { tries, .. } if *tries < PERSIST_TRIES => {
-                let tries = *tries;
+            step @ (Step::Code | Step::Pause { .. }) => {
+                restore.step = step;
+                return Some(Job::Restore(restore));
+            }
+            Step::Back(undo) => return self.verify_back(restore, undo, error),
+            // The entries could not be read, so the move back's own error says the most.
+            Step::Check { undo, error } => {
+                self.not_moved_back(turn, undo.why, &error);
+                return None;
+            }
+            Step::Persist { tries, .. } if tries < PERSIST_TRIES => {
                 return self.persist(restore, tries + 1);
             }
             Step::Persist { .. } => unsaved(turn, error),
@@ -622,7 +733,7 @@ impl Driver {
         }
     }
 
-    fn tick_restore(&mut self, restore: Restore) -> Option<Job> {
+    fn tick_restore(&mut self, mut restore: Restore) -> Option<Job> {
         let turn = restore.turn;
         if self.closed {
             let text = match restore.step {
@@ -632,7 +743,11 @@ impl Driver {
                 ),
                 Step::Persist { .. } => omp_stopped_after_code(turn),
                 // omp's move is held in memory only, so it ends with the runner.
-                Step::Read | Step::Navigate | Step::Back(_) => {
+                Step::Read
+                | Step::Navigate
+                | Step::Back(_)
+                | Step::Check { .. }
+                | Step::Pause { .. } => {
                     format!("The runner closed during the restore. {UNCHANGED}")
                 }
             };
@@ -640,27 +755,37 @@ impl Driver {
             return None;
         }
         // The code step waits on the runner, which answers every restore.
-        let Some(asked) = &restore.asked else {
+        if matches!(restore.step, Step::Code) {
             return Some(Job::Restore(restore));
-        };
+        }
         if self.omp != OmpState::Running {
             let text = match restore.step {
                 Step::Persist { .. } => omp_stopped_after_code(turn),
-                Step::Read | Step::Navigate | Step::Code | Step::Back(_) => {
-                    format!("omp stopped during the restore. {UNCHANGED}")
-                }
+                Step::Read
+                | Step::Navigate
+                | Step::Code
+                | Step::Back(_)
+                | Step::Check { .. }
+                | Step::Pause { .. } => format!("omp stopped during the restore. {UNCHANGED}"),
             };
             self.note(&text);
             return None;
         }
-        if !self.late(asked) {
-            return Some(Job::Restore(restore));
+        let late = restore.asked.as_ref().is_some_and(|asked| self.late(asked));
+        match std::mem::replace(&mut restore.step, Step::Read) {
+            Step::Pause { undo, at } if (self.clock)() >= at => self.move_back(restore, undo),
+            // It may still move. omp runs one command at a time, so a move back sent now lands
+            // after it.
+            Step::Navigate if late => self.move_back(restore, Undo::new(Why::Slow)),
+            step if late => {
+                restore.step = step;
+                self.step_failed(restore, LATE)
+            }
+            step => {
+                restore.step = step;
+                Some(Job::Restore(restore))
+            }
         }
-        if matches!(restore.step, Step::Navigate) {
-            // It may still move. Moving back after it leaves the conversation where it was.
-            return self.move_back(restore, Why::Slow);
-        }
-        self.step_failed(restore, LATE)
     }
 
     fn late(&self, asked: &Asked) -> bool {

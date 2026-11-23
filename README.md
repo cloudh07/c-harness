@@ -125,8 +125,13 @@ commit the session began from.
   conversation agree. This needs omp 18.13.2 or newer. With an older omp, or for a checkpoint
   saved before it, Restore is refused and neither changes. The conversation moves first: if omp
   will not move it, the code is left alone, and if the runner then refuses the code, the
-  conversation is moved back. Turns after the checkpoint stay on screen, and usage is not
+  conversation is moved back. When omp is busy or slow with that move back, the app reads where
+  the conversation is and tries once more before it reports a problem. After a restore the
+  thread is read again from omp, so it shows the same turns a resume would. Usage is not
   rewound.
+- Known limit: if C-Harness closes after the code is restored but before omp saves the moved
+  conversation, the code stays at the checkpoint and the conversation reopens where it was.
+  Nothing records this yet.
 - A run that ends with no reply and no tool calls saves no checkpoint, and the thread says so.
 - A session keeps at most 1000 checkpoints. Only a worktree C-Harness made for the session
   keeps them, so an SSH session has none.
