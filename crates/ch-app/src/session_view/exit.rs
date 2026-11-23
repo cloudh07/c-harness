@@ -1,7 +1,7 @@
 //! What the live session does on its way out, whether the user closes it, closes the window or
 //! the OS quits the app: it saves the usage lines a failed write left, with the marks they held
-//! back, and takes down its notification. omp stops with the app, so the request goes too, and the OS would otherwise
-//! keep showing it.
+//! back, and takes down its notification. omp stops with the app, so the request goes too, and
+//! the OS would otherwise keep showing it.
 
 use ch_core::{LedgerMark, UsageRow};
 use gpui_kit::{App, Context, Subscription};
