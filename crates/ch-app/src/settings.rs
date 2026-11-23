@@ -425,6 +425,8 @@ mod tests {
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.repo, "/x");
         assert_eq!(loaded.base_branch, "main");
+        assert!(loaded.notify_finished);
+        assert!(!loaded.finished_sound);
     }
 
     #[test]
