@@ -2,15 +2,19 @@
 
 use std::time::Duration;
 
-use ch_core::{Session, SessionState, ToolStatus};
+use ch_core::{SessionState, ToolStatus};
 use gpui_kit::{
     Animation, AnimationExt, App, BoxShadow, ClickEvent, Context, Div, FocusHandle, Hsla,
-    InteractiveElement, KeyDownEvent, ParentElement, ScrollEvent, ScrollHandle,
-    StatefulInteractiveElement, Styled, div, ease_out_quint, point, px, rgb,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, ScrollEvent, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, div, ease_out_quint, point, px, rgb,
 };
 
+use super::anchor::{Anchor, Keyed};
 use super::{CONTENT_WIDTH, Phase, SessionView};
 use crate::assets::Icon;
+use crate::driver::Driver;
+use crate::panels;
+use crate::view_model::last_chars;
 use crate::widgets::{Tone, icon_text_button};
 
 /// How far from the end, in pixels, still counts as back at the end when scrolling down.
@@ -60,11 +64,14 @@ impl Mode {
     }
 }
 
-/// A cheap fingerprint of the agent output at the end of the thread. The late-reply note, the
-/// runner log and usage rows live on the driver, earlier turns load above the reader, and the
-/// working line and approvals are status rather than output, so none of them count.
+/// A cheap fingerprint of what the thread shows. The late-reply note, the runner log and usage
+/// rows live on the driver, earlier turns load above the reader, and the working line and
+/// approvals are status rather than output, so none of them count. The disconnected banner and
+/// the note on hidden turns do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Shown {
+    disconnected: bool,
+    hidden: usize,
     review: bool,
     reply: usize,
     tools: usize,
@@ -79,11 +86,14 @@ pub(super) struct Shown {
 }
 
 impl Shown {
-    pub(super) fn of(session: &Session) -> Self {
+    pub(super) fn of(driver: &Driver, hidden: usize) -> Self {
+        let session = driver.session();
         let tools = session.tool_calls();
         Shown {
+            disconnected: super::disconnected(driver),
+            hidden,
             review: session.state() == SessionState::NeedsReview,
-            reply: session.reply().len(),
+            reply: driver.reply().len(),
             tools: tools.len(),
             tools_done: tools
                 .iter()
@@ -108,7 +118,8 @@ fn from_end(offset_y: f32, max_y: f32) -> f32 {
     max_y + offset_y.clamp(-max_y, 0.0)
 }
 
-/// A positive `dy` scrolls toward earlier output.
+/// A positive `dy` scrolls toward earlier output. The thread only scrolls up and down, so a
+/// sideways scroll, with `dy` at zero, changes nothing.
 fn scrolled(dy: f32, offset_y: f32, max_y: f32) -> Option<Event> {
     let from_end = from_end(offset_y, max_y);
     if dy > 0.0 {
@@ -120,10 +131,44 @@ fn scrolled(dy: f32, offset_y: f32, max_y: f32) -> Option<Event> {
     }
 }
 
+/// A held reply start is kept until this much text follows it.
+const HOLD_CHARS: usize = 2 * panels::SHOWN_CHARS;
+
+/// Where the shown part of a long reply starts while the person reads: `None` when following.
+/// A start that still fits is kept, so the shown text does not slide up under the reader.
+fn held_after(reading: bool, held: Option<usize>, reply: &str) -> Option<usize> {
+    if !reading {
+        return None;
+    }
+    held.filter(|&start| fits(reply, start))
+        .or_else(|| Some(cut(reply)))
+}
+
+fn fits(reply: &str, start: usize) -> bool {
+    reply
+        .get(start..)
+        .is_some_and(|shown| shown.chars().nth(HOLD_CHARS).is_none())
+}
+
+/// Where the last [`panels::SHOWN_CHARS`] characters start.
+fn cut(reply: &str) -> usize {
+    reply.len() - last_chars(reply, panels::SHOWN_CHARS).0.len()
+}
+
+/// The part of the reply on screen and whether its start is cut off.
+fn clip(reply: &str, held: Option<usize>) -> (&str, bool) {
+    match held {
+        Some(start) if fits(reply, start) => (&reply[start..], start > 0),
+        _ => last_chars(reply, panels::SHOWN_CHARS),
+    }
+}
+
 pub(super) struct Follow {
     mode: Mode,
     scroll: ScrollHandle,
     focus: FocusHandle,
+    anchor: Anchor,
+    held: Option<usize>,
 }
 
 impl Follow {
@@ -132,6 +177,8 @@ impl Follow {
             mode: Mode::Following,
             scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
+            anchor: Anchor::default(),
+            held: None,
         }
     }
 
@@ -140,9 +187,25 @@ impl Follow {
         self.mode = self.mode.after_pump(before, after);
     }
 
-    /// A session opened: start at its end.
+    /// Called before a pump with the reply as it is on screen.
+    pub(super) fn hold(&mut self, reply: &str) {
+        self.held = held_after(self.mode != Mode::Following, self.held, reply);
+    }
+
+    /// The current reply as the thread shows it.
+    pub(super) fn clip<'r>(&self, reply: &'r str) -> (&'r str, bool) {
+        clip(reply, self.held)
+    }
+
+    /// A thread row the view holds still while the person reads.
+    pub(super) fn row(&self, key: impl Into<SharedString>, child: impl IntoElement) -> Keyed {
+        self.anchor.row(key, child)
+    }
+
+    /// A session opened or a prompt went out: go to the end.
     pub(super) fn reset(&mut self) {
         self.apply(Event::Latest);
+        self.held = None;
     }
 
     fn apply(&mut self, event: Event) -> bool {
@@ -162,6 +225,33 @@ impl SessionView {
             self.follow.scroll.scroll_to_bottom();
         }
         let behind = live && self.follow.mode == (Mode::Reading { unseen: true });
+        let hold = live && self.follow.mode != Mode::Following;
+        let thread = div()
+            .id("session-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.follow.scroll)
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, window, cx| {
+                let dy = f32::from(event.delta.pixel_delta(window.line_height()).y);
+                let scroll = &this.follow.scroll;
+                let offset = f32::from(scroll.offset().y);
+                let max = f32::from(scroll.max_offset().y);
+                if let Some(event) = scrolled(dy, offset, max)
+                    && this.follow.apply(event)
+                {
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .mx_auto()
+                    .w_full()
+                    .max_w(px(CONTENT_WIDTH))
+                    .px_6()
+                    .py_6()
+                    .child(self.body(cx)),
+            );
         div()
             .relative()
             .flex()
@@ -178,34 +268,7 @@ impl SessionView {
                     cx.notify();
                 }
             }))
-            .child(
-                div()
-                    .id("session-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.follow.scroll)
-                    .on_scroll(cx.listener(|this, event: &ScrollEvent, window, cx| {
-                        let dy = f32::from(event.delta.pixel_delta(window.line_height()).y);
-                        let scroll = &this.follow.scroll;
-                        let offset = f32::from(scroll.offset().y);
-                        let max = f32::from(scroll.max_offset().y);
-                        if let Some(event) = scrolled(dy, offset, max)
-                            && this.follow.apply(event)
-                        {
-                            cx.notify();
-                        }
-                    }))
-                    .child(
-                        div()
-                            .mx_auto()
-                            .w_full()
-                            .max_w(px(CONTENT_WIDTH))
-                            .px_6()
-                            .py_6()
-                            .child(self.body(cx)),
-                    ),
-            )
+            .child(self.follow.anchor.area(&self.follow.scroll, hold, thread))
             .children(behind.then(|| self.jump_to_latest(cx)))
     }
 
@@ -263,9 +326,11 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::{AT_END, Event, Mode, Shown, from_end, scrolled};
+    use super::super::anchor::{Row, moved};
+    use super::{AT_END, Event, HOLD_CHARS, Mode, Shown, clip, from_end, held_after, scrolled};
     use crate::driver::{Driver, FIRST_REPLY_MS};
     use crate::link::Link;
+    use crate::panels::SHOWN_CHARS;
     use ch_core::{ClientAction, Session, SessionState};
     use ch_protocol::runner::route_runner_line;
     use serde_json::{Value, json};
@@ -479,20 +544,76 @@ mod tests {
         assert!(view.sees_end(*layouts.last().expect("a fixture")));
     }
 
-    /// Known limit: GPUI has no scroll anchoring, so a reply that grows above the reading point
-    /// still pushes the tool cards below it down by the same amount.
+    /// The rows the anchor sees in the replay's layout.
+    fn rows(layout: Layout) -> Vec<Row> {
+        vec![
+            Row {
+                key: "earlier".into(),
+                top: 0.0,
+                bottom: EARLIER,
+            },
+            Row {
+                key: "turn-now".into(),
+                top: EARLIER,
+                bottom: layout.tools_at(),
+            },
+            Row {
+                key: "tools".into(),
+                top: layout.tools_at(),
+                bottom: layout.total(),
+            },
+        ]
+    }
+
+    /// The anchor moves the offset before the scroll area clamps it, as `Anchored` does in
+    /// prepaint.
     #[test]
-    fn reply_growth_above_the_reader_still_moves_them() {
+    fn reply_growth_above_the_reader_leaves_them_in_place() {
         let layouts = replay();
         let before = layouts[TOOL_DONE];
         let mut view = View::at(before.tools_at() + LINE, READING);
         view.frame(before);
         let card_before = before.tools_at() - view.top;
         let after = layouts[TOOL_DONE + 1];
-        view.output(after);
-        let card_after = after.tools_at() - view.top;
         assert!(after.reply > before.reply);
-        assert_eq!(card_after - card_before, after.reply - before.reply);
+        view.top += moved(&rows(before), &rows(after), view.top);
+        view.output(after);
+        assert_eq!(after.tools_at() - view.top, card_before);
+    }
+
+    #[test]
+    fn a_following_view_holds_no_reply_start() {
+        let long = "a".repeat(SHOWN_CHARS + 500);
+        assert_eq!(held_after(false, Some(500), &long), None);
+        assert_eq!(clip(&long, None), (&long[500..], true));
+    }
+
+    #[test]
+    fn reading_holds_where_the_shown_reply_starts() {
+        assert_eq!(held_after(true, None, "short"), Some(0));
+        let long = "a".repeat(SHOWN_CHARS + 500);
+        let held = held_after(true, None, &long);
+        assert_eq!(held, Some(500));
+        let longer = "a".repeat(SHOWN_CHARS + 1_500);
+        let held = held_after(true, held, &longer);
+        assert_eq!(held, Some(500), "the start stays while the reply grows");
+        assert_eq!(clip(&longer, held), (&longer[500..], true));
+    }
+
+    #[test]
+    fn a_held_start_gives_way_once_too_much_follows_it() {
+        let huge = "a".repeat(500 + HOLD_CHARS + 1);
+        let held = held_after(true, Some(500), &huge);
+        assert_eq!(held, Some(huge.len() - SHOWN_CHARS));
+        assert_eq!(clip(&huge, Some(500)), clip(&huge, None));
+    }
+
+    #[test]
+    fn a_held_start_off_a_char_boundary_is_not_used() {
+        let reply = "é".repeat(10);
+        assert_eq!(clip(&reply, Some(1)), (reply.as_str(), false));
+        assert_eq!(clip(&reply, Some(999)), (reply.as_str(), false));
+        assert_eq!(held_after(true, Some(1), &reply), Some(0));
     }
 
     /// The runner's stdout, written by the test one line at a time.
@@ -558,18 +679,18 @@ mod tests {
             NOW.load(Ordering::SeqCst)
         }
         let (mut driver, _runner) = waiting(now);
-        let before = Shown::of(driver.session());
+        let before = Shown::of(&driver, 0);
         NOW.fetch_add(FIRST_REPLY_MS, Ordering::SeqCst);
         assert!(driver.pump());
         assert!(driver.first_reply_late());
-        let after = Shown::of(driver.session());
+        let after = Shown::of(&driver, 0);
         assert_eq!(READING.after_pump(before, after), READING);
     }
 
     #[test]
     fn usage_and_checkpoint_frames_are_not_new_output() {
         let (mut driver, runner) = waiting(|| 1);
-        let before = Shown::of(driver.session());
+        let before = Shown::of(&driver, 0);
         say(
             &runner,
             &json!({"type":"turn_end","turnIndex":0,"toolResults":[],
@@ -586,7 +707,7 @@ mod tests {
             !d.usage().rows().is_empty() && d.session().checkpoints_on()
         });
         assert!(pumped);
-        let after = Shown::of(driver.session());
+        let after = Shown::of(&driver, 0);
         assert_eq!(READING.after_pump(before, after), READING);
     }
 
@@ -597,7 +718,7 @@ mod tests {
         pump_until(&mut driver, |d| {
             d.session().state() == SessionState::Running
         });
-        let before = Shown::of(driver.session());
+        let before = Shown::of(&driver, 0);
         say(
             &runner,
             &json!({"type":"extension_ui_request","id":"ui_1","method":"select",
@@ -607,22 +728,40 @@ mod tests {
         pump_until(&mut driver, |d| {
             d.session().state() == SessionState::NeedsYou
         });
-        let after = Shown::of(driver.session());
+        let after = Shown::of(&driver, 0);
         assert_eq!(READING.after_pump(before, after), READING);
     }
 
     #[test]
     fn reply_text_is_new_output() {
         let (mut driver, runner) = waiting(|| 1);
-        let before = Shown::of(driver.session());
+        let before = Shown::of(&driver, 0);
         say(
             &runner,
             &json!({"type":"message_update",
                 "assistantMessageEvent":{"type":"text_delta","delta":"Found it."}}),
         );
         pump_until(&mut driver, |d| !d.session().reply().is_empty());
-        let after = Shown::of(driver.session());
+        let after = Shown::of(&driver, 0);
         assert_eq!(READING.after_pump(before, after), BEHIND);
         assert_eq!(Mode::Following.after_pump(before, after), Mode::Following);
+    }
+
+    #[test]
+    fn the_disconnected_banner_is_new_output() {
+        let (mut driver, runner) = waiting(|| 1);
+        let before = Shown::of(&driver, 0);
+        drop(runner);
+        pump_until(&mut driver, Driver::closed);
+        let after = Shown::of(&driver, 0);
+        assert_eq!(READING.after_pump(before, after), BEHIND);
+    }
+
+    #[test]
+    fn the_hidden_turns_note_counts() {
+        let (driver, _runner) = waiting(|| 1);
+        let before = Shown::of(&driver, 0);
+        let after = Shown::of(&driver, 2);
+        assert_eq!(READING.after_pump(before, after), BEHIND);
     }
 }

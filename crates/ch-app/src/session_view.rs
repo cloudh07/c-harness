@@ -1,6 +1,7 @@
 //! The session screen: the prompt, the run as it streams in, the approvals the agent is holding,
 //! and the review panel that ends in a pull request.
 
+mod anchor;
 mod composer;
 mod exit;
 mod finished;
@@ -144,6 +145,15 @@ fn may_start_new(closed: bool, landing: bool, stopping: bool, state: SessionStat
     closed || (!landing && (stopping || !is_working(state)))
 }
 
+/// The runner's output ended while the session was still open.
+fn disconnected(driver: &Driver) -> bool {
+    driver.closed()
+        && !matches!(
+            driver.session().state(),
+            SessionState::Landed | SessionState::Failed
+        )
+}
+
 /// The turn a new prompt closes, unless it has nothing to show: the first prompt of a
 /// resumed session follows no turn of this run.
 fn finished_turn(prompt: String, reply: String) -> Option<(String, String)> {
@@ -250,16 +260,11 @@ impl SessionView {
         cx.notify();
     }
 
-    /// The runner's output ended while the session was still open.
     fn disconnected(&self) -> bool {
         let Phase::Live(live) = &self.phase else {
             return false;
         };
-        live.driver.closed()
-            && !matches!(
-                live.driver.session().state(),
-                SessionState::Landed | SessionState::Failed
-            )
+        disconnected(&live.driver)
     }
 
     fn tick(&mut self, cx: &mut Context<Self>) {
@@ -269,14 +274,15 @@ impl SessionView {
             Phase::Live(live) => {
                 let state = live.driver.session().state();
                 live.finished = live.finished.before(state, live.driver.stopping());
-                let before = follow::Shown::of(live.driver.session());
+                self.follow.hold(live.driver.reply());
+                let before = follow::Shown::of(&live.driver, live.hidden);
                 let pumped = live.driver.pump();
                 let caught_up = live.catch_up();
                 let capped = live
                     .driver
                     .enforce_cost_cap(self.settings.cost_cap_cents)
                     .map(crate::view_model::cap_stopped);
-                let after = follow::Shown::of(live.driver.session());
+                let after = follow::Shown::of(&live.driver, live.hidden);
                 self.follow.saw(before, after);
                 if caught_up.replaced {
                     self.follow.reset();
@@ -403,6 +409,7 @@ impl SessionView {
             self.launch(text)
         };
         if accepted {
+            self.follow.reset();
             self.prompt
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
