@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::checkpoints::{first_run, wait_sent};
+use super::checkpoints::{first_run, open_diffs, wait_sent};
 use super::*;
 use crate::settings::Settings;
 use crate::view_model::{Mark, checklist};
@@ -86,8 +86,8 @@ fn a_check_on_the_work_the_run_diff_shows_passes_without_a_click() {
         .expect("a Checks row");
     assert_eq!(checks.mark, Mark::Pass, "{checks:?}");
     assert_eq!(
-        of_type(&rig.sent(), "ch_diff").len(),
-        1,
+        open_diffs(&rig),
+        Vec::<String>::new(),
         "a second diff was asked for"
     );
 }
