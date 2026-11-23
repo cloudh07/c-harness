@@ -89,10 +89,19 @@ C-Harness itself sends no telemetry, crash reports or update checks, and it has 
 - **Turning it off:** Only when you choose. Leave Verify command empty.
 - **How we know:** Verified in code: crates/ch-runner/src/verify.rs
 
+### Model test in first run
+
+- **Goes to:** Your model provider
+- **What:** One short prompt, "Reply with the single word ok.", with your model key. omp runs it with tools off, no session saved and its spending cap at $0.05. omp starts for it, so the rows above that happen when omp starts apply too.
+- **When:** Only when you press Test the model in first run.
+- **Why:** It checks that the key and the model answer before your first session.
+- **Turning it off:** Only when you choose. Don't press it. The other first-run checks only ask omp for its version.
+- **How we know:** Verified in code: crates/ch-runner/src/omp.rs (test_model), crates/ch-runner/src/preflight.rs and crates/ch-app/src/first_run.rs
+
 ### Sessions on an SSH host
 
 - **Goes to:** Your SSH host
-- **What:** The whole session: prompts, approvals, agent output, your model key when the session starts and your GitHub token when you land.
+- **What:** The whole session: prompts, approvals, agent output, your model key when the session starts or you test the model, and your GitHub token when you land.
 - **When:** Only when Settings, Where sessions run is set to SSH host.
 - **Why:** The agent runs on that machine.
 - **Turning it off:** Only when you choose. Choose This computer.
