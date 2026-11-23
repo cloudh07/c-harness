@@ -241,6 +241,11 @@ Notable changes to C-Harness. The format follows
   land, for secrets or anything else, a bad check no longer blocks the next try, since checks
   only run in review; the pull request says what the check found. While the agent still works,
   the section says Land waits for review.
+- `ch-app`: when a run ends, the app asks the runner for a diff of the whole session, so the
+  Checks row can match the last check without pressing Show diff. The runner refuses a land
+  while a diff runs, so a land waits for any open diff. Once the agent has stopped, it waits up
+  to 15 seconds and then goes out; if the diff is still running, the runner refuses it. Restore
+  stays off until the diff comes back.
 - `ch-app`: the header shows the share of input read from the cache (`99% cached`) instead
   of the cached token count. When some turns went uncounted, the share is of the counted ones
   and marked `~`.

@@ -257,6 +257,7 @@ fn a_runner_at_or_past_the_secret_scan_protocol_lands() {
         let mut rig = Rig::new();
         rig.hello_at(protocol);
         run_to_review(&mut rig);
+        super::checkpoints::answer_run_diff(&mut rig, &[]);
 
         assert_eq!(rig.driver.runner_block(), None, "protocol {protocol}");
         assert!(rig.driver.land(land_request()), "protocol {protocol}");

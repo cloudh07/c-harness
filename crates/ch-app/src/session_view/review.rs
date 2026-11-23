@@ -176,7 +176,10 @@ impl SessionView {
             .filter(|failure| failure.stage == LAND_STAGE)
             .and_then(|failure| failure.secret_scan.as_ref());
         let busy = if driver.landing() {
-            Some("Landing. The agent is stopped first, then the runner commits and pushes.")
+            Some(
+                "Landing. The agent stops and any diff finishes first, then the runner commits \
+                 and pushes.",
+            )
         } else if driver.stopping() {
             Some("Stopping the agent.")
         } else if !driver.closed() && !driver.can_land() && driver.runner_block().is_none() {

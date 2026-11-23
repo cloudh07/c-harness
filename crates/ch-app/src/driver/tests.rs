@@ -298,14 +298,18 @@ fn runs_one_session_from_start_to_landed() {
     rig.pump_until("review", |d, _| {
         d.session().state() == SessionState::NeedsReview
     });
+    rig.say(
+        &json!({"type":"ch_diff_result","id":"req_3","base":"abc","stat":"",
+        "patch":"","truncated":false}),
+    );
     assert!(rig.driver.verify("cargo test"));
     assert!(rig.driver.diff());
     rig.say(
-        &json!({"type":"ch_evidence","id":"req_3","command":"cargo test","exit_code":0,
+        &json!({"type":"ch_evidence","id":"req_4","command":"cargo test","exit_code":0,
         "duration_ms":10,"output_tail":"ok","truncated":false,"timed_out":false}),
     );
     rig.say(
-        &json!({"type":"ch_diff_result","id":"req_4","base":"abc","stat":" a | 1 +",
+        &json!({"type":"ch_diff_result","id":"req_5","base":"abc","stat":" a | 1 +",
         "patch":"+x","truncated":false}),
     );
     rig.pump_until("evidence and diff", |d, _| {
@@ -322,7 +326,7 @@ fn runs_one_session_from_start_to_landed() {
         "land must wait for omp to stop"
     );
 
-    rig.say(&json!({"type":"ch_stopped","id":"req_5","exit_code":0}));
+    rig.say(&json!({"type":"ch_stopped","id":"req_6","exit_code":0}));
     rig.pump_until("the land", |_, sent| !of_type(sent, "ch_land").is_empty());
     let sent = rig.sent();
     let land = of_type(&sent, "ch_land")[0];
@@ -330,7 +334,7 @@ fn runs_one_session_from_start_to_landed() {
     assert_eq!(land["branch"], "ch/s1");
 
     rig.say(
-        &json!({"type":"ch_landed","id":"req_6","branch":"ch/s1","commit":"def",
+        &json!({"type":"ch_landed","id":"req_7","branch":"ch/s1","commit":"def",
         "pull_request_url":"https://github.com/example/demo/pull/7"}),
     );
     rig.pump_until("landed", |d, _| d.session().state() == SessionState::Landed);
@@ -476,6 +480,7 @@ fn a_select_that_is_not_an_approval_is_answered_no() {
 fn a_land_in_flight_blocks_a_second_one_until_it_fails() {
     let mut rig = Rig::new();
     settle(&mut rig);
+    checkpoints::answer_run_diff(&mut rig, &[]);
     assert!(rig.driver.can_land());
     assert!(rig.driver.land(land_request()));
     assert!(!rig.driver.can_land());
@@ -599,6 +604,7 @@ fn stderr_is_masked_before_display() {
     assert!(!log[0].contains(KEY), "{log:?}");
 }
 
+mod auto_diff;
 mod checkpoints;
 mod cost;
 mod finished;
