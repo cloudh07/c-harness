@@ -9,10 +9,11 @@ use ch_core::SessionState;
 use gpui_kit::{Context, SystemNotification};
 
 use super::{Phase, SessionView};
+use crate::driver::Driver;
 
 /// What one session has seen of its current run.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Run {
+pub(crate) struct Run {
     /// It was running since it last settled.
     armed: bool,
     /// The user stopped this run, or asked to land, which stops it first.
@@ -22,7 +23,7 @@ pub(super) struct Run {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Change {
+pub(crate) enum Change {
     Nothing,
     /// The run ended on its own: say so, if the window is in the background.
     Ended,
@@ -33,7 +34,7 @@ pub(super) enum Change {
 impl Run {
     /// Called before the driver reads new frames. A stop has to be caught here: once the end
     /// lands, the driver no longer says it is stopping.
-    pub(super) fn before(self, state: SessionState, stopping: bool) -> Self {
+    pub(crate) fn before(self, state: SessionState, stopping: bool) -> Self {
         let armed = self.armed || state == SessionState::Running;
         Self {
             armed,
@@ -42,8 +43,15 @@ impl Run {
         }
     }
 
+    /// Lets the driver read new frames, seeing first whether the user is stopping the run.
+    /// Returns whether the driver changed.
+    pub(crate) fn read_frames(self, driver: &mut Driver) -> (Self, bool) {
+        let run = self.before(driver.session().state(), driver.stopping());
+        (run, driver.pump())
+    }
+
     /// Called after the driver read new frames.
-    pub(super) fn after(self, state: SessionState) -> (Self, Change) {
+    pub(crate) fn after(self, state: SessionState) -> (Self, Change) {
         match state {
             SessionState::Running | SessionState::NeedsYou => {
                 let armed = self.armed || state == SessionState::Running;

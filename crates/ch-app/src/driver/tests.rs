@@ -1,6 +1,8 @@
 use super::*;
 use ch_protocol::runner::{GitAuthor, RUNNER_PROTOCOL_VERSION, SECRET_SCAN_PROTOCOL};
+use std::cell::Cell;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -36,13 +38,32 @@ impl Stdin {
 struct Stdout {
     rx: Receiver<Vec<u8>>,
     pending: Vec<u8>,
+    received: usize,
+    /// Writes the link has finished with. It only asks for more once it queued every line it
+    /// was given.
+    queued: Arc<AtomicUsize>,
+}
+
+impl Stdout {
+    fn new(rx: Receiver<Vec<u8>>) -> Self {
+        Self {
+            rx,
+            pending: Vec::new(),
+            received: 0,
+            queued: Arc::default(),
+        }
+    }
 }
 
 impl Read for Stdout {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.pending.is_empty() {
+            self.queued.store(self.received, Ordering::SeqCst);
             match self.rx.recv() {
-                Ok(bytes) => self.pending = bytes,
+                Ok(bytes) => {
+                    self.pending = bytes;
+                    self.received += 1;
+                }
                 Err(_) => return Ok(0),
             }
         }
@@ -57,6 +78,8 @@ struct Rig {
     driver: Driver,
     stdin: Stdin,
     runner: Option<Sender<Vec<u8>>>,
+    said: Cell<usize>,
+    queued: Arc<AtomicUsize>,
 }
 
 impl Rig {
@@ -67,15 +90,15 @@ impl Rig {
     fn with_clock(clock: fn() -> u64) -> Self {
         let stdin = Stdin::default();
         let (tx, rx) = mpsc::channel();
-        let stdout = Stdout {
-            rx,
-            pending: Vec::new(),
-        };
+        let stdout = Stdout::new(rx);
+        let queued = Arc::clone(&stdout.queued);
         let link = Link::new(stdin.clone(), stdout, None::<std::io::Empty>);
         Self {
             driver: Driver::new(link, clock),
             stdin,
             runner: Some(tx),
+            said: Cell::new(0),
+            queued,
         }
     }
 
@@ -94,6 +117,17 @@ impl Rig {
         let mut bytes = line.to_string().into_bytes();
         bytes.push(b'\n');
         self.runner.as_ref().unwrap().send(bytes).unwrap();
+        self.said.set(self.said.get() + 1);
+    }
+
+    /// Says a line and waits until the link has queued it, so the driver's next pump reads it.
+    fn queue(&self, line: &Value) {
+        self.say(line);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.queued.load(Ordering::SeqCst) < self.said.get() {
+            assert!(Instant::now() < deadline, "the link never read {line}");
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn pump_until(&mut self, what: &str, done: impl Fn(&Driver, &[Value]) -> bool) {
@@ -552,10 +586,7 @@ fn stderr_is_masked_before_display() {
     let mut rig = Rig::new();
     let stdin = Stdin::default();
     let (_tx, rx) = mpsc::channel::<Vec<u8>>();
-    let stdout = Stdout {
-        rx,
-        pending: Vec::new(),
-    };
+    let stdout = Stdout::new(rx);
     let stderr = std::io::Cursor::new(format!("using key {KEY}\n").into_bytes());
     rig.driver = Driver::new(Link::new(stdin, stdout, Some(stderr)), || 1);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -570,6 +601,7 @@ fn stderr_is_masked_before_display() {
 
 mod checkpoints;
 mod cost;
+mod finished;
 mod first_reply;
 mod projection;
 mod restore;

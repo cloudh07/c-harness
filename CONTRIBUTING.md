@@ -61,16 +61,19 @@ against:
 CH_OMP=/path/to/omp cargo test -p ch-runner --test omp_headers -- --ignored --nocapture --test-threads=1
 ```
 
-The test starts omp with a fake key and a temporary home, sends one prompt to a listener on
-127.0.0.1 and refuses every other connection. It compares the request line, header names and the
-values of a few harmless headers (user-agent, content-type and the like) with
-`testdata/omp/headers-*.txt`. It never records the key or the ids that link requests, and it
-prints the hosts omp tried to reach on the way.
+The test starts omp with a fake key, a temporary home and only a short list of environment
+variables (PATH, locale, terminal and the like), sends one prompt to a listener on 127.0.0.1 and
+refuses every other connection. It compares the request line, header names and the values of a
+few harmless headers (user-agent, content-type and the like) with `testdata/omp/headers-*.txt`. It
+never records the key or the ids that link requests. It fails when a request carries the user's
+name, home folder or machine name, and when omp connects to a host that `STARTUP_HOSTS` in
+`crates/ch-core/src/outbound.rs` does not list, or skips one it does.
 
 If the test fails, read the change. A new header or host that says who the user is, which machine
 or repository they are on, or links their requests belongs in `PRIVACY.md` and
-`crates/ch-core/src/outbound.rs`. Then accept the new requests with `CH_BLESS=1` and set
-`OMP_VERSION_SEEN` to the omp version you checked. Last checked: omp 18.13.1.
+`crates/ch-core/src/outbound.rs`. A new host goes in `STARTUP_HOSTS` and the model catalogs row.
+Then accept the new requests with `CH_BLESS=1` and set `OMP_VERSION_SEEN` to the omp version you
+checked. Last checked: omp 18.13.1.
 
 ## House rules
 

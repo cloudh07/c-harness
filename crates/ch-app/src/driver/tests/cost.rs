@@ -5,7 +5,7 @@ use super::*;
 use ch_core::LedgerMark;
 
 /// A session whose agent is working, with the runner's hello already said.
-fn running(rig: &mut Rig) {
+pub(super) fn running(rig: &mut Rig) {
     rig.hello();
     rig.driver
         .start("s1", Vec::new(), BTreeMap::new(), "hello".into());
@@ -18,7 +18,7 @@ fn running(rig: &mut Rig) {
 }
 
 /// Ends a turn that cost `cost` dollars, or one omp could not price.
-fn turn(rig: &mut Rig, cost: Option<f64>) {
+pub(super) fn turn(rig: &mut Rig, cost: Option<f64>) {
     let mut usage = json!({"input":10,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":12});
     if let Some(cost) = cost {
         usage["cost"] = json!({ "total": cost });

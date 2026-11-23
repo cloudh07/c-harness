@@ -214,13 +214,17 @@ Notable changes to C-Harness. The format follows
   request title and the start of its description. They are not edited in the app; edit them on
   GitHub once the pull request is open.
 - `PRIVACY.md` and Settings, What leaves this machine: every place data goes without you
-  sending it, with what goes, when, why, whether you can turn it off, and whether the row was
-  read in code or seen on the wire. The list lives in `ch-core` (`outbound`), and a test fails
-  when `PRIVACY.md` misses a row of it.
+  sending it, with what goes, when, why, whether you can turn it off, and how we know: read in
+  code, seen in a test run, seen once by hand, or not verified. Opening a pull request in your
+  browser is on it. The list lives in `ch-core` (`outbound`), and a test fails when
+  `PRIVACY.md` misses a row of it.
 - `ch-runner`: an ignored test, `omp_headers`, runs omp against a listener on 127.0.0.1 with a
   fake key and records the request lines and header names it sends to Anthropic and OpenAI,
-  with values only for harmless headers. `CONTRIBUTING.md` says to run it before each release.
-  Checked against omp 18.13.1.
+  with values only for harmless headers. It fails on a header it does not expect, and when omp
+  connects at startup to a host the model-catalogs row does not name, or skips one it names.
+  omp gets only the environment variables it needs and is killed if the test fails partway.
+  Only rows this test checks are marked "Seen in a test run". `CONTRIBUTING.md` says to run it
+  before each release. Checked against omp 18.13.1.
 - `ch-app`: a notification when a run ends, so a session is ready for review, while the window
   is in the background. It comes once per run, never for a run you stopped, a land, a crash or
   a start that failed, and says nothing about the work. The next run, a land or closing the
@@ -309,6 +313,12 @@ Notable changes to C-Harness. The format follows
   keep waiting for the runner's answer, since only that says what the working tree holds.
 - `ch-app`: with no current diff, the Checks row names the button to press, Show diff or
   Refresh diff under Changes, instead of asking for "a fresh diff".
+- `ch-app`: saving Settings no longer clears a banner about the session, such as a stop at the
+  cost cap. The "Finish Settings first" banner lists what is still missing and goes away once
+  nothing is.
+- What leaves this machine: the row for commands the agent runs no longer says your approval
+  mode can let them run without asking, since both Approvals choices ask before each command.
+  What can is approving a tool for the session, and the row now says so.
 
 ### Security
 
