@@ -77,7 +77,7 @@ C-Harness itself sends no telemetry, crash reports or update checks, and it has 
 - **What:** Whatever that command sends, for example curl, git push or a package install.
 - **When:** When you approve the command, or without asking if your approval mode allows it.
 - **Why:** The agent works by running commands in your project.
-- **Turning it off:** Only when you choose. Deny the command. C-Harness marks network commands such as curl, wget, ssh and git push as high risk.
+- **Turning it off:** Only when you choose. Deny the command. C-Harness marks ssh, scp, sftp and git push as high risk, and curl or wget when the same command also runs a script. A plain curl is medium risk.
 - **How we know:** Verified in code: crates/ch-core/src/risk.rs
 
 ### Your Verify command

@@ -22,6 +22,7 @@ mod checkpoints;
 mod cost;
 mod first_reply;
 mod history;
+mod restore;
 
 pub use cost::CapReached;
 pub use first_reply::FIRST_REPLY_MS;
@@ -122,6 +123,7 @@ pub struct Driver {
     earlier: Earlier,
     omp_session_file: Option<String>,
     saves: checkpoints::Saves,
+    rewind: restore::Rewind,
     first_reply: first_reply::FirstReply,
     /// The protocol the runner announced in its first hello. A later hello changes nothing.
     runner_protocol: Option<u32>,
@@ -152,6 +154,7 @@ impl Driver {
             earlier: Earlier::Off,
             omp_session_file: None,
             saves: checkpoints::Saves::default(),
+            rewind: restore::Rewind::default(),
             first_reply: first_reply::FirstReply::default(),
             runner_protocol: None,
             cap_hit: None,
@@ -284,10 +287,12 @@ impl Driver {
             return false;
         }
         let id = self.next_id();
-        self.send_omp(
+        let sent = self.send_omp(
             &json!({ "id": id, "type": "prompt", "message": text }),
             Some(ClientAction::PromptSent),
-        )
+        );
+        self.rewind.reply_dropped &= !sent;
+        sent
     }
 
     pub fn answer(&mut self, id: &str, decision: ApprovalDecision) -> Result<(), String> {
@@ -371,6 +376,7 @@ impl Driver {
         }
         self.flush_queued();
         self.page_history();
+        self.rewind_tick();
         let wait = if self.closed || self.stopping() {
             None
         } else {
@@ -439,6 +445,7 @@ impl Driver {
                 }
                 self.on_resume_frame(frame);
                 self.cancel_unanswerable(frame);
+                self.on_rewind_frame(frame);
             }
             RunnerLine::Runner(RunnerFrame::Hello { protocol, .. }) => {
                 self.runner_protocol.get_or_insert(*protocol);

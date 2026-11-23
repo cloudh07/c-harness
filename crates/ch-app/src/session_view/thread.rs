@@ -198,7 +198,7 @@ impl SessionView {
 /// The turn in progress. A resumed session has none until the first prompt, only a line while
 /// the earlier conversation loads.
 fn current_turn(p: Palette, live: &Live, waiting: bool) -> Option<Div> {
-    let reply = live.driver.session().reply();
+    let reply = live.driver.reply();
     if live.prompt.is_empty() && reply.is_empty() {
         return (live.driver.loading_history() && !live.driver.closed())
             .then(|| working(p, "Loading the earlier conversation."));

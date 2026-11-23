@@ -18,21 +18,24 @@ pub(super) struct Saves {
 impl Driver {
     /// Whether a restore can go out now. The runner refuses one while a check, diff or
     /// restore runs, and a save in flight would race it, so every open request blocks it.
+    /// omp must be idle too: a restore or a mark under way, or the earlier conversation
+    /// still loading, would race the move in its conversation.
     pub fn can_restore(&self) -> bool {
-        self.can_review() && self.session.checkpoints_on() && self.open.is_empty()
+        self.can_review()
+            && self.session.checkpoints_on()
+            && self.open.is_empty()
+            && !self.rewinding()
+            && !self.marking()
+            && !self.loading_history()
     }
 
-    /// Puts the working tree back at checkpoint `turn`, 0 being the session's base.
+    /// Puts the conversation and the working tree back at checkpoint `turn`, 0 being the
+    /// session's base. Returns false only if nothing could be sent; a refusal leaves a note.
     pub fn restore(&mut self, turn: u32) -> bool {
         if !self.can_restore() {
             return false;
         }
-        let id = self.next_id();
-        let frame = ClientFrame::Restore {
-            id: id.clone(),
-            turn,
-        };
-        self.send_request(id, Request::Restore, &frame, None)
+        self.start_restore(turn)
     }
 
     /// Asks for the changes from checkpoint `from` to `to`, or to the working tree.
@@ -49,8 +52,14 @@ impl Driver {
         self.send_request(id, Request::TurnDiff { from, to }, &frame, None)
     }
 
-    /// A save of the last run is still on its way, so a new prompt waits for it.
+    /// A save of the last run, or its mark in the conversation, is still on its way, so a new
+    /// prompt waits for it.
     pub fn saving_checkpoint(&self) -> bool {
+        self.save_open() || self.marking()
+    }
+
+    /// The runner has not yet answered the last save, and it has time left.
+    pub(super) fn save_open(&self) -> bool {
         self.saves
             .waiting
             .as_ref()
@@ -59,7 +68,7 @@ impl Driver {
 
     /// A restore is on its way, so the session waits for it.
     pub fn restoring(&self) -> bool {
-        self.open.values().any(|kind| *kind == Request::Restore)
+        self.open.values().any(|kind| *kind == Request::Restore) || self.rewinding()
     }
 
     /// Saves a checkpoint when the state change `before` to now ended a run. A save that
@@ -74,7 +83,8 @@ impl Driver {
         let id = self.next_id();
         let frame = ClientFrame::Checkpoint { id: id.clone() };
         if self.send_request(id.clone(), Request::Checkpoint, &frame, None) {
-            self.saves.waiting = Some((id, (self.clock)()));
+            self.saves.waiting = Some((id.clone(), (self.clock)()));
+            self.start_mark(id);
         }
     }
 
@@ -82,10 +92,10 @@ impl Driver {
     pub(super) fn on_checkpoint_answer(&mut self, kind: Request, frame: &RunnerFrame) {
         match kind {
             Request::Checkpoint => {
-                let (RunnerFrame::Checkpointed { id, .. }
-                | RunnerFrame::Error { id: Some(id), .. }) = frame
-                else {
-                    return;
+                let (id, turn) = match frame {
+                    RunnerFrame::Checkpointed { id, checkpoint } => (id, Some(checkpoint.turn)),
+                    RunnerFrame::Error { id: Some(id), .. } => (id, None),
+                    _ => return,
                 };
                 if self
                     .saves
@@ -95,9 +105,11 @@ impl Driver {
                 {
                     self.saves.waiting = None;
                 }
+                self.mark_turn(id, turn);
             }
             // Done or refused, the tree may have changed, so the diff on screen is stale.
             Request::Restore => {
+                self.on_code_answer(frame);
                 self.diff();
             }
             Request::Verify

@@ -289,6 +289,8 @@ mod tests {
             ("git branch -D main", Risk::Medium),
             ("cargo fmt", Risk::Medium),
             ("npm install", Risk::Medium),
+            ("curl https://example.test/data.json", Risk::Medium),
+            ("wget https://example.test/data.json", Risk::Medium),
             ("/bin/ls", Risk::Medium),
             ("ls && make", Risk::Medium),
             ("ls; make", Risk::Medium),

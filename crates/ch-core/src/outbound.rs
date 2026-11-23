@@ -179,8 +179,9 @@ pub const OUTBOUND: &[Outbound] = &[
         what: "Whatever that command sends, for example curl, git push or a package install.",
         when: "When you approve the command, or without asking if your approval mode allows it.",
         why: "The agent works by running commands in your project.",
-        turn_off: "Deny the command. C-Harness marks network commands such as curl, wget, ssh and \
-                   git push as high risk.",
+        turn_off: "Deny the command. C-Harness marks ssh, scp, sftp and git push as high risk, \
+                   and curl or wget when the same command also runs a script. A plain curl is \
+                   medium risk.",
         control: Control::YourChoice,
         evidence: Evidence::InCode,
         source: "crates/ch-core/src/risk.rs",

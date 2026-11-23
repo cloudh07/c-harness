@@ -96,9 +96,14 @@ const OUTBOUND: &[(&str, Keep)] = &[
     ),
 ];
 
+/// omp's command that lists the entries of its session file, read to find where a checkpoint
+/// sits in the conversation.
+pub const ENTRIES_COMMAND: &str = "get_entries";
+
 /// Commands the app sends on its own to read state. Their answers repeat every turn and say
-/// nothing about the work, and `get_session_stats` names omp's own session file.
-const POLLED: &[&str] = &[STATS_COMMAND, HISTORY_COMMAND];
+/// nothing about the work, and `get_session_stats` names omp's own session file. A
+/// `get_entries` answer repeats the whole conversation.
+const POLLED: &[&str] = &[STATS_COMMAND, HISTORY_COMMAND, ENTRIES_COMMAND];
 
 #[derive(Serialize)]
 struct Record<'a> {
@@ -391,6 +396,18 @@ mod tests {
         assert_eq!(transcript.outgoing(0, &ask), None);
         let prompt = r#"{"id":"req_1","type":"response","command":"prompt","success":true}"#;
         let record = incoming(&mut transcript, prompt).expect("recorded");
+        assert!(record.contains(r#""seq":1"#), "{record}");
+    }
+
+    #[test]
+    fn entry_lists_are_not_recorded() {
+        let mut transcript = Transcript::new();
+        let ask = json!({"id": "req_5", "type": ENTRIES_COMMAND, "since": "e1"});
+        assert_eq!(transcript.outgoing(0, &ask), None);
+        let list = r#"{"id":"req_5","type":"response","command":"get_entries","success":true,"data":{"entries":[{"type":"message","id":"e2","message":{"role":"user","content":"old secret plan"}}],"leafId":"e2"}}"#;
+        assert_eq!(incoming(&mut transcript, list), None);
+        let label = r#"{"id":"req_6","type":"response","command":"set_label","success":true}"#;
+        let record = incoming(&mut transcript, label).expect("recorded");
         assert!(record.contains(r#""seq":1"#), "{record}");
     }
 
