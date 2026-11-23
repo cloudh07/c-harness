@@ -144,6 +144,11 @@ fn runner_failure(err: &RuntimeError) -> Outcome {
         RuntimeError::PreflightFailed { .. } | RuntimeError::RunnerCheckFailed { .. } => {
             Outcome::fail(format!("{err}."), reinstall)
         }
+        RuntimeError::PreflightTimedOut { location, seconds } => Outcome::fail(
+            format!("The setup check on {location} did not finish within {seconds} seconds."),
+            "Something there is stuck or very slow. Check the network and how busy that \
+             machine is, then check again.",
+        ),
         RuntimeError::SshFailed { host, stderr } => Outcome::fail(
             format!("ssh could not reach {host}: {stderr}"),
             format!("Make `ssh {host}` work in a terminal without any prompt, then check again."),
@@ -548,6 +553,41 @@ mod tests {
             panic!("a missing runner fails");
         };
         assert!(fix.contains(RUNNER_INSTALL_COMMAND), "{fix}");
+    }
+
+    fn failure(err: &RuntimeError) -> (String, String) {
+        let Outcome::Fail { why, fix } = runner_failure(err) else {
+            panic!("every runner error fails the row");
+        };
+        (why, fix)
+    }
+
+    #[test]
+    fn ssh_io_and_timeout_failures_say_what_to_do() {
+        let (why, fix) = failure(&RuntimeError::SshFailed {
+            host: "box".into(),
+            stderr: "Connection refused".into(),
+        });
+        assert_eq!(why, "ssh could not reach box: Connection refused");
+        assert!(fix.contains("`ssh box`"), "{fix}");
+
+        let (why, fix) = failure(&RuntimeError::Io {
+            action: "resolve the repository path",
+            source: std::io::Error::other("denied"),
+        });
+        assert!(why.starts_with("could not resolve the repository path: denied"), "{why}");
+        assert!(why.ends_with('.'), "{why}");
+        assert_eq!(fix, "Fix what the message says, then check again.");
+
+        let (why, fix) = failure(&RuntimeError::PreflightTimedOut {
+            location: "box".into(),
+            seconds: 180,
+        });
+        assert_eq!(
+            why,
+            "The setup check on box did not finish within 180 seconds."
+        );
+        assert!(fix.contains("check again"), "{fix}");
     }
 
     #[test]

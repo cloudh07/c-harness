@@ -32,6 +32,8 @@ pub enum RuntimeError {
         code: Option<i32>,
         stderr: String,
     },
+    /// `ch-runner preflight` at `location` was still running after `seconds` and was killed.
+    PreflightTimedOut { location: String, seconds: u64 },
     /// A program this machine needs, `git` or `ssh`, is not installed.
     ToolNotFound { tool: &'static str },
     /// `ssh` could not connect or log in.
@@ -115,6 +117,11 @@ impl fmt::Display for RuntimeError {
                 }
                 Ok(())
             }
+            Self::PreflightTimedOut { location, seconds } => write!(
+                f,
+                "the setup check on {location} did not finish within {seconds} seconds and was \
+                 stopped"
+            ),
             Self::ToolNotFound { tool } => write!(
                 f,
                 "`{tool}` was not found on this machine. Install it and make sure it is on PATH, \
@@ -215,6 +222,14 @@ mod tests {
         assert_eq!(
             failed.to_string(),
             "the setup check on box exited with code 1: boom"
+        );
+        let stuck = RuntimeError::PreflightTimedOut {
+            location: "box".into(),
+            seconds: 120,
+        };
+        assert_eq!(
+            stuck.to_string(),
+            "the setup check on box did not finish within 120 seconds and was stopped"
         );
     }
 }
