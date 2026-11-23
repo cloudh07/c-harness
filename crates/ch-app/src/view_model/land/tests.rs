@@ -177,7 +177,7 @@ fn only_pull_request_pages_of_the_target_repo_open() {
 fn the_preview_is_what_the_land_sends() {
     let settings = ready_settings();
     let evidence = [passed()];
-    let list = checklist(&settings, "s1", "Fix it\nmore", &evidence, None, None);
+    let list = checklist(&settings, "s1", "Fix it\nmore", &evidence, None, None, None);
     let request = land_request(
         &settings,
         "s1",
@@ -195,35 +195,172 @@ fn the_preview_is_what_the_land_sends() {
 
 #[test]
 fn a_clean_land_has_no_blockers() {
-    let list = checklist(&ready_settings(), "s1", "Fix it", &[passed()], None, None);
+    let list = checklist(
+        &ready_settings(),
+        "s1",
+        "Fix it",
+        &[passed()],
+        None,
+        None,
+        None,
+    );
     assert_eq!(list.blocked(), None, "{list:?}");
     let marks: Vec<Mark> = list.items.iter().map(|item| item.mark).collect();
     assert_eq!(
         marks,
         [Mark::Unknown, Mark::Unknown, Mark::Pass, Mark::Pass],
-        "the app sees neither the work nor the scan before Land"
+        "with no current diff the app can't match the check to the work, and the scan runs \
+         during Land"
     );
 }
 
-/// The app keeps the tree a check ran on but never the tree the land will carry, so it cannot
+/// With no current diff the app has nothing to match the checked tree against, so it cannot
 /// prove a passed check still holds.
 #[test]
-fn a_passed_check_reads_unknown_and_does_not_block() {
-    let list = checklist(&ready_settings(), "s1", "Fix it", &[passed()], None, None);
+fn a_passed_check_with_no_diff_reads_unknown_and_does_not_block() {
+    let list = checklist(
+        &ready_settings(),
+        "s1",
+        "Fix it",
+        &[passed()],
+        None,
+        None,
+        None,
+    );
     let checks = item(&list, "Checks");
     assert_eq!(checks.mark, Mark::Unknown);
     assert!(!checks.blocks);
     assert_eq!(
         checks.reason,
-        "`cargo test` passed in 1.5s on the work as it was then. If the work changed since, run \
-         the checks again."
+        "`cargo test` passed in 1.5s. Take a fresh diff to match the check to the work as it is \
+         now."
     );
     assert_eq!(list.blocked(), None);
 }
 
+fn diff(tree: Option<&str>) -> Diff {
+    Diff {
+        base: "abc".into(),
+        stat: String::new(),
+        patch: String::new(),
+        truncated: false,
+        tree: tree.map(Into::into),
+    }
+}
+
+fn checks_against(diff: &Diff) -> LandItem {
+    let list = checklist(
+        &ready_settings(),
+        "s1",
+        "Fix it",
+        &[passed()],
+        Some(diff),
+        None,
+        None,
+    );
+    item(&list, "Checks").clone()
+}
+
+#[test]
+fn a_passed_check_on_the_tree_the_diff_shows_passes() {
+    let list = checklist(
+        &ready_settings(),
+        "s1",
+        "Fix it",
+        &[passed()],
+        Some(&diff(Some("t1"))),
+        None,
+        None,
+    );
+    let checks = item(&list, "Checks");
+    assert_eq!(checks.mark, Mark::Pass);
+    assert!(!checks.blocks);
+    assert_eq!(
+        checks.reason,
+        "`cargo test` passed in 1.5s on the work the latest diff shows."
+    );
+    assert_eq!(list.blocked(), None);
+}
+
+/// The runner refuses this land, but it says why, so the row only warns.
+#[test]
+fn a_passed_check_on_other_work_is_not_a_pass() {
+    let checks = checks_against(&diff(Some("t2")));
+    assert_eq!(checks.mark, Mark::Unknown);
+    assert!(!checks.blocks);
+    assert!(checks.reason.contains("other work"), "{checks:?}");
+}
+
+#[test]
+fn a_diff_without_a_tree_reads_unknown() {
+    let checks = checks_against(&diff(None));
+    assert_eq!(checks.mark, Mark::Unknown);
+    assert!(!checks.blocks);
+    assert!(
+        checks.reason.contains("did not say which work"),
+        "{checks:?}"
+    );
+}
+
+#[test]
+fn a_refused_land_outweighs_a_matching_diff() {
+    let refused = land_failure(None);
+    let list = checklist(
+        &ready_settings(),
+        "s1",
+        "Fix it",
+        &[passed()],
+        Some(&diff(Some("t1"))),
+        Some(&refused),
+        None,
+    );
+    let checks = item(&list, "Checks");
+    assert_eq!(checks.mark, Mark::Unknown);
+    assert!(
+        checks.reason.contains("refused the last land"),
+        "{checks:?}"
+    );
+}
+
+/// The review gap end to end: a diff on the checked tree, then a prompt that changes the work.
+/// The session stops offering that diff, so the row can't pass on it.
+#[test]
+fn a_prompt_after_the_diff_takes_the_pass_away() {
+    use ch_core::{ClientAction, Session};
+    use ch_protocol::runner::route_runner_line;
+
+    let mut session = Session::new();
+    let feed = |session: &mut Session, line: &str| {
+        session.apply_line(&route_runner_line(line).expect("a routable line"));
+    };
+    session.apply_action(&ClientAction::StartSent);
+    feed(&mut session, r#"{"type":"ready"}"#);
+    feed(
+        &mut session,
+        r#"{"type":"ch_diff_result","id":"d1","base":"abc","stat":"","patch":"","truncated":false,"tree":"t1"}"#,
+    );
+    let mark = |session: &Session| {
+        let list = checklist(
+            &ready_settings(),
+            "s1",
+            "Fix it",
+            &[passed()],
+            session.current_diff(),
+            None,
+            None,
+        );
+        item(&list, "Checks").mark
+    };
+    assert_eq!(mark(&session), Mark::Pass);
+
+    session.apply_action(&ClientAction::PromptSent);
+    feed(&mut session, r#"{"type":"session_settled"}"#);
+    assert_eq!(mark(&session), Mark::Unknown);
+}
+
 #[test]
 fn checks_with_no_run_are_unknown_and_do_not_block() {
-    let list = checklist(&ready_settings(), "s1", "Fix it", &[], None, None);
+    let list = checklist(&ready_settings(), "s1", "Fix it", &[], None, None, None);
     let checks = item(&list, "Checks");
     assert_eq!(checks.mark, Mark::Unknown);
     assert!(!checks.blocks);
@@ -234,7 +371,7 @@ fn checks_with_no_run_are_unknown_and_do_not_block() {
         ..ready_settings()
     };
     let checks = item(
-        &checklist(&unset, "s1", "Fix it", &[], None, None),
+        &checklist(&unset, "s1", "Fix it", &[], None, None, None),
         "Checks",
     );
     assert_eq!(checks.mark, Mark::Unknown);
@@ -250,7 +387,7 @@ fn a_failed_or_timed_out_last_check_blocks() {
             ..passed()
         },
     ] {
-        let list = checklist(&ready_settings(), "s1", "Fix it", &[last], None, None);
+        let list = checklist(&ready_settings(), "s1", "Fix it", &[last], None, None, None);
         let checks = item(&list, "Checks");
         assert_eq!(checks.mark, Mark::Fail, "{checks:?}");
         assert!(checks.blocks);
@@ -269,6 +406,7 @@ fn only_the_last_check_counts() {
         &[earlier, passed()],
         None,
         None,
+        None,
     );
     let checks = item(&list, "Checks");
     assert_eq!(checks.mark, Mark::Unknown);
@@ -279,7 +417,15 @@ fn only_the_last_check_counts() {
 fn a_check_on_work_that_moved_while_it_ran_blocks() {
     let stale = run(Some(0), Some("t1"), Some("t2"));
     let checks = item(
-        &checklist(&ready_settings(), "s1", "Fix it", &[stale], None, None),
+        &checklist(
+            &ready_settings(),
+            "s1",
+            "Fix it",
+            &[stale],
+            None,
+            None,
+            None,
+        ),
         "Checks",
     );
     assert_eq!(checks.mark, Mark::Fail);
@@ -295,7 +441,15 @@ fn a_check_with_no_recorded_work_blocks() {
         run(Some(0), None, Some("t1")),
     ] {
         let checks = item(
-            &checklist(&ready_settings(), "s1", "Fix it", &[unrecorded], None, None),
+            &checklist(
+                &ready_settings(),
+                "s1",
+                "Fix it",
+                &[unrecorded],
+                None,
+                None,
+                None,
+            ),
             "Checks",
         );
         assert_eq!(checks.mark, Mark::Fail, "{checks:?}");
@@ -312,6 +466,7 @@ fn a_pass_turns_unknown_after_the_runner_refused_a_land() {
             "s1",
             "Fix it",
             &[passed()],
+            None,
             Some(&refused),
             None,
         ),
@@ -341,6 +496,7 @@ fn a_bad_check_stops_blocking_after_the_runner_refused_a_land() {
                 "s1",
                 "Fix it",
                 &[run],
+                None,
                 Some(&refused),
                 None,
             );
@@ -367,21 +523,27 @@ fn failures_outside_the_land_do_not_touch_the_checklist() {
         "s1",
         "Fix it",
         &[passed()],
+        None,
         Some(&prompt),
         None,
     );
     let checks = item(&list, "Checks");
-    assert!(
-        checks.reason.contains("on the work as it was then"),
-        "{checks:?}"
-    );
+    assert!(checks.reason.contains("Take a fresh diff"), "{checks:?}");
     assert_eq!(item(&list, "Secret scan").mark, Mark::Unknown);
 }
 
 #[test]
 fn the_scan_is_unknown_until_land_runs_it() {
     let scan = item(
-        &checklist(&ready_settings(), "s1", "Fix it", &[passed()], None, None),
+        &checklist(
+            &ready_settings(),
+            "s1",
+            "Fix it",
+            &[passed()],
+            None,
+            None,
+            None,
+        ),
         "Secret scan",
     );
     assert_eq!(scan.mark, Mark::Unknown);
@@ -400,6 +562,7 @@ fn a_runner_older_than_the_scan_blocks() {
             "s1",
             "Fix it",
             &[passed()],
+            None,
             None,
             Some(block),
         );
@@ -428,6 +591,7 @@ fn a_refused_scan_fails_but_leaves_land_anyway_open() {
             "s1",
             "Fix it",
             &[passed()],
+            None,
             Some(&failure),
             None,
         );
@@ -450,6 +614,7 @@ fn the_session_branch_passes() {
             "s1700000000000",
             "Fix it",
             &[],
+            None,
             None,
             None,
         ),
@@ -521,7 +686,7 @@ fn a_branch_that_is_the_base_fails() {
 
 #[test]
 fn the_pull_request_needs_its_settings() {
-    let list = checklist(&Settings::default(), "s1", "Fix it", &[], None, None);
+    let list = checklist(&Settings::default(), "s1", "Fix it", &[], None, None, None);
     let pr = item(&list, "Pull request");
     assert_eq!(pr.mark, Mark::Fail);
     assert!(pr.blocks);
@@ -558,6 +723,7 @@ fn blockers_are_read_out_together() {
         "s1",
         "Fix it",
         &[run(Some(1), Some("t1"), Some("t1"))],
+        None,
         None,
         Some(RunnerBlock::Outdated),
     );

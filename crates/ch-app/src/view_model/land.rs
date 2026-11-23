@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use ch_core::Failure;
+use ch_core::{Diff, Failure};
 use ch_protocol::runner::{Evidence, GitAuthor, LandRequest, PullRequestSpec, SecretScan};
 use ch_runtime::RUNNER_INSTALL_COMMAND;
 
@@ -185,6 +185,7 @@ pub fn checklist(
     session: &str,
     first_prompt: &str,
     evidence: &[Evidence],
+    diff: Option<&Diff>,
     failure: Option<&Failure>,
     runner: Option<RunnerBlock>,
 ) -> Checklist {
@@ -193,7 +194,7 @@ pub fn checklist(
     let branch = branch_for(session);
     let title = commit_message(first_prompt, session);
     let items = vec![
-        evidence_item(evidence, &settings.verify, failure.is_some()),
+        evidence_item(evidence, diff, &settings.verify, failure.is_some()),
         scan_item(runner, scan),
         branch_item(&branch, &settings.base_branch),
         pr_item(settings, &title),
@@ -206,9 +207,15 @@ pub fn checklist(
     }
 }
 
-/// The last check stands for the work. The app never sees the work itself, so a passed check
-/// reads unknown: it says what ran, not what the land will carry.
-fn evidence_item(evidence: &[Evidence], verify: &str, land_refused: bool) -> LandItem {
+/// The last check stands for the work. A passed check reads pass only when it ran on the work the
+/// latest diff shows and the agent has not run since that diff. The runner makes the same
+/// comparison when it lands.
+fn evidence_item(
+    evidence: &[Evidence],
+    diff: Option<&Diff>,
+    verify: &str,
+    land_refused: bool,
+) -> LandItem {
     const NAME: &str = "Checks";
     let Some(run) = evidence.last() else {
         let reason = if verify.trim().is_empty() {
@@ -248,19 +255,43 @@ fn evidence_item(evidence: &[Evidence], verify: &str, land_refused: bool) -> Lan
             format!("`{command}` passed before the runner refused the last land."),
             false,
         ),
-        (Some(_), Some(_)) => LandItem::new(
-            NAME,
-            Mark::Unknown,
-            format!(
-                "`{command}` {} on the work as it was then. If the work changed since, run the \
-                 checks again.",
-                check_outcome(run)
-            ),
-            false,
-        ),
+        (Some(checked), Some(_)) => {
+            let ran = format!("`{command}` {}", check_outcome(run));
+            let (mark, reason) = against_diff(&ran, checked, diff);
+            LandItem::new(NAME, mark, reason, false)
+        }
         _ => fail(
             format!("The runner could not record which work `{command}` ran on."),
             AGAIN,
+        ),
+    }
+}
+
+/// Matches the work a passed check ran on to the work the latest diff shows. The trees are written
+/// the same way on the runner, so equal trees mean the same work.
+fn against_diff(ran: &str, checked: &str, diff: Option<&Diff>) -> (Mark, String) {
+    match diff.map(|d| d.tree.as_deref()) {
+        Some(Some(shown)) if shown == checked => (
+            Mark::Pass,
+            format!("{ran} on the work the latest diff shows."),
+        ),
+        Some(Some(_)) => (
+            Mark::Unknown,
+            format!(
+                "{ran} on other work than the latest diff shows. Refresh the diff, and run the \
+                 checks again if the two still differ."
+            ),
+        ),
+        Some(None) => (
+            Mark::Unknown,
+            format!(
+                "{ran}, but the runner did not say which work the diff shows, so the two can't \
+                 be matched."
+            ),
+        ),
+        None => (
+            Mark::Unknown,
+            format!("{ran}. Take a fresh diff to match the check to the work as it is now."),
         ),
     }
 }

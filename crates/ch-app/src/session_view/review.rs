@@ -166,6 +166,7 @@ impl SessionView {
             &live.session,
             &live.first_prompt,
             session.evidence(),
+            session.current_diff(),
             session.failure(),
             driver.runner_block(),
         );

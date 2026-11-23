@@ -496,6 +496,7 @@ impl SessionView {
             &live.session,
             &live.first_prompt,
             session.evidence(),
+            session.current_diff(),
             session.failure(),
             live.driver.runner_block(),
         )
