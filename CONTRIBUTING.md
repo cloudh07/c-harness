@@ -51,6 +51,27 @@ Nobody has checked these yet, and each one helps:
 - Land a pull request on GitHub with a fine-grained token.
 - Build and run the desktop app on macOS or Linux.
 
+## Before each release
+
+[PRIVACY.md](PRIVACY.md) lists everything that leaves the user's machine. Part of that list comes
+from watching omp, so check omp again before a release, with the omp version the release ships
+against:
+
+```sh
+CH_OMP=/path/to/omp cargo test -p ch-runner --test omp_headers -- --ignored --nocapture --test-threads=1
+```
+
+The test starts omp with a fake key and a temporary home, sends one prompt to a listener on
+127.0.0.1 and refuses every other connection. It compares the request line, header names and the
+values of a few harmless headers (user-agent, content-type and the like) with
+`testdata/omp/headers-*.txt`. It never records the key or the ids that link requests, and it
+prints the hosts omp tried to reach on the way.
+
+If the test fails, read the change. A new header or host that says who the user is, which machine
+or repository they are on, or links their requests belongs in `PRIVACY.md` and
+`crates/ch-core/src/outbound.rs`. Then accept the new requests with `CH_BLESS=1` and set
+`OMP_VERSION_SEEN` to the omp version you checked. Last checked: omp 18.13.1.
+
 ## House rules
 
 - GPUI stays in `ch-app`. Logic that can be wrong lives in a crate with no GPU dependency, with

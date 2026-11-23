@@ -61,6 +61,10 @@ fn reaching_the_cap_aborts_once_and_holds_prompts_until_it_is_raised() {
         "at the cap"
     );
     rig.pump_until("the abort", |_, sent| !of_type(sent, "abort").is_empty());
+    assert!(
+        !rig.driver.stopping(),
+        "nobody asked for this stop, so the finished notice still goes out"
+    );
     assert_eq!(rig.driver.enforce_cost_cap(Some(29)), None, "said once");
     assert_eq!(rig.driver.cap_hit(), Some(29));
     assert_eq!(

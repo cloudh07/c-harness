@@ -212,6 +212,19 @@ Notable changes to C-Harness. The format follows
   during the land. The GitHub token is checked when you press Land. Below the list are the pull
   request title and the start of its description. They are not edited in the app; edit them on
   GitHub once the pull request is open.
+- `PRIVACY.md` and Settings, What leaves this machine: every place data goes without you
+  sending it, with what goes, when, why, whether you can turn it off, and whether the row was
+  read in code or seen on the wire. The list lives in `ch-core` (`outbound`), and a test fails
+  when `PRIVACY.md` misses a row of it.
+- `ch-runner`: an ignored test, `omp_headers`, runs omp against a listener on 127.0.0.1 with a
+  fake key and records the request lines and header names it sends to Anthropic and OpenAI,
+  with values only for harmless headers. `CONTRIBUTING.md` says to run it before each release.
+  Checked against omp 18.13.1.
+- `ch-app`: a notification when a run ends, so a session is ready for review, while the window
+  is in the background. It comes once per run, never for a run you stopped, a land, a crash or
+  a start that failed, and says nothing about the work. The next run, a land or closing the
+  session takes it down. Settings, Notifications turns it off and can add the system alert
+  sound, which is off by default. Both switches save as soon as they are flipped.
 
 ### Changed
 

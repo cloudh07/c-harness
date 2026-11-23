@@ -3,6 +3,7 @@
 
 mod composer;
 mod exit;
+mod finished;
 mod follow;
 mod header;
 mod leftovers;
@@ -20,8 +21,8 @@ use ch_ui::{Palette, Status};
 use ch_vault::{SecretName, Vault};
 use gpui_kit::base::input::{InputEvent, TextareaState};
 use gpui_kit::{
-    AppContext, ClickEvent, Context, Div, Entity, EventEmitter, IntoElement, ParentElement, Render,
-    Styled, Subscription, Task, Window, div, px,
+    AnyWindowHandle, AppContext, ClickEvent, Context, Div, Entity, EventEmitter, IntoElement,
+    ParentElement, Render, Styled, Subscription, Task, Window, div, px,
 };
 
 use crate::assets::Icon;
@@ -80,6 +81,7 @@ struct Live {
     noted_file: Option<String>,
     /// Whether the session was waiting for an answer at the last tick.
     waiting: bool,
+    finished: finished::Run,
 }
 
 pub struct SessionView {
@@ -93,6 +95,8 @@ pub struct SessionView {
     follow: follow::Follow,
     /// Minutes since the Unix epoch at the last tick, so ages on screen move on with the clock.
     minute: u64,
+    /// Asked whether it has focus when a run finishes.
+    window: AnyWindowHandle,
     _ticker: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -180,6 +184,7 @@ impl SessionView {
             leftovers,
             follow: follow::Follow::new(cx),
             minute: driver::epoch_ms() / 60_000,
+            window: window.window_handle(),
             _ticker: ticker,
             _subscriptions: subscriptions,
         }
@@ -262,6 +267,8 @@ impl SessionView {
             Phase::Launching { .. } => self.poll_launch(),
             Phase::Resuming { .. } => self.poll_resume(),
             Phase::Live(live) => {
+                let state = live.driver.session().state();
+                live.finished = live.finished.before(state, live.driver.stopping());
                 let before = follow::Shown::of(live.driver.session());
                 let pumped = live.driver.pump();
                 let caught_up = live.catch_up();
@@ -293,6 +300,7 @@ impl SessionView {
             Phase::Empty | Phase::LaunchFailed { .. } => false,
         };
         let waiting = self.track_waiting(cx);
+        self.track_finished(cx);
         let swept = self.leftovers.poll();
         let minute = driver::epoch_ms() / 60_000;
         let new_minute = minute != self.minute;
@@ -359,6 +367,7 @@ impl SessionView {
             hidden: 0,
             noted_file: None,
             waiting: false,
+            finished: finished::Run::default(),
         }))
     }
 
