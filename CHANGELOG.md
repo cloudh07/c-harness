@@ -270,9 +270,10 @@ Notable changes to C-Harness. The format follows
   the agent no longer sees turns from after it. After each saved run, the app labels omp's
   conversation at that point (`c-harness:turn:<n>`), and the next prompt waits for the label as
   it waits for the save. A restore moves the conversation first, then the code. If the runner
-  refuses the code, or omp takes more than 15 seconds to move, the conversation is moved back
-  and nothing changes. omp older than 18.13.2 cannot label or move the conversation, so a
-  restore is refused there with that reason, as it is for a checkpoint that has no label. When
+  refuses the code, or omp takes more than 15 seconds to move, the conversation is moved back.
+  An omp that answers `set_label` or `navigate_tree` as an unknown command cannot label or move
+  the conversation, so a restore is refused there with that reason, as it is for a checkpoint
+  that has no label. omp 18.13.2 is the first release expected to know both. When
   that move back fails or runs late, the app reads where the conversation is and tries again
   about once a second, for up to 15 seconds, before it reports a conversation left at the
   checkpoint. After a restore the thread is read again from omp, so it shows the same turns a
@@ -293,6 +294,19 @@ Notable changes to C-Harness. The format follows
 - `ch-app`: a diff asked for in review that arrives after you sent a prompt and the agent
   settled no longer counts as current, so the Checks row can't read pass on work that changed
   after the diff was asked for.
+- `ch-app`: each way a restore can fail says what it left behind. A runner that refuses before
+  it changes anything leaves code and conversation as they were. A runner that stops partway
+  says the code may be partly changed and names the checkpoint that holds the tree as it was
+  before the restore; that checkpoint can be restored like any other. If omp stops during a
+  restore, the note says both were left unchanged, or, once the code is back, that the
+  conversation's move may not have been saved. When omp does not save the move, the thread is
+  read again so it shows the conversation as the agent sees it.
+- `ch-app`: Restore is off while omp is stopped. Diff, verify and land still work.
+- `ch-app`: a checkpoint that can't be marked in the conversation says why, including when omp
+  does not answer or the run left nothing to mark. An omp that lacks the label command is told
+  once, and later runs no longer read its conversation for a mark it can't make.
+- `ch-app`: a code restore that takes over two minutes is noted once. Prompts, review and land
+  keep waiting for the runner's answer, since only that says what the working tree holds.
 - `ch-app`: with no current diff, the Checks row names the button to press, Show diff or
   Refresh diff under Changes, instead of asking for "a fresh diff".
 
