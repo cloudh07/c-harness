@@ -55,10 +55,18 @@ impl Anchor {
     }
 }
 
+/// The scroll offset that keeps the row being read where it was on screen. GPUI's offset is
+/// zero at the top and goes negative as the view scrolls down, so the reader's place in the
+/// content is `-offset_y`, and a row that moved down by some amount needs the offset lowered
+/// by the same amount.
+pub(super) fn held_offset(offset_y: f32, last: &[Row], now: &[Row]) -> f32 {
+    offset_y - moved(last, now, -offset_y)
+}
+
 /// How far the row being read moved between two frames. That row is the first one still in
 /// view below `view_top` that has no registered row inside it; a row that went away hands over
 /// to the next one down. Zero when none of them is left.
-pub(super) fn moved(last: &[Row], now: &[Row], view_top: f32) -> f32 {
+fn moved(last: &[Row], now: &[Row], view_top: f32) -> f32 {
     let in_view: Vec<&Row> = last.iter().filter(|row| row.bottom > view_top).collect();
     let mut leaves: Vec<&Row> = in_view
         .iter()
@@ -214,9 +222,8 @@ impl Element for Anchored {
                 .collect();
             if self.hold {
                 let offset = self.scroll.offset();
-                let shift = moved(&frame.last, &now, -f32::from(offset.y));
-                self.scroll
-                    .set_offset(point(offset.x, offset.y - px(shift)));
+                let held = held_offset(f32::from(offset.y), &frame.last, &now);
+                self.scroll.set_offset(point(offset.x, px(held)));
             }
             frame.last = now;
         }
@@ -239,7 +246,7 @@ impl Element for Anchored {
 
 #[cfg(test)]
 mod tests {
-    use super::{Row, moved};
+    use super::{Row, held_offset, moved};
 
     fn row(key: &'static str, top: f32, bottom: f32) -> Row {
         Row {
@@ -303,6 +310,40 @@ mod tests {
         let now = thread(300.0, &["tool-b"]);
         let at_a = last[1].top + 5.0;
         assert_eq!(moved(&last, &now, at_a), -28.0);
+    }
+
+    fn top_of(rows: &[Row], key: &str) -> f32 {
+        rows.iter()
+            .find(|row| row.key == key)
+            .map(|row| row.top)
+            .expect("a row with that key")
+    }
+
+    /// A row shows on screen at its place in the content plus the offset, so holding the
+    /// reader means that sum stays the same while rows above them grow or go away.
+    #[test]
+    fn the_held_offset_keeps_the_row_being_read_still_on_screen() {
+        let cases = [
+            (
+                "tool-b",
+                thread(300.0, &["tool-a", "tool-b"]),
+                thread(380.0, &["tool-a", "tool-b"]),
+            ),
+            (
+                "tool-c",
+                thread(300.0, &["tool-a", "tool-b", "tool-c"]),
+                thread(300.0, &["tool-b", "tool-c"]),
+            ),
+        ];
+        for (key, last, now) in cases {
+            let offset_y = -(top_of(&last, key) + 5.0);
+            let held = held_offset(offset_y, &last, &now);
+            assert_eq!(
+                top_of(&now, key) + held,
+                top_of(&last, key) + offset_y,
+                "{key}"
+            );
+        }
     }
 
     #[test]

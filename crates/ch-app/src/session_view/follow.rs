@@ -326,7 +326,7 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use super::super::anchor::{Row, moved};
+    use super::super::anchor::{Row, held_offset};
     use super::{AT_END, Event, HOLD_CHARS, Mode, Shown, clip, from_end, held_after, scrolled};
     use crate::driver::{Driver, FIRST_REPLY_MS};
     use crate::link::Link;
@@ -576,7 +576,7 @@ mod tests {
         let card_before = before.tools_at() - view.top;
         let after = layouts[TOOL_DONE + 1];
         assert!(after.reply > before.reply);
-        view.top += moved(&rows(before), &rows(after), view.top);
+        view.top = -held_offset(-view.top, &rows(before), &rows(after));
         view.output(after);
         assert_eq!(after.tools_at() - view.top, card_before);
     }
