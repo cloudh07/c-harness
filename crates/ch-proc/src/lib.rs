@@ -81,8 +81,25 @@ pub fn join_within<T>(handle: JoinHandle<T>, limit: Duration) -> Option<T> {
 /// Ends a child started with [`own_group`] and every process below it, then reaps it.
 ///
 /// Returns the child's exit status if it could be reaped in time.
+///
+/// # Errors
+///
+/// Fails when the tree could not be signalled, for example when `kill` or `taskkill` can't
+/// be started. The child itself is still killed and reaped before the error is returned.
 pub fn kill_tree(child: &mut Child) -> io::Result<Option<ExitStatus>> {
-    signal_tree(child)?;
+    end_tree(child, signal_tree)
+}
+
+fn end_tree(
+    child: &mut Child,
+    signal: fn(&mut Child) -> io::Result<()>,
+) -> io::Result<Option<ExitStatus>> {
+    if let Err(error) = signal(child) {
+        // Whatever the tree signal reached, the child itself must not outlive the caller.
+        let _ = child.kill();
+        let _ = wait_for(child, REAP_WAIT);
+        return Err(error);
+    }
     wait_for(child, REAP_WAIT)
 }
 
@@ -301,6 +318,20 @@ mod tests {
         let status = kill_tree(&mut child).unwrap();
         assert!(status.is_some(), "child was not reaped");
         assert!(started.elapsed() < Duration::from_secs(15));
+    }
+
+    #[test]
+    fn kills_the_child_when_the_tree_cannot_be_signalled() {
+        let mut command = sleeper();
+        own_group(&mut command);
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let result = end_tree(&mut child, |_| Err(io::Error::other("no kill")));
+        assert!(result.is_err());
+        assert!(child.try_wait().unwrap().is_some(), "the child outlived it");
     }
 
     #[test]
