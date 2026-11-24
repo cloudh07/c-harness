@@ -85,7 +85,8 @@ pub fn join_within<T>(handle: JoinHandle<T>, limit: Duration) -> Option<T> {
 /// # Errors
 ///
 /// Fails when the tree could not be signalled, for example when `kill` or `taskkill` can't
-/// be started. The child itself is still killed and reaped before the error is returned.
+/// be started. Before the error is returned it still tries to kill and reap the child itself,
+/// but nothing below it, so those processes may keep running.
 pub fn kill_tree(child: &mut Child) -> io::Result<Option<ExitStatus>> {
     end_tree(child, signal_tree)
 }
@@ -329,8 +330,8 @@ mod tests {
             .stdout(Stdio::null())
             .spawn()
             .unwrap();
-        let result = end_tree(&mut child, |_| Err(io::Error::other("no kill")));
-        assert!(result.is_err());
+        let error = end_tree(&mut child, |_| Err(io::Error::other("no kill"))).unwrap_err();
+        assert_eq!(error.to_string(), "no kill");
         assert!(child.try_wait().unwrap().is_some(), "the child outlived it");
     }
 

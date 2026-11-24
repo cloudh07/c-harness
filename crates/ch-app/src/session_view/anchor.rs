@@ -39,7 +39,8 @@ impl Anchor {
         }
     }
 
-    /// The scroll area. With `hold` off it only records where the rows are.
+    /// The scroll area. `child` must be the scrolling div itself: the offset is corrected in
+    /// prepaint, before that div applies it. With `hold` off it only records where the rows are.
     pub(super) fn area(
         &self,
         scroll: &ScrollHandle,
