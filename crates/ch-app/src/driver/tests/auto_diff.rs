@@ -224,8 +224,54 @@ fn a_stop_that_fails_is_not_waited_on() {
 
     let failure = rig.driver.session().failure().map(|f| f.stage.as_str());
     assert_eq!(failure, Some("stop"));
-    assert!(!rig.driver.land(land_request()));
-    assert!(!land_sent(&rig));
+}
+
+#[test]
+fn a_stop_refused_before_it_reached_omp_can_be_sent_again() {
+    let mut rig = Rig::new();
+    settle_with_diff(&mut rig);
+    assert!(rig.driver.land(land_request()));
+    let stop = wait_sent(&mut rig, "ch_stop", 1).remove(0);
+    rig.say(&json!({"type":"ch_error","id":stop["id"],"stage":"protocol","message":"bad line"}));
+    rig.pump_until("the stop to be refused", |d, _| !d.stopping());
+
+    assert!(!rig.driver.landing());
+    assert!(
+        !land_sent(&rig),
+        "the land went out after the stop was refused"
+    );
+    assert!(
+        rig.driver
+            .log()
+            .any(|line| line.contains("omp is still running")),
+        "{:?}",
+        rig.driver.log().collect::<Vec<_>>()
+    );
+    assert!(rig.driver.stop());
+    wait_sent(&mut rig, "ch_stop", 2);
+}
+
+#[test]
+fn a_refused_stop_after_omp_exited_leaves_omp_ended() {
+    let mut rig = Rig::new();
+    settle_with_diff(&mut rig);
+    assert!(rig.driver.land(land_request()));
+    let stop = wait_sent(&mut rig, "ch_stop", 1).remove(0);
+    rig.say(&json!({"type":"ch_omp_exited","exit_code":1,"stderr_tail":[]}));
+    wait_sent(&mut rig, "ch_land", 1);
+
+    rig.say(&json!({"type":"ch_error","id":stop["id"],"stage":"protocol","message":"bad line"}));
+    rig.pump_until("the stop to be answered", |d, _| {
+        d.transcript().contains("bad line")
+    });
+    assert!(rig.driver.stop());
+    rig.driver.pump();
+    let stops = rig
+        .driver
+        .transcript()
+        .matches(r#""type":"ch_stop""#)
+        .count();
+    assert_eq!(stops, 1, "a stop went out to an omp that had exited");
 }
 
 #[test]
@@ -246,11 +292,18 @@ fn a_diff_with_no_answer_is_noted_once_and_still_shown_late() {
 
     NOW.fetch_add(DIFF_OVERDUE_MS - 1, Ordering::SeqCst);
     rig.driver.pump();
+    assert!(
+        !rig.driver.pump(),
+        "a pump with nothing new reported a change"
+    );
     assert_eq!(overdue_notes(&rig), 0, "noted before the diff was overdue");
 
     NOW.fetch_add(1, Ordering::SeqCst);
-    rig.driver.pump();
-    rig.driver.pump();
+    assert!(
+        rig.driver.pump(),
+        "the pump that noted the overdue diff reported no change, so the view would not repaint"
+    );
+    assert!(!rig.driver.pump());
     assert_eq!(overdue_notes(&rig), 1);
     assert_eq!(open_diffs(&rig).len(), 1, "the overdue diff was dropped");
 

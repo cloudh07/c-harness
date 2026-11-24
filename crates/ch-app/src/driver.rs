@@ -400,14 +400,14 @@ impl Driver {
         self.flush_queued();
         self.page_history();
         self.rewind_tick();
-        self.note_overdue_diffs();
+        let noted = self.note_overdue_diffs();
         let wait = if self.closed || self.stopping() {
             None
         } else {
             self.session.reply_wait()
         };
         let late_changed = self.first_reply.update((self.clock)(), wait);
-        changed || late_changed
+        changed || noted || late_changed
     }
 
     /// The model has said nothing for [`FIRST_REPLY_MS`] since the prompt or omp's last retry.
@@ -492,24 +492,37 @@ impl Driver {
     }
 
     /// After a stop the runner could not carry out, it reads nothing more from omp and refuses
-    /// any later stop or land, so nothing here waits on that omp any longer.
+    /// any later stop or land, so nothing here waits on that omp any longer. An error from any
+    /// other stage means the stop never reached omp, which still runs and can be stopped again.
     fn on_stop_answer(&mut self, frame: &RunnerFrame) {
-        if !matches!(frame, RunnerFrame::Error { .. }) {
+        let RunnerFrame::Error { stage, .. } = frame else {
+            return;
+        };
+        if stage == "stop" {
+            self.omp = OmpState::Ended;
+            self.queued_prompt = None;
+            self.context.omp_ended();
+            if self.queued_land.take().is_some() {
+                self.note("The stop failed, so the land was not sent.");
+            }
             return;
         }
-        self.omp = OmpState::Ended;
-        self.queued_prompt = None;
-        self.context.omp_ended();
+        if self.omp != OmpState::StopSent {
+            return;
+        }
+        self.omp = OmpState::Running;
         if self.queued_land.take().is_some() {
-            self.note("The stop failed, so the land was not sent.");
+            self.note(
+                "The runner refused the stop and omp is still running, so the land was not sent.",
+            );
         }
     }
 
-    /// Notes once for each diff that has gone [`DIFF_OVERDUE_MS`] without an answer. The diff
-    /// stays open, so an answer that comes late is still shown.
-    fn note_overdue_diffs(&mut self) {
+    /// Notes once for each diff that has gone [`DIFF_OVERDUE_MS`] without an answer, and returns
+    /// whether it did. The diff stays open, so an answer that comes late is still shown.
+    fn note_overdue_diffs(&mut self) -> bool {
         if self.closed {
-            return;
+            return false;
         }
         let now = (self.clock)();
         let open = &self.open;
@@ -528,6 +541,7 @@ impl Driver {
                  and the runner refuses a land while it runs.",
             );
         }
+        overdue
     }
 
     /// Whether a diff of either kind has no answer yet.

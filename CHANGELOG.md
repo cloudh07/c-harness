@@ -315,7 +315,8 @@ Notable changes to C-Harness. The format follows
 - `ch-app`: Restore is off while omp is stopped. Diff, verify and land still work.
 - `ch-app`: a stop the runner could not carry out no longer leaves a land waiting behind it.
   The runner refuses any later stop or land after that, so the land is dropped and the log
-  says so.
+  says so. A stop the runner refuses before it reaches omp drops the land too, and omp can be
+  stopped again.
 - `ch-app`: a checkpoint that can't be marked in the conversation says why, including when omp
   does not answer or the run left nothing to mark. An omp that lacks the label command is told
   once, and later runs no longer read its conversation for a mark it can't make.
