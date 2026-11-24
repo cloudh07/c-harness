@@ -245,7 +245,8 @@ Notable changes to C-Harness. The format follows
   Checks row can match the last check without pressing Show diff. The runner refuses a land
   while a diff runs, so a land waits for any open diff. Once the agent has stopped, it waits up
   to 15 seconds and then goes out; if the diff is still running, the runner refuses it. Restore
-  stays off until the diff comes back.
+  stays off until the diff comes back. A diff with no answer after two minutes is noted once in
+  the log; it stays open, so an answer that comes late is still shown.
 - `ch-app`: the header shows the share of input read from the cache (`99% cached`) instead
   of the cached token count. When some turns went uncounted, the share is of the counted ones
   and marked `~`.
@@ -296,7 +297,8 @@ Notable changes to C-Harness. The format follows
 - `ch-app`: the transcript follows new output only while you are at the end. Scrolling up stops
   the follow, and Jump to latest (or End) brings you back. Output that grows or is trimmed above
   where you are reading no longer moves what you are reading, and a long reply keeps its start
-  while you read it (past about 40,000 more characters it jumps to the newest part again).
+  while you read it, until the part shown reaches about 40,000 characters; then it jumps to the
+  newest part again.
   Sending a prompt follows the end again. The disconnected banner and the hidden-turns note count
   as new output. The tool list title says how many calls are shown, so the list does not shift
   when it first fills up.
@@ -311,6 +313,9 @@ Notable changes to C-Harness. The format follows
   conversation's move may not have been saved. When omp does not save the move, the thread is
   read again so it shows the conversation as the agent sees it.
 - `ch-app`: Restore is off while omp is stopped. Diff, verify and land still work.
+- `ch-app`: a stop the runner could not carry out no longer leaves a land waiting behind it.
+  The runner refuses any later stop or land after that, so the land is dropped and the log
+  says so.
 - `ch-app`: a checkpoint that can't be marked in the conversation says why, including when omp
   does not answer or the run left nothing to mark. An omp that lacks the label command is told
   once, and later runs no longer read its conversation for a mark it can't make.
@@ -325,7 +330,8 @@ Notable changes to C-Harness. The format follows
   mode can let them run without asking, since both Approvals choices ask before each command.
   What can is approving a tool for the session, and the row now says so.
 - `ch-runtime`: a setup check that runs out of time now ends the omp and git it started too,
-  not only the runner. On a machine reached over SSH it still ends only the local `ssh`.
+  not only the runner. If those can't be signalled, the runner itself is still ended. On a
+  machine reached over SSH it still ends only the local `ssh`.
 - `ch-runner`: stopping a step that runs too long also ends children that moved to a process
   group of their own on macOS and Linux. The code that does this now lives in `ch-proc`, which
   `ch-runtime` shares.
