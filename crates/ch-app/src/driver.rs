@@ -41,6 +41,9 @@ const SHOWN_ID_CHARS: usize = 40;
 /// diff runs, so a diff that never answers ends in that refusal, not in a land that waits for
 /// good.
 const DIFF_WAIT_MS: u64 = 15_000;
+/// How long a diff may go unanswered before the log says so. The runner's git call has no
+/// time limit of its own, and an open diff keeps restore off.
+const DIFF_OVERDUE_MS: u64 = 120_000;
 
 pub fn epoch_ms() -> u64 {
     SystemTime::now()
@@ -124,6 +127,8 @@ pub struct Driver {
     next_id: u64,
     /// Requests the runner has not answered yet, by id.
     open: HashMap<String, Request>,
+    /// When each open diff was sent, until it is answered or reported overdue.
+    diff_sent_at: HashMap<String, u64>,
     queued_prompt: Option<String>,
     queued_land: Option<QueuedLand>,
     land_in_flight: bool,
@@ -155,6 +160,7 @@ impl Driver {
             clock,
             next_id: 0,
             open: HashMap::new(),
+            diff_sent_at: HashMap::new(),
             queued_prompt: None,
             queued_land: None,
             land_in_flight: false,
@@ -394,6 +400,7 @@ impl Driver {
         self.flush_queued();
         self.page_history();
         self.rewind_tick();
+        self.note_overdue_diffs();
         let wait = if self.closed || self.stopping() {
             None
         } else {
@@ -474,12 +481,52 @@ impl Driver {
             match kind {
                 Request::Land => self.land_in_flight = false,
                 Request::Checkpoint | Request::Restore => self.on_checkpoint_answer(kind, frame),
-                Request::Verify | Request::Diff | Request::TurnDiff { .. } | Request::Stop => {}
+                Request::Stop => self.on_stop_answer(frame),
+                Request::Verify | Request::Diff | Request::TurnDiff { .. } => {}
             }
         }
         self.save_after_run(before);
         if run_ended(before, self.session.state()) && !self.closed {
             self.diff();
+        }
+    }
+
+    /// After a stop the runner could not carry out, it reads nothing more from omp and refuses
+    /// any later stop or land, so nothing here waits on that omp any longer.
+    fn on_stop_answer(&mut self, frame: &RunnerFrame) {
+        if !matches!(frame, RunnerFrame::Error { .. }) {
+            return;
+        }
+        self.omp = OmpState::Ended;
+        self.queued_prompt = None;
+        self.context.omp_ended();
+        if self.queued_land.take().is_some() {
+            self.note("The stop failed, so the land was not sent.");
+        }
+    }
+
+    /// Notes once for each diff that has gone [`DIFF_OVERDUE_MS`] without an answer. The diff
+    /// stays open, so an answer that comes late is still shown.
+    fn note_overdue_diffs(&mut self) {
+        if self.closed {
+            return;
+        }
+        let now = (self.clock)();
+        let open = &self.open;
+        let mut overdue = false;
+        self.diff_sent_at.retain(|id, sent_at| {
+            if !open.contains_key(id) {
+                return false;
+            }
+            let late = now.saturating_sub(*sent_at) >= DIFF_OVERDUE_MS;
+            overdue |= late;
+            !late
+        });
+        if overdue {
+            self.note(
+                "A diff has had no answer for two minutes. Restore stays off until it answers, \
+                 and the runner refuses a land while it runs.",
+            );
         }
     }
 
@@ -611,6 +658,9 @@ impl Driver {
     ) -> bool {
         let sent = self.send_client(frame, action);
         if sent {
+            if matches!(kind, Request::Diff | Request::TurnDiff { .. }) {
+                self.diff_sent_at.insert(id.clone(), (self.clock)());
+            }
             self.open.insert(id, kind);
         }
         sent
