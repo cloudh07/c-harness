@@ -208,6 +208,21 @@ fn omp_exiting_mid_compaction_stops_showing_compacting() {
 }
 
 #[test]
+fn a_stop_that_fails_mid_compaction_stops_showing_compacting() {
+    let mut rig = Rig::new();
+    rig.say(&json!({"type":"auto_compaction_start"}));
+    rig.pump_until("compacting", |d, _| d.context() == ContextState::Compacting);
+    assert!(rig.driver.stop());
+    rig.pump_until("the stop", |_, sent| !of_type(sent, "ch_stop").is_empty());
+    let stop = of_type(&rig.sent(), "ch_stop")[0]["id"].clone();
+    rig.say(&json!({"type":"ch_error","id":stop,"stage":"stop","message":"omp hung"}));
+    rig.pump_until("the stop to fail", |d, _| {
+        d.context() != ContextState::Compacting
+    });
+    assert_eq!(rig.driver.context(), ContextState::NotRead);
+}
+
+#[test]
 fn no_stats_request_once_omp_is_asked_to_stop() {
     let mut rig = Rig::new();
     assert!(rig.driver.stop());

@@ -317,6 +317,8 @@ Notable changes to C-Harness. The format follows
   The runner refuses any later stop or land after that, so the land is dropped and the log
   says so. A stop the runner refuses before it reaches omp drops the land too, and omp can be
   stopped again.
+- `ch-app`: a land held for a diff that can no longer be sent, because the runner has gone, is
+  noted in the log instead of vanishing.
 - `ch-app`: a checkpoint that can't be marked in the conversation says why, including when omp
   does not answer or the run left nothing to mark. An omp that lacks the label command is told
   once, and later runs no longer read its conversation for a mark it can't make.
