@@ -5,7 +5,9 @@ use ch_core::{
 };
 use ch_protocol::runner::Evidence;
 use ch_ui::{Palette, Status, ToolGroup};
-use gpui_kit::{App, ClickEvent, Div, FontWeight, ParentElement, Styled, Window, div, px, rgb};
+use gpui_kit::{
+    App, ClickEvent, Div, FontWeight, IntoElement, ParentElement, Styled, Window, div, px, rgb,
+};
 
 use crate::assets::{icon, tool_icon};
 use crate::view_model::{
@@ -83,7 +85,12 @@ pub fn notices(p: Palette, notices: &[Notice]) -> Option<Div> {
     )
 }
 
-pub fn tool_calls(p: Palette, calls: &[ToolCall]) -> Option<Div> {
+/// The latest tool calls. `row` wraps each call's line, so the thread can key it.
+pub fn tool_calls<E: IntoElement>(
+    p: Palette,
+    calls: &[ToolCall],
+    row: impl Fn(&ToolCall, Div) -> E,
+) -> Option<Div> {
     if calls.is_empty() {
         return None;
     }
@@ -95,7 +102,7 @@ pub fn tool_calls(p: Palette, calls: &[ToolCall]) -> Option<Div> {
             ToolStatus::Succeeded => ("done", p.text_muted),
             ToolStatus::Failed => ("failed", p.status(Status::Error)),
         };
-        div()
+        let line = div()
             .flex()
             .items_center()
             .gap_2()
@@ -109,16 +116,24 @@ pub fn tool_calls(p: Palette, calls: &[ToolCall]) -> Option<Div> {
                     .font_family(MONO)
                     .child(call.name.clone()),
             )
-            .child(div().text_xs().text_color(rgb(label_color)).child(label))
+            .child(div().text_xs().text_color(rgb(label_color)).child(label));
+        row(call, line)
     });
     Some(
         card(p)
-            .child(title(format!("Tool calls ({})", calls.len())))
-            .children(
-                (skipped > 0).then(|| muted(p, format!("{skipped} earlier calls not shown."))),
-            )
+            .child(title(tool_calls_title(calls.len(), skipped)))
             .children(rows),
     )
+}
+
+/// The count of left-out calls sits in the title: a line of its own would push the rows down
+/// the moment the list first fills up.
+fn tool_calls_title(total: usize, skipped: usize) -> String {
+    if skipped == 0 {
+        format!("Tool calls ({total})")
+    } else {
+        format!("Tool calls ({total}, last {} shown)", total - skipped)
+    }
 }
 
 pub fn evidence(p: Palette, runs: &[Evidence]) -> Option<Div> {
@@ -243,4 +258,15 @@ pub fn log<'a>(p: Palette, lines: impl Iterator<Item = &'a str>) -> Option<Div> 
         "runner-log",
         lines[start..].join("\n"),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_calls_title;
+
+    #[test]
+    fn the_tool_title_says_how_many_are_shown() {
+        assert_eq!(tool_calls_title(3, 0), "Tool calls (3)");
+        assert_eq!(tool_calls_title(42, 12), "Tool calls (42, last 30 shown)");
+    }
 }

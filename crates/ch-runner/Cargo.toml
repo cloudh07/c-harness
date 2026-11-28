@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 ch-core = { path = "../ch-core" }
+ch-proc = { path = "../ch-proc" }
 ch-protocol = { path = "../ch-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }

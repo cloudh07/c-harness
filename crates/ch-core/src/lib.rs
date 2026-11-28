@@ -33,7 +33,8 @@ pub use ledger_report::{
     reconcile, report,
 };
 pub use outbound::{
-    Control, Evidence, OMP_VERSION_SEEN, OUTBOUND, OUTBOUND_SUMMARY, Outbound, outbound_markdown,
+    Control, Evidence, OMP_VERSION_SEEN, OUTBOUND, OUTBOUND_SUMMARY, Outbound, STARTUP_HOSTS,
+    evidence_note, outbound_markdown,
 };
 pub use redact::{MASK, redact_secrets};
 pub use risk::{Assessment, Risk, classify};

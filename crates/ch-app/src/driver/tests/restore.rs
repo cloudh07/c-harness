@@ -1,5 +1,5 @@
 //! Restores that move omp's conversation and the runner's tree together, against a fake omp that
-//! answers as 18.13.2 does, or as 18.13.1 does, which knows neither `set_label` nor
+//! knows every command a restore sends, or an old one that knows neither `set_label` nor
 //! `navigate_tree`.
 
 use std::collections::HashSet;
@@ -10,10 +10,8 @@ use ch_core::{ENTRIES_COMMAND, HISTORY_COMMAND};
 use super::checkpoints::{answer_save, checkpoint, end_run, first_run, flush, saves, wait_sent};
 use super::*;
 
-const LABEL: &str = "set_label";
-const NAVIGATE: &str = "navigate_tree";
-const TOO_OLD: &str =
-    "Restore needs omp 18.13.2 or newer. Code and conversation were left unchanged.";
+pub(super) const LABEL: &str = "set_label";
+pub(super) const NAVIGATE: &str = "navigate_tree";
 
 type Answer = Result<Value, (String, Option<&'static str>)>;
 
@@ -22,13 +20,13 @@ type Answer = Result<Value, (String, Option<&'static str>)>;
 pub(super) struct FakeOmp {
     entries: Vec<Value>,
     leaf: Option<String>,
-    /// 18.13.2 or newer.
+    /// Knows `set_label` and `navigate_tree`.
     current: bool,
     answered: HashSet<String>,
     /// The next request of a command fails with this error and code.
     failures: Vec<(&'static str, &'static str, Option<&'static str>)>,
     /// The next request of a command goes unanswered.
-    silent: Vec<&'static str>,
+    pub(super) silent: Vec<&'static str>,
     /// The next request of a command runs only when another request comes in, as a slow
     /// command does in an omp that runs one command at a time.
     hold: Vec<&'static str>,
@@ -47,7 +45,7 @@ impl FakeOmp {
         Self::default()
     }
 
-    fn fail_next(
+    pub(super) fn fail_next(
         &mut self,
         command: &'static str,
         error: &'static str,
@@ -226,7 +224,12 @@ impl FakeOmp {
         }
     }
 
-    fn run_until(&mut self, rig: &mut Rig, what: &str, done: impl Fn(&Driver, &[Value]) -> bool) {
+    pub(super) fn run_until(
+        &mut self,
+        rig: &mut Rig,
+        what: &str,
+        done: impl Fn(&Driver, &[Value]) -> bool,
+    ) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             rig.driver.pump();
@@ -281,7 +284,7 @@ pub(super) fn saved_run_on(rig: &mut Rig, mut omp: FakeOmp) -> FakeOmp {
 }
 
 /// Another run, saved as checkpoint `turn`.
-fn next_run(rig: &mut Rig, omp: &mut FakeOmp, turn: u32) {
+pub(super) fn next_run(rig: &mut Rig, omp: &mut FakeOmp, turn: u32) {
     let before = saves(rig).len();
     assert!(rig.driver.prompt(&format!("prompt {turn}")));
     end_run(rig);
@@ -292,7 +295,7 @@ fn next_run(rig: &mut Rig, omp: &mut FakeOmp, turn: u32) {
 }
 
 /// Sends a restore of `turn` and answers omp's side until the code request is out.
-fn start(rig: &mut Rig, omp: &mut FakeOmp, turn: u32) -> Value {
+pub(super) fn start(rig: &mut Rig, omp: &mut FakeOmp, turn: u32) -> Value {
     let before = of_type(&rig.sent(), "ch_restore").len();
     assert!(rig.driver.can_restore());
     assert!(rig.driver.restore(turn));
@@ -303,7 +306,7 @@ fn start(rig: &mut Rig, omp: &mut FakeOmp, turn: u32) -> Value {
 
 /// Ends the code half of restore `id` and answers the diff refresh that follows it, which
 /// would otherwise hold the next restore.
-fn restored(rig: &mut Rig, omp: &mut FakeOmp, id: &Value, turn: u32) {
+pub(super) fn restored(rig: &mut Rig, omp: &mut FakeOmp, id: &Value, turn: u32) {
     let diffs = of_type(&rig.sent(), "ch_diff").len();
     rig.say(&json!({"type":"ch_restored","id":id,"turn":turn}));
     let refresh = wait_sent(rig, "ch_diff", diffs + 1).remove(diffs);
@@ -313,7 +316,7 @@ fn restored(rig: &mut Rig, omp: &mut FakeOmp, id: &Value, turn: u32) {
 }
 
 /// Restores `turn` with both halves agreeing; the runner saves the tree it replaces as `undo`.
-fn restore_both(rig: &mut Rig, omp: &mut FakeOmp, turn: u32, undo: u32) {
+pub(super) fn restore_both(rig: &mut Rig, omp: &mut FakeOmp, turn: u32, undo: u32) {
     let id = start(rig, omp, turn);
     rig.say(&json!({"type":"ch_checkpointed","id":id,
         "checkpoint":checkpoint(undo, "before_restore")}));
@@ -345,20 +348,20 @@ fn resumed(omp: &mut FakeOmp, checkpoints: &Value) -> Rig {
     rig
 }
 
-fn noted(rig: &Rig, text: &str) -> bool {
+pub(super) fn noted(rig: &Rig, text: &str) -> bool {
     rig.driver.log().any(|line| line.contains(text))
 }
 
-fn texts(list: &[&str]) -> Vec<String> {
+pub(super) fn texts(list: &[&str]) -> Vec<String> {
     list.iter().map(|text| (*text).to_owned()).collect()
 }
 
-fn pair(prompt: &str, reply: &str) -> (String, String) {
+pub(super) fn pair(prompt: &str, reply: &str) -> (String, String) {
     (prompt.to_owned(), reply.to_owned())
 }
 
 /// Whether a `then` frame was written after the last `first` frame.
-fn sent_after(rig: &Rig, first: &str, then: &str) -> bool {
+pub(super) fn sent_after(rig: &Rig, first: &str, then: &str) -> bool {
     let sent = rig.sent();
     let last = sent.iter().rposition(|frame| frame["type"] == first);
     last.is_some_and(|at| sent[at..].iter().any(|frame| frame["type"] == then))
@@ -378,7 +381,15 @@ fn restore_without_rollback_support_is_refused() {
     let sent = rig.sent();
     assert!(of_type(&sent, NAVIGATE).is_empty(), "{sent:?}");
     assert!(of_type(&sent, "ch_restore").is_empty(), "{sent:?}");
-    assert!(noted(&rig, TOO_OLD));
+    assert!(noted(
+        &rig,
+        "omp does not know the set_label command, so checkpoints can't be marked"
+    ));
+    assert!(noted(
+        &rig,
+        "omp does not know the set_label command, which a restore needs. Code and conversation \
+         were left unchanged."
+    ));
     assert!(!rig.driver.restoring());
     assert_eq!(omp.path(), texts(&["prompt 1", "reply 1"]));
 }
@@ -393,14 +404,17 @@ fn an_old_omp_found_only_at_the_move_changes_nothing() {
     rig.say(&json!({"type":"ch_error","id":id,"stage":"checkpoint","message":"disk full"}));
     omp.settle(&mut rig);
 
-    // No label was tried, so only the move shows omp is too old.
+    // No label was tried, so only the move shows omp lacks a command.
     assert!(rig.driver.restore(0));
     omp.settle(&mut rig);
     flush(&mut rig);
     let sent = rig.sent();
     assert_eq!(of_type(&sent, NAVIGATE).len(), 1, "{sent:?}");
     assert!(of_type(&sent, "ch_restore").is_empty(), "{sent:?}");
-    assert!(noted(&rig, TOO_OLD));
+    assert!(noted(
+        &rig,
+        "omp does not know the navigate_tree command, which a restore needs."
+    ));
     assert_eq!(omp.path(), texts(&["prompt 1", "reply 1"]));
 }
 

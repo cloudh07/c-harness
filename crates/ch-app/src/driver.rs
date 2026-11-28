@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ch_core::{
     ApprovalDecision, ApprovalRequest, ClientAction, ContextMeter, ContextState, STATS_COMMAND,
-    Session, SessionState, Transcript, Usage, redact_secrets,
+    Session, SessionState, Transcript, Usage, redact_secrets, run_ended,
 };
 use ch_protocol::runner::{
     ClientFrame, LandRequest, RunnerFrame, RunnerLine, SECRET_SCAN_PROTOCOL, StartSession,
@@ -37,6 +37,13 @@ const RECORD_LIMIT: usize = 50_000;
 const UNANSWERABLE_DIALOGS: &[&str] = &["confirm", "input", "editor", "ask"];
 /// How much of an unknown request id a log line repeats.
 const SHOWN_ID_CHARS: usize = 40;
+/// How long a land waits for a diff once omp has stopped. The runner refuses a land while a
+/// diff runs, so a diff that never answers ends in that refusal, not in a land that waits for
+/// good.
+const DIFF_WAIT_MS: u64 = 15_000;
+/// How long a diff may go unanswered before the log says so. The runner's git call has no
+/// time limit of its own, and an open diff keeps restore off.
+const DIFF_OVERDUE_MS: u64 = 120_000;
 
 pub fn epoch_ms() -> u64 {
     SystemTime::now()
@@ -50,6 +57,13 @@ enum OmpState {
     Running,
     StopSent,
     Ended,
+}
+
+/// A land asked for before the runner would take it.
+struct QueuedLand {
+    request: LandRequest,
+    /// When the land, with omp already stopped, started waiting on a diff.
+    diff_wait_from: Option<u64>,
 }
 
 /// A request sent to the runner that its reply must name.
@@ -113,8 +127,10 @@ pub struct Driver {
     next_id: u64,
     /// Requests the runner has not answered yet, by id.
     open: HashMap<String, Request>,
+    /// When each open diff was sent, until it is answered or reported overdue.
+    diff_sent_at: HashMap<String, u64>,
     queued_prompt: Option<String>,
-    queued_land: Option<LandRequest>,
+    queued_land: Option<QueuedLand>,
     land_in_flight: bool,
     omp: OmpState,
     closed: bool,
@@ -144,6 +160,7 @@ impl Driver {
             clock,
             next_id: 0,
             open: HashMap::new(),
+            diff_sent_at: HashMap::new(),
             queued_prompt: None,
             queued_land: None,
             land_in_flight: false,
@@ -192,7 +209,8 @@ impl Driver {
         asked && self.omp != OmpState::Ended && !self.closed
     }
 
-    /// A land is waiting for omp to stop, or was sent and has no answer yet.
+    /// A land is waiting for omp to stop or for a diff to finish, or was sent and has no answer
+    /// yet.
     pub fn landing(&self) -> bool {
         self.queued_land.is_some() || self.land_in_flight
     }
@@ -351,20 +369,24 @@ impl Driver {
         sent
     }
 
-    /// Lands the work. The runner refuses a land while omp runs, so omp is stopped first and the
-    /// land goes out once the runner says it ended. The request's `id` is replaced when it is
-    /// sent. Refused unless [`Self::can_land`], whoever asks.
+    /// Lands the work. The runner refuses a land while omp runs or a diff is being taken, so omp
+    /// is stopped first and the land goes out once the runner says it ended and the diff came
+    /// back. The request's `id` is replaced when it is sent. Refused unless [`Self::can_land`],
+    /// whoever asks.
     pub fn land(&mut self, request: LandRequest) -> bool {
         if !self.can_land() {
             return false;
         }
-        if self.omp == OmpState::Ended {
+        if self.omp == OmpState::Ended && !self.diff_open() {
             return self.send_land(request);
         }
         if !self.stop() {
             return false;
         }
-        self.queued_land = Some(request);
+        self.queued_land = Some(QueuedLand {
+            request,
+            diff_wait_from: None,
+        });
         true
     }
 
@@ -378,13 +400,14 @@ impl Driver {
         self.flush_queued();
         self.page_history();
         self.rewind_tick();
+        let noted = self.note_overdue_diffs();
         let wait = if self.closed || self.stopping() {
             None
         } else {
             self.session.reply_wait()
         };
         let late_changed = self.first_reply.update((self.clock)(), wait);
-        changed || late_changed
+        changed || noted || late_changed
     }
 
     /// The model has said nothing for [`FIRST_REPLY_MS`] since the prompt or omp's last retry.
@@ -458,10 +481,74 @@ impl Driver {
             match kind {
                 Request::Land => self.land_in_flight = false,
                 Request::Checkpoint | Request::Restore => self.on_checkpoint_answer(kind, frame),
-                Request::Verify | Request::Diff | Request::TurnDiff { .. } | Request::Stop => {}
+                Request::Stop => self.on_stop_answer(frame),
+                Request::Verify | Request::Diff | Request::TurnDiff { .. } => {}
             }
         }
         self.save_after_run(before);
+        if run_ended(before, self.session.state()) && !self.closed {
+            self.diff();
+        }
+    }
+
+    /// After a stop the runner could not carry out, it reads nothing more from omp and refuses
+    /// any later stop or land, so nothing here waits on that omp any longer. An error from any
+    /// other stage means the stop never reached omp, which still runs and can be stopped again.
+    fn on_stop_answer(&mut self, frame: &RunnerFrame) {
+        let RunnerFrame::Error { stage, .. } = frame else {
+            return;
+        };
+        if stage == "stop" {
+            self.omp = OmpState::Ended;
+            self.queued_prompt = None;
+            self.context.omp_ended();
+            if self.queued_land.take().is_some() {
+                self.note("The stop failed, so the land was not sent.");
+            }
+            return;
+        }
+        if self.omp != OmpState::StopSent {
+            return;
+        }
+        self.omp = OmpState::Running;
+        if self.queued_land.take().is_some() {
+            self.note(
+                "The runner refused the stop and omp is still running, so the land was not sent.",
+            );
+        }
+    }
+
+    /// Notes once for each diff that has gone [`DIFF_OVERDUE_MS`] without an answer, and returns
+    /// whether it did. The diff stays open, so an answer that comes late is still shown.
+    fn note_overdue_diffs(&mut self) -> bool {
+        if self.closed {
+            return false;
+        }
+        let now = (self.clock)();
+        let open = &self.open;
+        let mut overdue = false;
+        self.diff_sent_at.retain(|id, sent_at| {
+            if !open.contains_key(id) {
+                return false;
+            }
+            let late = now.saturating_sub(*sent_at) >= DIFF_OVERDUE_MS;
+            overdue |= late;
+            !late
+        });
+        if overdue {
+            self.note(
+                "A diff has had no answer for two minutes. Restore stays off until it answers, \
+                 and the runner refuses a land while it runs.",
+            );
+        }
+        overdue
+    }
+
+    /// Whether a diff of either kind has no answer yet.
+    fn diff_open(&self) -> bool {
+        self.open
+            .values()
+            .any(|kind| matches!(kind, Request::Diff | Request::TurnDiff { .. }))
     }
 
     /// Takes the request a runner reply answers off the open list. A reply that names no open
@@ -541,10 +628,28 @@ impl Driver {
             SessionState::Failed => self.queued_prompt = None,
             _ => {}
         }
-        if self.omp == OmpState::Ended
-            && let Some(request) = self.queued_land.take()
-        {
-            self.send_land(request);
+        self.flush_queued_land();
+    }
+
+    /// Sends a queued land once omp has ended and no diff is being taken, or once the diff has
+    /// had [`DIFF_WAIT_MS`].
+    fn flush_queued_land(&mut self) {
+        if self.omp != OmpState::Ended {
+            return;
+        }
+        let now = (self.clock)();
+        let diff_open = self.diff_open();
+        let Some(queued) = self.queued_land.as_mut() else {
+            return;
+        };
+        if diff_open {
+            let from = *queued.diff_wait_from.get_or_insert(now);
+            if now.saturating_sub(from) < DIFF_WAIT_MS {
+                return;
+            }
+        }
+        if let Some(queued) = self.queued_land.take() {
+            self.send_land(queued.request);
         }
     }
 
@@ -567,6 +672,9 @@ impl Driver {
     ) -> bool {
         let sent = self.send_client(frame, action);
         if sent {
+            if matches!(kind, Request::Diff | Request::TurnDiff { .. }) {
+                self.diff_sent_at.insert(id.clone(), (self.clock)());
+            }
             self.open.insert(id, kind);
         }
         sent

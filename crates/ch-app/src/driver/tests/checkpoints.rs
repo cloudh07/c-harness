@@ -21,9 +21,28 @@ pub(super) fn wait_sent(rig: &mut Rig, kind: &str, count: usize) -> Vec<Value> {
 /// Waits until everything sent so far was written. The writer keeps order, so once a probe
 /// diff is out, no earlier frame is still on its way. Leaves the probe open.
 pub(super) fn flush(rig: &mut Rig) {
-    let count = of_type(&rig.sent(), "ch_diff").len();
+    let before = open_diffs(rig);
     assert!(rig.driver.diff());
-    wait_sent(rig, "ch_diff", count + 1);
+    new_diff(rig, &before);
+}
+
+/// Pumps until a whole-session diff that was not open in `before` is open and written, and
+/// returns it. Found by id rather than by count: a run's end asks for a diff of its own, and
+/// that one may still be on its way.
+pub(super) fn new_diff(rig: &mut Rig, before: &[String]) -> Value {
+    let fresh = |d: &Driver, line: &Value| {
+        line["type"] == "ch_diff"
+            && line["id"].as_str().is_some_and(|id| {
+                matches!(d.open.get(id), Some(Request::Diff)) && !before.iter().any(|b| b == id)
+            })
+    };
+    rig.pump_until("a new diff", |d, sent| {
+        sent.iter().any(|line| fresh(d, line))
+    });
+    rig.sent()
+        .into_iter()
+        .find(|line| fresh(&rig.driver, line))
+        .expect("the new diff was written")
 }
 
 /// Starts a session and lets one run end. `listed` says whether the runner keeps checkpoints.
@@ -42,8 +61,10 @@ pub(super) fn first_run(rig: &mut Rig, listed: bool) {
     }
 }
 
-/// Lets a run end with a reply, so it counts as a turn worth a checkpoint.
+/// Lets a run end with a reply, so it counts as a turn worth a checkpoint. Answers the diff
+/// the run's end asks for, so it holds back no land or restore.
 pub(super) fn end_run(rig: &mut Rig) {
+    let before = open_diffs(rig);
     rig.say(&json!({"type":"agent_start"}));
     rig.say(&json!({"type":"message_update",
         "assistantMessageEvent":{"type":"text_delta","delta":"Done."}}));
@@ -51,6 +72,30 @@ pub(super) fn end_run(rig: &mut Rig) {
     rig.pump_until("review", |d, _| {
         d.session().state() == SessionState::NeedsReview
     });
+    answer_run_diff(rig, &before);
+}
+
+/// Ids of the whole-session diffs that have no answer yet.
+pub(super) fn open_diffs(rig: &Rig) -> Vec<String> {
+    rig.driver
+        .open
+        .iter()
+        .filter(|(_, kind)| matches!(kind, Request::Diff))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// Answers the diff a run's end asked for: the one open now that was not in `before`.
+pub(super) fn answer_run_diff(rig: &mut Rig, before: &[String]) {
+    let id = open_diffs(rig)
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("the run's end asked for a diff");
+    rig.say(
+        &json!({"type":"ch_diff_result","id":id,"base":"b","stat":"","patch":"",
+        "truncated":false,"tree":"run"}),
+    );
+    rig.pump_until("the run's diff", |d, _| !d.open.contains_key(&id));
 }
 
 /// One run, saved as checkpoint 1 and marked in omp's conversation.
@@ -119,8 +164,8 @@ fn a_runner_that_lists_no_checkpoints_is_never_asked_for_them() {
     );
     assert_eq!(
         of_type(&sent, "ch_diff").len(),
-        1,
-        "only the probe went out"
+        2,
+        "only the run's diff and the probe went out"
     );
 }
 
@@ -208,8 +253,9 @@ fn a_restore_holds_the_session_until_it_ends_then_refreshes_the_diff() {
         "the restore ended at its first frame"
     );
 
+    let before = open_diffs(&rig);
     rig.say(&json!({"type":"ch_restored","id":id,"turn":1}));
-    let refresh = wait_sent(&mut rig, "ch_diff", 1).remove(0);
+    let refresh = new_diff(&mut rig, &before);
     assert!(
         refresh.get("from").is_none() && refresh.get("to").is_none(),
         "{refresh}"
@@ -235,8 +281,9 @@ fn a_refused_restore_frees_the_session_and_refreshes_the_diff() {
     let mut omp = saved_run(&mut rig);
     assert!(rig.driver.restore(1));
     let id = omp.wait_sent(&mut rig, "ch_restore", 1)[0]["id"].clone();
+    let before = open_diffs(&rig);
     rig.say(&json!({"type":"ch_error","id":id,"stage":"restore","message":"refused"}));
-    wait_sent(&mut rig, "ch_diff", 1);
+    new_diff(&mut rig, &before);
     omp.settle(&mut rig);
     assert_eq!(
         omp.path(),
@@ -257,9 +304,13 @@ fn a_restore_waits_for_open_requests_and_for_the_agent() {
         !rig.driver.can_restore(),
         "the runner refuses a restore while a diff runs"
     );
-    let id = wait_sent(&mut rig, "ch_diff", 1)[0]["id"].clone();
+    let id = wait_sent(&mut rig, "ch_diff", 2)[1]["id"].clone();
     rig.say(&diff_result(&id, "1 file"));
-    rig.pump_until("the diff", |d, _| d.session().last_diff().is_some());
+    rig.pump_until("the diff", |d, _| {
+        d.session()
+            .last_diff()
+            .is_some_and(|diff| diff.stat == "1 file")
+    });
     assert!(rig.driver.can_restore());
 
     assert!(rig.driver.prompt("again"));
@@ -275,8 +326,9 @@ fn a_restore_waits_for_open_requests_and_for_the_agent() {
 fn a_turn_diff_reply_must_echo_its_range() {
     let mut rig = Rig::new();
     saved_run(&mut rig);
+    let full = rig.driver.session().last_diff().cloned();
     assert!(rig.driver.diff_range(0, Some(1)));
-    let request = wait_sent(&mut rig, "ch_diff", 1).remove(0);
+    let request = wait_sent(&mut rig, "ch_diff", 2).remove(1);
     assert_eq!((&request["from"], &request["to"]), (&json!(0), &json!(1)));
     let id = request["id"].clone();
 
@@ -286,7 +338,7 @@ fn a_turn_diff_reply_must_echo_its_range() {
     rig.say(&diff_result(&id, "full"));
     rig.pump_until("two drops", |d, _| drops(d) == 2);
     assert_eq!(rig.driver.session().turn_diff(), None);
-    assert_eq!(rig.driver.session().last_diff(), None);
+    assert_eq!(rig.driver.session().last_diff(), full.as_ref());
 
     let mut right = diff_result(&id, "turn");
     right["from"] = json!(0);
@@ -297,7 +349,7 @@ fn a_turn_diff_reply_must_echo_its_range() {
     assert_eq!((turn.from, turn.to), (0, Some(1)));
     assert_eq!(
         rig.driver.session().last_diff(),
-        None,
+        full.as_ref(),
         "a turn diff is not the full diff"
     );
 }

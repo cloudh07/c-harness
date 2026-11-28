@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::f32::consts::FRAC_PI_2;
 use std::time::Duration;
 
-use ch_core::{Control, Evidence, OMP_VERSION_SEEN, OUTBOUND, OUTBOUND_SUMMARY, Outbound};
+use ch_core::{Control, Evidence, OUTBOUND, OUTBOUND_SUMMARY, Outbound, evidence_note};
 use ch_ui::Palette;
 use gpui_kit::base::{Button, MotionReveal, Spring, spring};
 use gpui_kit::{
@@ -34,8 +34,8 @@ fn heading(control: Control) -> &'static str {
 /// What a screen reader says for a row, since the group heading is not read when tabbing.
 fn accessible_name(row: &Outbound) -> String {
     let doubt = match row.evidence {
-        Evidence::NotVerified => " Not verified.",
-        Evidence::InCode | Evidence::Observed => "",
+        Evidence::NotVerified | Evidence::SeenOnce => format!(" {}.", row.evidence.label()),
+        Evidence::InCode | Evidence::Observed => String::new(),
     };
     format!(
         "{}. Goes to: {}. {}.{doubt}",
@@ -101,10 +101,7 @@ impl RenderOnce for OutboundSection {
             }))
             .child(muted(
                 p,
-                format!(
-                    "Rows seen in a test run were checked against omp {OMP_VERSION_SEEN}. \
-                     PRIVACY.md keeps the same list."
-                ),
+                format!("{} PRIVACY.md keeps the same list.", evidence_note()),
             ))
     }
 }
@@ -266,12 +263,8 @@ mod tests {
             let name = accessible_name(row);
             assert!(name.starts_with(row.title), "{}", row.id);
             assert!(name.contains(row.destination), "{}", row.id);
-            assert_eq!(
-                name.contains("Not verified"),
-                row.evidence == Evidence::NotVerified,
-                "{}",
-                row.id
-            );
+            let doubtful = matches!(row.evidence, Evidence::NotVerified | Evidence::SeenOnce);
+            assert_eq!(name.contains(row.evidence.label()), doubtful, "{}", row.id);
         }
     }
 }

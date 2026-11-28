@@ -9,8 +9,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use crate::proc_tree;
 use crate::tail::{TailBuffer, cut_head, cut_tail};
+use ch_proc as proc_tree;
 
 /// How much of a failing git command's stderr goes into the error message.
 const STDERR_TAIL_BYTES: usize = 2048;
@@ -512,11 +512,23 @@ mod tests {
 
     use super::*;
 
+    /// A command that runs for about 30 seconds and starts a child of its own.
+    fn sleeper() -> Command {
+        if cfg!(windows) {
+            let mut command = proc_tree::command("cmd");
+            command.args(["/D", "/C", "ping -n 30 127.0.0.1 >NUL"]);
+            command
+        } else {
+            let mut command = proc_tree::command("sh");
+            command.args(["-c", "sleep 30 & sleep 30"]);
+            command
+        }
+    }
+
     #[test]
     fn a_git_command_that_hangs_is_ended_at_its_limit() {
         let started = Instant::now();
-        let Err(error) = finish_within(proc_tree::sleeper(), "rev-parse", Duration::from_secs(2))
-        else {
+        let Err(error) = finish_within(sleeper(), "rev-parse", Duration::from_secs(2)) else {
             panic!("a command that runs for 30 seconds finished within 2");
         };
         assert!(

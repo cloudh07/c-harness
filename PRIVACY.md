@@ -6,7 +6,7 @@ whether you can turn it off. The same list is in the app under Settings, What le
 machine.
 
 <!-- outbound:start -->
-C-Harness itself sends no telemetry, crash reports or update checks, and it has no HTTP client of its own. What does leave your machine goes through omp (the coding agent C-Harness runs), git, curl or ssh, and it is all listed here.
+C-Harness itself sends no telemetry, crash reports or update checks, and it has no HTTP client of its own. What does leave your machine goes through omp (the coding agent C-Harness runs), git, curl, ssh or your browser, and it is all listed here.
 
 ### Model requests
 
@@ -23,26 +23,26 @@ C-Harness itself sends no telemetry, crash reports or update checks, and it has 
 - **What:** The name and description of every skill omp finds in a .claude/skills folder in your project folder or any folder above it, such as your home folder.
 - **When:** When omp starts, one request per skill.
 - **Why:** omp asks the model to shorten skill descriptions before it uses them.
-- **Turning it off:** No switch. C-Harness has no setting for it. In a test run, a project outside the home folder sent none.
-- **How we know:** Seen in a test run: omp's debug log from a test run
+- **Turning it off:** No switch. C-Harness has no setting for it. In a run by hand, a project outside the home folder sent none.
+- **How we know:** Seen once, by hand: omp's debug log from one run by hand
 
 ### Model catalogs
 
 - **Goes to:** Model catalog hosts
-- **What:** Connections to catalog.stencil.so (omp's model list), api.anthropic.com, api.commandcode.ai, api.kilo.ai, api.venice.ai, coding-intl.dashscope.aliyuncs.com, hyper.charm.land and zenmux.ai. What they receive was not checked: the test refused the connections.
+- **What:** Connections to catalog.stencil.so (omp's model list), api.commandcode.ai, api.kilo.ai, api.venice.ai, coding-intl.dashscope.aliyuncs.com, hyper.charm.land and zenmux.ai, and to api.anthropic.com when the model is Anthropic's. What they receive was not checked: the test refused the connections.
 - **When:** When omp starts.
 - **Why:** omp refreshes the list of models it knows.
 - **Turning it off:** No switch. omp has no setting for it that we found.
-- **How we know:** Seen in a test run: a proxy log from a test run
+- **How we know:** Seen in a test run: the omp header audit in crates/ch-runner/tests/omp_headers.rs, which fails when omp connects to a host not listed here
 
 ### MCP servers
 
 - **Goes to:** MCP servers you set up
-- **What:** Whatever each server sends. In a test run omp also contacted registry.npmjs.org while starting one.
+- **What:** Whatever each server sends. In a run by hand omp also contacted registry.npmjs.org while starting one.
 - **When:** When omp starts, if your Claude Code or omp settings list MCP servers.
 - **Why:** omp loads MCP servers from your settings and the project's.
 - **Turning it off:** You can turn it off. Remove the servers from those settings. C-Harness has no switch of its own.
-- **How we know:** Seen in a test run: omp's output and a proxy log from a test run
+- **How we know:** Seen once, by hand: omp's output and a proxy log from one run by hand
 
 ### Web search
 
@@ -75,10 +75,10 @@ C-Harness itself sends no telemetry, crash reports or update checks, and it has 
 
 - **Goes to:** Wherever the command connects
 - **What:** Whatever that command sends, for example curl, git push or a package install.
-- **When:** When you approve the command, or without asking if your approval mode allows it.
+- **When:** When you approve it. If you approve a tool such as bash for the session, its later commands in that session run without asking.
 - **Why:** The agent works by running commands in your project.
 - **Turning it off:** Only when you choose. Deny the command. C-Harness marks ssh, scp, sftp and git push as high risk, and curl or wget when the same command also runs a script. A plain curl is medium risk.
-- **How we know:** Verified in code: crates/ch-core/src/risk.rs
+- **How we know:** Verified in code: crates/ch-core/src/risk.rs, crates/ch-core/src/approval.rs and crates/ch-app/src/settings.rs
 
 ### Your Verify command
 
@@ -116,6 +116,15 @@ C-Harness itself sends no telemetry, crash reports or update checks, and it has 
 - **Turning it off:** Only when you choose. Don't press Land. Without a GitHub token, Land stays off.
 - **How we know:** Verified in code: crates/ch-runner/src/land.rs, crates/ch-runner/src/pr.rs and crates/ch-app/src/view_model.rs
 
+### Opening the pull request
+
+- **Goes to:** GitHub, through your browser
+- **What:** The pull request's address. Your default browser opens it and talks to github.com as it does for any page.
+- **When:** Only when you press Open pull request after a land. C-Harness opens only a pull request address in the session's GitHub repository.
+- **Why:** You review the pull request on GitHub.
+- **Turning it off:** Only when you choose. Don't press Open pull request. The address is shown with the button.
+- **How we know:** Verified in code: crates/ch-app/src/panels.rs, crates/ch-app/src/session_view/review.rs and crates/ch-app/src/view_model/land.rs
+
 ### omp update check
 
 - **Goes to:** omp's update server
@@ -125,7 +134,7 @@ C-Harness itself sends no telemetry, crash reports or update checks, and it has 
 - **Turning it off:** Turned off. Nothing to do.
 - **How we know:** Verified in code: crates/ch-protocol/src/probe.rs
 
-Rows seen in a test run were checked against omp 18.13.1.
+Rows seen in a test run were checked against omp 18.13.1 by a test that runs before each release. Rows seen once, by hand, were not checked again.
 <!-- outbound:end -->
 
 ## How this list is kept
@@ -137,7 +146,9 @@ it, and a test fails when they differ. After changing the list, refresh this fil
 
 Each row says how we know. "Verified in code" means we read it in C-Harness's own code. "Seen
 in a test run" means we ran omp against a local listener with a fake key and watched what it
-sent; that check is repeated before each release (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+sent; that check is repeated before each release (see [CONTRIBUTING.md](CONTRIBUTING.md)), and
+it fails if omp contacts a host the row does not name. "Seen once, by hand" means someone
+watched it in one run outside that test; nothing checks it again, so it may have changed.
 "Not verified" means the row comes from omp's settings and nobody has watched it on the wire.
 
 ## Something missing?

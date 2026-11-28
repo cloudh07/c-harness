@@ -1,6 +1,8 @@
 use super::*;
 use ch_protocol::runner::{GitAuthor, RUNNER_PROTOCOL_VERSION, SECRET_SCAN_PROTOCOL};
+use std::cell::Cell;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -36,13 +38,32 @@ impl Stdin {
 struct Stdout {
     rx: Receiver<Vec<u8>>,
     pending: Vec<u8>,
+    received: usize,
+    /// Writes the link has finished with. It only asks for more once it queued every line it
+    /// was given.
+    queued: Arc<AtomicUsize>,
+}
+
+impl Stdout {
+    fn new(rx: Receiver<Vec<u8>>) -> Self {
+        Self {
+            rx,
+            pending: Vec::new(),
+            received: 0,
+            queued: Arc::default(),
+        }
+    }
 }
 
 impl Read for Stdout {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.pending.is_empty() {
+            self.queued.store(self.received, Ordering::SeqCst);
             match self.rx.recv() {
-                Ok(bytes) => self.pending = bytes,
+                Ok(bytes) => {
+                    self.pending = bytes;
+                    self.received += 1;
+                }
                 Err(_) => return Ok(0),
             }
         }
@@ -57,6 +78,8 @@ struct Rig {
     driver: Driver,
     stdin: Stdin,
     runner: Option<Sender<Vec<u8>>>,
+    said: Cell<usize>,
+    queued: Arc<AtomicUsize>,
 }
 
 impl Rig {
@@ -67,15 +90,15 @@ impl Rig {
     fn with_clock(clock: fn() -> u64) -> Self {
         let stdin = Stdin::default();
         let (tx, rx) = mpsc::channel();
-        let stdout = Stdout {
-            rx,
-            pending: Vec::new(),
-        };
+        let stdout = Stdout::new(rx);
+        let queued = Arc::clone(&stdout.queued);
         let link = Link::new(stdin.clone(), stdout, None::<std::io::Empty>);
         Self {
             driver: Driver::new(link, clock),
             stdin,
             runner: Some(tx),
+            said: Cell::new(0),
+            queued,
         }
     }
 
@@ -94,6 +117,17 @@ impl Rig {
         let mut bytes = line.to_string().into_bytes();
         bytes.push(b'\n');
         self.runner.as_ref().unwrap().send(bytes).unwrap();
+        self.said.set(self.said.get() + 1);
+    }
+
+    /// Says a line and waits until the link has queued it, so the driver's next pump reads it.
+    fn queue(&self, line: &Value) {
+        self.say(line);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while self.queued.load(Ordering::SeqCst) < self.said.get() {
+            assert!(Instant::now() < deadline, "the link never read {line}");
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn pump_until(&mut self, what: &str, done: impl Fn(&Driver, &[Value]) -> bool) {
@@ -264,14 +298,18 @@ fn runs_one_session_from_start_to_landed() {
     rig.pump_until("review", |d, _| {
         d.session().state() == SessionState::NeedsReview
     });
+    rig.say(
+        &json!({"type":"ch_diff_result","id":"req_3","base":"abc","stat":"",
+        "patch":"","truncated":false}),
+    );
     assert!(rig.driver.verify("cargo test"));
     assert!(rig.driver.diff());
     rig.say(
-        &json!({"type":"ch_evidence","id":"req_3","command":"cargo test","exit_code":0,
+        &json!({"type":"ch_evidence","id":"req_4","command":"cargo test","exit_code":0,
         "duration_ms":10,"output_tail":"ok","truncated":false,"timed_out":false}),
     );
     rig.say(
-        &json!({"type":"ch_diff_result","id":"req_4","base":"abc","stat":" a | 1 +",
+        &json!({"type":"ch_diff_result","id":"req_5","base":"abc","stat":" a | 1 +",
         "patch":"+x","truncated":false}),
     );
     rig.pump_until("evidence and diff", |d, _| {
@@ -288,7 +326,7 @@ fn runs_one_session_from_start_to_landed() {
         "land must wait for omp to stop"
     );
 
-    rig.say(&json!({"type":"ch_stopped","id":"req_5","exit_code":0}));
+    rig.say(&json!({"type":"ch_stopped","id":"req_6","exit_code":0}));
     rig.pump_until("the land", |_, sent| !of_type(sent, "ch_land").is_empty());
     let sent = rig.sent();
     let land = of_type(&sent, "ch_land")[0];
@@ -296,7 +334,7 @@ fn runs_one_session_from_start_to_landed() {
     assert_eq!(land["branch"], "ch/s1");
 
     rig.say(
-        &json!({"type":"ch_landed","id":"req_6","branch":"ch/s1","commit":"def",
+        &json!({"type":"ch_landed","id":"req_7","branch":"ch/s1","commit":"def",
         "pull_request_url":"https://github.com/example/demo/pull/7"}),
     );
     rig.pump_until("landed", |d, _| d.session().state() == SessionState::Landed);
@@ -442,6 +480,7 @@ fn a_select_that_is_not_an_approval_is_answered_no() {
 fn a_land_in_flight_blocks_a_second_one_until_it_fails() {
     let mut rig = Rig::new();
     settle(&mut rig);
+    checkpoints::answer_run_diff(&mut rig, &[]);
     assert!(rig.driver.can_land());
     assert!(rig.driver.land(land_request()));
     assert!(!rig.driver.can_land());
@@ -552,10 +591,7 @@ fn stderr_is_masked_before_display() {
     let mut rig = Rig::new();
     let stdin = Stdin::default();
     let (_tx, rx) = mpsc::channel::<Vec<u8>>();
-    let stdout = Stdout {
-        rx,
-        pending: Vec::new(),
-    };
+    let stdout = Stdout::new(rx);
     let stderr = std::io::Cursor::new(format!("using key {KEY}\n").into_bytes());
     rig.driver = Driver::new(Link::new(stdin, stdout, Some(stderr)), || 1);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -568,9 +604,12 @@ fn stderr_is_masked_before_display() {
     assert!(!log[0].contains(KEY), "{log:?}");
 }
 
+mod auto_diff;
 mod checkpoints;
 mod cost;
+mod finished;
 mod first_reply;
 mod projection;
 mod restore;
+mod restore_failures;
 mod resume;

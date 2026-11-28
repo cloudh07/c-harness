@@ -10,7 +10,6 @@ mod omp;
 mod out;
 mod pr;
 mod preflight;
-mod proc_tree;
 mod scratch;
 mod scrub;
 mod secret_scan;

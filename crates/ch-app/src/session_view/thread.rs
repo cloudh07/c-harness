@@ -6,6 +6,7 @@ use ch_ui::{Palette, Status};
 use gpui_kit::base::SelectableText;
 use gpui_kit::{ClickEvent, Context, Div, FontWeight, ParentElement, Styled, div, px, rgb};
 
+use super::follow::Follow;
 use super::{CONTENT_WIDTH, Live, OpenSettings, Phase, SessionView, list};
 use crate::assets::{Icon, icon};
 use crate::brand;
@@ -130,43 +131,60 @@ impl SessionView {
         } else {
             panels::landing(p, session.landing(), &self.settings.github_repo)
         };
+        let follow = &self.follow;
+        let row = |key: &'static str, child: Option<Div>| child.map(|c| follow.row(key, c));
+        let tools = panels::tool_calls(p, session.tool_calls(), |call, line| {
+            follow.row(format!("tool-{}", call.id), line)
+        });
         div()
             .flex()
             .flex_col()
             .gap_4()
-            .children((live.hidden > 0).then(|| muted(p, hidden_note(live.hidden))))
-            .children(
-                live.turns
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (prompt, reply))| turn(p, format!("turn-{i}"), prompt, reply, false)),
-            )
-            .children(current_turn(p, live, waiting))
-            .children(
+            .children(row(
+                "hidden",
+                (live.hidden > 0).then(|| muted(p, hidden_note(live.hidden))),
+            ))
+            .children(live.turns.iter().enumerate().map(|(i, (prompt, reply))| {
+                let id = format!("turn-{i}");
+                let shown = last_chars(reply, panels::SHOWN_CHARS);
+                follow.row(id.clone(), turn(p, id, prompt, shown, false))
+            }))
+            .children(row("turn-now", current_turn(p, live, waiting, follow)))
+            .children(row(
+                "empty-run",
                 (session.run_was_empty() && session.checkpoints_on())
                     .then(|| muted(p, EMPTY_RUN_NOTE)),
-            )
-            .children(panels::retrying(p, session.retrying()))
-            .children(panels::first_reply(p, live.driver.first_reply_late()))
-            .children(panels::failure(p, session.failure()))
-            .children(panels::warnings(p, session.warnings()))
-            .children(panels::notices(p, session.notices()))
-            .children(self.disconnected().then(|| {
-                banner(
-                    p,
-                    p.status(Status::NearCap),
-                    "The runner disconnected",
-                    "Its output ended, so nothing more will arrive. Work that has not landed \
-                     stays in its worktree. Start a new session to keep going.",
-                )
-            }))
-            .children(panels::tool_calls(p, session.tool_calls()))
-            .children(ask_review.then(|| self.review_prompt(cx)))
-            .children(panels::evidence(p, session.evidence()))
-            .children(panels::diff(p, session.last_diff()))
-            .children(panels::turn_diff(p, session.turn_diff()))
-            .children(landing)
-            .children(panels::log(p, live.driver.log()))
+            ))
+            .children(row("retrying", panels::retrying(p, session.retrying())))
+            .children(row(
+                "first-reply",
+                panels::first_reply(p, live.driver.first_reply_late()),
+            ))
+            .children(row("failure", panels::failure(p, session.failure())))
+            .children(row("warnings", panels::warnings(p, session.warnings())))
+            .children(row("notices", panels::notices(p, session.notices())))
+            .children(row(
+                "disconnected",
+                self.disconnected().then(|| {
+                    banner(
+                        p,
+                        p.status(Status::NearCap),
+                        "The runner disconnected",
+                        "Its output ended, so nothing more will arrive. Work that has not \
+                         landed stays in its worktree. Start a new session to keep going.",
+                    )
+                }),
+            ))
+            .children(row("tools", tools))
+            .children(row(
+                "review-prompt",
+                ask_review.then(|| self.review_prompt(cx)),
+            ))
+            .children(row("evidence", panels::evidence(p, session.evidence())))
+            .children(row("diff", panels::diff(p, session.last_diff())))
+            .children(row("turn-diff", panels::turn_diff(p, session.turn_diff())))
+            .children(row("landing", landing))
+            .children(row("log", panels::log(p, live.driver.log())))
     }
 
     /// Shown in the thread when the agent is done and the review panel is closed, so the next
@@ -197,7 +215,7 @@ impl SessionView {
 
 /// The turn in progress. A resumed session has none until the first prompt, only a line while
 /// the earlier conversation loads.
-fn current_turn(p: Palette, live: &Live, waiting: bool) -> Option<Div> {
+fn current_turn(p: Palette, live: &Live, waiting: bool, follow: &Follow) -> Option<Div> {
     let reply = live.driver.reply();
     if live.prompt.is_empty() && reply.is_empty() {
         return (live.driver.loading_history() && !live.driver.closed())
@@ -207,7 +225,7 @@ fn current_turn(p: Palette, live: &Live, waiting: bool) -> Option<Div> {
         p,
         "turn-now".to_string(),
         &live.prompt,
-        reply,
+        follow.clip(reply),
         waiting,
     ))
 }
@@ -220,10 +238,10 @@ fn hidden_note(hidden: usize) -> String {
     }
 }
 
-/// One prompt and its reply. A turn read back from omp may have no prompt, e.g. after
-/// compaction.
-fn turn(p: Palette, id: String, prompt: &str, reply: &str, waiting: bool) -> Div {
-    let (shown, clipped) = last_chars(reply, panels::SHOWN_CHARS);
+/// One prompt and the part of its reply on screen. A turn read back from omp may have no prompt,
+/// e.g. after compaction.
+fn turn(p: Palette, id: String, prompt: &str, reply: (&str, bool), waiting: bool) -> Div {
+    let (shown, clipped) = reply;
     let body = if !shown.is_empty() {
         div()
             .text_sm()

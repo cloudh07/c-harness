@@ -11,7 +11,7 @@
 //! top-level fields, then compares them with `testdata/omp/headers-*.txt`. Values of keys and of
 //! headers that link requests are never kept. `CH_BLESS=1` rewrites the files after a review.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -86,6 +86,62 @@ fn openai_requests_match_the_fixture() {
     audit(Provider::OpenAi);
 }
 
+fn listed_for(provider: Provider) -> Vec<String> {
+    ch_core::STARTUP_HOSTS
+        .iter()
+        .filter(|(_, only)| only.is_none_or(|name| name == provider.name()))
+        .map(|(host, _)| format!("{host}:443"))
+        .collect()
+}
+
+#[test]
+fn a_proxy_target_is_reduced_to_its_host() {
+    assert_eq!(host_of("api.kilo.ai:443"), "api.kilo.ai");
+    assert_eq!(host_of("http://zenmux.ai/v1/models"), "zenmux.ai");
+    assert_eq!(
+        host_of("https://hyper.charm.land:8443/x"),
+        "hyper.charm.land"
+    );
+}
+
+#[test]
+fn the_listed_startup_hosts_pass_the_host_check() {
+    for provider in [Provider::Anthropic, Provider::OpenAi] {
+        check_hosts(provider, &listed_for(provider));
+    }
+}
+
+#[test]
+#[should_panic(expected = "does not list: [\"telemetry.example.com\"]")]
+fn an_unlisted_host_fails_the_host_check() {
+    let mut proxied = listed_for(Provider::OpenAi);
+    proxied.push("telemetry.example.com:443".to_owned());
+    check_hosts(Provider::OpenAi, &proxied);
+}
+
+#[test]
+#[should_panic(expected = "skipped ones it lists: [\"api.anthropic.com\"]")]
+fn a_listed_host_omp_skipped_fails_the_host_check() {
+    check_hosts(Provider::Anthropic, &listed_for(Provider::OpenAi));
+}
+
+#[test]
+fn a_header_carrying_the_home_folder_is_a_finding() {
+    let (kind, home) = local_names()
+        .into_iter()
+        .find(|(kind, _)| *kind == "home folder path")
+        .expect("HOME or USERPROFILE is set");
+    let seen = Seen {
+        method: "POST".to_owned(),
+        path: "/v1/messages".to_owned(),
+        headers: vec![("x-cwd".to_owned(), format!("{home}/project"))],
+        body: Vec::new(),
+    };
+    let found = findings(&[seen]);
+    let want = format!("POST /v1/messages: header x-cwd carries the {kind}");
+    assert!(found.contains(&want), "{found:?}");
+}
+
 struct Seen {
     method: String,
     path: String,
@@ -139,7 +195,7 @@ fn audit(provider: Provider) {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    scrub_env(&mut command);
+    keep_only_safe_env(&mut command, root.path());
     command
         .env("HOME", &home)
         .env("USERPROFILE", &home)
@@ -162,17 +218,18 @@ fn audit(provider: Provider) {
         }
     }
 
-    let mut child = command
-        .spawn()
-        .unwrap_or_else(|e| panic!("start {}: {e}", omp.display()));
-    let output = drain(&mut child);
-    let mut stdin = child.stdin.take().expect("omp stdin");
+    let mut child = KillOnDrop(
+        command
+            .spawn()
+            .unwrap_or_else(|e| panic!("start {}: {e}", omp.display())),
+    );
+    let output = drain(&mut child.0);
+    let mut stdin = child.0.stdin.take().expect("omp stdin");
     let frame = serde_json::json!({ "id": "audit", "type": "prompt", "message": MARKER });
     writeln!(stdin, "{frame}").expect("send the prompt");
 
     let (requests, proxied) = collect(&rx);
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(child);
     drop(stdin);
     for host in &proxied {
         println!("[{}] refused a connection to {host}", provider.name());
@@ -185,10 +242,18 @@ fn audit(provider: Provider) {
     }
 
     let report = render(&version, provider, &requests);
-    for line in findings(&requests) {
+    let found = findings(&requests);
+    for line in &found {
         println!("[{}] FINDING: {line}", provider.name());
     }
     compare(provider, &report);
+    check_hosts(provider, &proxied);
+    assert!(
+        found.is_empty(),
+        "omp's {} requests carry who or where you are:\n{}",
+        provider.name(),
+        found.join("\n")
+    );
     assert_eq!(
         version,
         ch_core::OMP_VERSION_SEEN,
@@ -234,16 +299,59 @@ fn scratch_root() -> tempfile::TempDir {
     root
 }
 
-/// Drops anything that could carry a real key, point omp elsewhere or add headers.
-fn scrub_env(command: &mut Command) {
-    const PREFIXES: &[&str] = &["ANTHROPIC_", "OPENAI_", "CLAUDE", "OTEL_", "PI_", "OMP_"];
-    const SUFFIXES: &[&str] = &["_API_KEY", "_TOKEN", "_KEY", "_SECRET"];
-    for (name, _) in std::env::vars_os() {
+/// Kills omp when the audit ends, a failed assert included.
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Variables omp may see from the real environment, upper-cased. Windows spells some of them in
+/// mixed case, such as `Path`. The user and computer names stay so `findings` has something to
+/// look for.
+const KEEP_ENV: &[&str] = &[
+    "PATH",
+    "PATHEXT",
+    "SYSTEMROOT",
+    "WINDIR",
+    "SYSTEMDRIVE",
+    "COMSPEC",
+    "LANG",
+    "TERM",
+    "USERNAME",
+    "USER",
+    "LOGNAME",
+    "COMPUTERNAME",
+    "HOSTNAME",
+];
+
+/// Starts omp from an empty environment, so no real key, proxy, config folder or telemetry
+/// setting reaches it, whatever it is called. Folders omp may write to point into `scratch`.
+fn keep_only_safe_env(command: &mut Command, scratch: &Path) {
+    command.env_clear();
+    for (name, value) in std::env::vars_os() {
         let upper = name.to_string_lossy().to_ascii_uppercase();
-        if PREFIXES.iter().any(|p| upper.starts_with(p))
-            || SUFFIXES.iter().any(|s| upper.ends_with(s))
-        {
-            command.env_remove(&name);
+        if KEEP_ENV.contains(&upper.as_str()) || upper.starts_with("LC_") {
+            command.env(name, value);
+        }
+    }
+    let folders = [
+        (&["TEMP", "TMP", "TMPDIR"][..], "tmp"),
+        (&["APPDATA"], "appdata"),
+        (&["LOCALAPPDATA"], "localappdata"),
+        (&["XDG_CONFIG_HOME"], "xdg-config"),
+        (&["XDG_CACHE_HOME"], "xdg-cache"),
+        (&["XDG_DATA_HOME"], "xdg-data"),
+        (&["XDG_STATE_HOME"], "xdg-state"),
+    ];
+    for (names, folder) in folders {
+        let dir = scratch.join(folder);
+        std::fs::create_dir_all(&dir).expect("create a scratch folder");
+        for name in names {
+            command.env(name, &dir);
         }
     }
 }
@@ -291,6 +399,35 @@ fn collect(rx: &Receiver<Event>) -> (Vec<Seen>, Vec<String>) {
     proxied.sort();
     proxied.dedup();
     (requests, proxied)
+}
+
+/// The host in a proxy request's target: `host:443` from a CONNECT, or `http://host/path`.
+fn host_of(target: &str) -> &str {
+    let rest = target.split_once("://").map_or(target, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or(rest);
+    authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _)| host)
+}
+
+/// Fails when omp connected to a host `ch_core::STARTUP_HOSTS` does not list for this provider,
+/// or never connected to one it does, so PRIVACY.md cannot fall behind omp.
+fn check_hosts(provider: Provider, proxied: &[String]) {
+    let seen: BTreeSet<&str> = proxied.iter().map(|target| host_of(target)).collect();
+    let want: BTreeSet<&str> = ch_core::STARTUP_HOSTS
+        .iter()
+        .filter(|(_, only)| only.is_none_or(|name| name == provider.name()))
+        .map(|(host, _)| *host)
+        .collect();
+    let unlisted: Vec<&str> = seen.difference(&want).copied().collect();
+    let missing: Vec<&str> = want.difference(&seen).copied().collect();
+    assert!(
+        unlisted.is_empty() && missing.is_empty(),
+        "omp's {} run connected to hosts STARTUP_HOSTS does not list: {unlisted:?}, and skipped \
+         ones it lists: {missing:?}. Update STARTUP_HOSTS and the model-catalogs row in \
+         crates/ch-core/src/outbound.rs, then PRIVACY.md.",
+        provider.name()
+    );
 }
 
 fn listen() -> TcpListener {

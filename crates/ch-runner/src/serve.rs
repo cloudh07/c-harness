@@ -27,11 +27,11 @@ use crate::land::{LandError, Lander};
 use crate::omp::{self, Launch, Omp};
 use crate::out::Out;
 use crate::pr::PrOpener;
-use crate::proc_tree;
 use crate::scratch::PrivateDir;
 use crate::scrub::Scrubber;
 use crate::secret_scan;
 use crate::verify::{self, Checked, Job};
+use ch_proc as proc_tree;
 
 mod checkpoints;
 

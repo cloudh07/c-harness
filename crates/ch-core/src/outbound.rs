@@ -9,15 +9,33 @@ pub const OMP_VERSION_SEEN: &str = "18.13.1";
 /// Opens the page and the markdown copy.
 pub const OUTBOUND_SUMMARY: &str = "C-Harness itself sends no telemetry, crash reports or update \
 checks, and it has no HTTP client of its own. What does leave your machine goes through omp (the \
-coding agent C-Harness runs), git, curl or ssh, and it is all listed here.";
+coding agent C-Harness runs), git, curl, ssh or your browser, and it is all listed here.";
+
+/// Hosts omp connected to when it started in the header audit, other than the model address the
+/// run set up. The second field names the provider whose run alone made that connection.
+/// `crates/ch-runner/tests/omp_headers.rs` fails when a run connects anywhere else or skips one
+/// of these, and the model-catalogs row names each of them.
+pub const STARTUP_HOSTS: &[(&str, Option<&str>)] = &[
+    ("api.anthropic.com", Some("anthropic")),
+    ("api.commandcode.ai", None),
+    ("api.kilo.ai", None),
+    ("api.venice.ai", None),
+    ("catalog.stencil.so", None),
+    ("coding-intl.dashscope.aliyuncs.com", None),
+    ("hyper.charm.land", None),
+    ("zenmux.ai", None),
+];
 
 /// How sure the list is about one row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Evidence {
     /// Read in C-Harness code; `source` names the files.
     InCode,
-    /// Seen in a test run of omp [`OMP_VERSION_SEEN`] with a fake key and a local listener.
+    /// Seen in a test run of omp [`OMP_VERSION_SEEN`] with a fake key and a local listener. The
+    /// header audit in `crates/ch-runner/tests/omp_headers.rs` checks it again before each release.
     Observed,
+    /// Seen once in a run by hand. No test checks it again.
+    SeenOnce,
     /// Taken from omp's own settings, never seen on the wire.
     NotVerified,
 }
@@ -27,9 +45,18 @@ impl Evidence {
         match self {
             Self::InCode => "Verified in code",
             Self::Observed => "Seen in a test run",
+            Self::SeenOnce => "Seen once, by hand",
             Self::NotVerified => "Not verified",
         }
     }
+}
+
+/// Closes the page and the markdown copy.
+pub fn evidence_note() -> String {
+    format!(
+        "Rows seen in a test run were checked against omp {OMP_VERSION_SEEN} by a test that runs \
+         before each release. Rows seen once, by hand, were not checked again."
+    )
 }
 
 /// Who decides whether a row happens.
@@ -101,39 +128,40 @@ pub const OUTBOUND: &[Outbound] = &[
                your project folder or any folder above it, such as your home folder.",
         when: "When omp starts, one request per skill.",
         why: "omp asks the model to shorten skill descriptions before it uses them.",
-        turn_off: "C-Harness has no setting for it. In a test run, a project outside the home \
+        turn_off: "C-Harness has no setting for it. In a run by hand, a project outside the home \
                    folder sent none.",
         control: Control::NoSwitch,
-        evidence: Evidence::Observed,
-        source: "omp's debug log from a test run",
+        evidence: Evidence::SeenOnce,
+        source: "omp's debug log from one run by hand",
     },
     Outbound {
         id: "model-catalogs",
         title: "Model catalogs",
         destination: "Model catalog hosts",
-        what: "Connections to catalog.stencil.so (omp's model list), api.anthropic.com, \
-               api.commandcode.ai, api.kilo.ai, api.venice.ai, \
-               coding-intl.dashscope.aliyuncs.com, hyper.charm.land and zenmux.ai. What they \
+        what: "Connections to catalog.stencil.so (omp's model list), api.commandcode.ai, \
+               api.kilo.ai, api.venice.ai, coding-intl.dashscope.aliyuncs.com, hyper.charm.land \
+               and zenmux.ai, and to api.anthropic.com when the model is Anthropic's. What they \
                receive was not checked: the test refused the connections.",
         when: "When omp starts.",
         why: "omp refreshes the list of models it knows.",
         turn_off: "omp has no setting for it that we found.",
         control: Control::NoSwitch,
         evidence: Evidence::Observed,
-        source: "a proxy log from a test run",
+        source: "the omp header audit in crates/ch-runner/tests/omp_headers.rs, which fails when \
+                 omp connects to a host not listed here",
     },
     Outbound {
         id: "mcp-servers",
         title: "MCP servers",
         destination: "MCP servers you set up",
-        what: "Whatever each server sends. In a test run omp also contacted registry.npmjs.org \
-               while starting one.",
+        what: "Whatever each server sends. In a run by hand omp also contacted \
+               registry.npmjs.org while starting one.",
         when: "When omp starts, if your Claude Code or omp settings list MCP servers.",
         why: "omp loads MCP servers from your settings and the project's.",
         turn_off: "Remove the servers from those settings. C-Harness has no switch of its own.",
         control: Control::Setting,
-        evidence: Evidence::Observed,
-        source: "omp's output and a proxy log from a test run",
+        evidence: Evidence::SeenOnce,
+        source: "omp's output and a proxy log from one run by hand",
     },
     Outbound {
         id: "web-search",
@@ -177,14 +205,16 @@ pub const OUTBOUND: &[Outbound] = &[
         title: "Commands the agent runs",
         destination: "Wherever the command connects",
         what: "Whatever that command sends, for example curl, git push or a package install.",
-        when: "When you approve the command, or without asking if your approval mode allows it.",
+        when: "When you approve it. If you approve a tool such as bash for the session, its later \
+               commands in that session run without asking.",
         why: "The agent works by running commands in your project.",
         turn_off: "Deny the command. C-Harness marks ssh, scp, sftp and git push as high risk, \
                    and curl or wget when the same command also runs a script. A plain curl is \
                    medium risk.",
         control: Control::YourChoice,
         evidence: Evidence::InCode,
-        source: "crates/ch-core/src/risk.rs",
+        source: "crates/ch-core/src/risk.rs, crates/ch-core/src/approval.rs and \
+                 crates/ch-app/src/settings.rs",
     },
     Outbound {
         id: "verify-command",
@@ -245,6 +275,21 @@ pub const OUTBOUND: &[Outbound] = &[
                  crates/ch-app/src/view_model.rs",
     },
     Outbound {
+        id: "pull-request-link",
+        title: "Opening the pull request",
+        destination: "GitHub, through your browser",
+        what: "The pull request's address. Your default browser opens it and talks to github.com \
+               as it does for any page.",
+        when: "Only when you press Open pull request after a land. C-Harness opens only a pull \
+               request address in the session's GitHub repository.",
+        why: "You review the pull request on GitHub.",
+        turn_off: "Don't press Open pull request. The address is shown with the button.",
+        control: Control::YourChoice,
+        evidence: Evidence::InCode,
+        source: "crates/ch-app/src/panels.rs, crates/ch-app/src/session_view/review.rs and \
+                 crates/ch-app/src/view_model/land.rs",
+    },
+    Outbound {
         id: "omp-update-check",
         title: "omp update check",
         destination: "omp's update server",
@@ -278,10 +323,7 @@ pub fn outbound_markdown() -> String {
             row.source,
         );
     }
-    let _ = write!(
-        out,
-        "\nRows seen in a test run were checked against omp {OMP_VERSION_SEEN}.\n"
-    );
+    let _ = write!(out, "\n{}\n", evidence_note());
     out
 }
 
@@ -344,6 +386,73 @@ mod tests {
             assert!(markdown.contains(row.what), "{}", row.id);
         }
         assert!(markdown.starts_with(OUTBOUND_SUMMARY));
+    }
+
+    /// Words in `text` shaped like a host name, such as `api.kilo.ai`.
+    fn hosts_named(text: &str) -> Vec<&str> {
+        text.split(|c: char| c.is_whitespace() || matches!(c, ',' | '(' | ')'))
+            .map(|word| word.trim_end_matches(['.', ':']))
+            .filter(|word| {
+                word.contains('.')
+                    && word.chars().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-'
+                    })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn only_rows_the_header_audit_checks_say_seen_in_a_test_run() {
+        let observed: Vec<&str> = OUTBOUND
+            .iter()
+            .filter(|row| row.evidence == Evidence::Observed)
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(
+            observed,
+            ["model-provider", "model-catalogs"],
+            "crates/ch-runner/tests/omp_headers.rs checks only the request headers and the hosts \
+             omp connects to at startup; mark anything else SeenOnce"
+        );
+    }
+
+    #[test]
+    fn the_catalog_row_names_exactly_the_audited_hosts() {
+        let row = OUTBOUND
+            .iter()
+            .find(|row| row.id == "model-catalogs")
+            .expect("the model-catalogs row");
+        let mut named = hosts_named(row.what);
+        named.sort_unstable();
+        let mut audited: Vec<&str> = STARTUP_HOSTS.iter().map(|(host, _)| *host).collect();
+        audited.sort_unstable();
+        assert_eq!(named, audited);
+    }
+
+    #[test]
+    fn observed_rows_name_no_host_the_audit_does_not_check() {
+        for row in OUTBOUND.iter().filter(|r| r.evidence == Evidence::Observed) {
+            for host in hosts_named(row.what)
+                .into_iter()
+                .chain(hosts_named(row.destination))
+            {
+                assert!(
+                    STARTUP_HOSTS.iter().any(|(h, _)| *h == host),
+                    "{} names {host}, which the header audit does not check",
+                    row.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn host_names_are_found_in_prose() {
+        let text = "Connections to a.example.com (the list), b-2.example.org and c.io. Not \
+                    session's or crates/ch-core/src/x.rs.";
+        assert_eq!(
+            hosts_named(text),
+            ["a.example.com", "b-2.example.org", "c.io"]
+        );
     }
 
     #[test]

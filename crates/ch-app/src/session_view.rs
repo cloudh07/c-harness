@@ -1,9 +1,10 @@
 //! The session screen: the prompt, the run as it streams in, the approvals the agent is holding,
 //! and the review panel that ends in a pull request.
 
+mod anchor;
 mod composer;
 mod exit;
-mod finished;
+pub(crate) mod finished;
 mod follow;
 mod header;
 mod leftovers;
@@ -111,6 +112,26 @@ fn list(problems: &[Problem]) -> String {
         .join(" ")
 }
 
+const FINISH_SETTINGS: &str = "Finish Settings first.";
+
+fn finish_settings(problems: &[Problem]) -> String {
+    format!("{FINISH_SETTINGS} {}", list(problems))
+}
+
+/// The banner once Settings change. Only the one about Settings follows them: the others are
+/// about the session, such as a stop at the cost cap, and stay until dismissed.
+fn banner_after_settings(
+    banner: Option<Result<String, String>>,
+    problems: &[Problem],
+) -> Option<Result<String, String>> {
+    match banner {
+        Some(Err(text)) if text.starts_with(FINISH_SETTINGS) => {
+            (!problems.is_empty()).then(|| Err(finish_settings(problems)))
+        }
+        other => other,
+    }
+}
+
 fn status_for(state: SessionState) -> Status {
     match state {
         SessionState::Idle => Status::Idle,
@@ -142,6 +163,15 @@ fn is_working(state: SessionState) -> bool {
 /// and a working agent has to be stopped first, unless its runner is already gone.
 fn may_start_new(closed: bool, landing: bool, stopping: bool, state: SessionState) -> bool {
     closed || (!landing && (stopping || !is_working(state)))
+}
+
+/// The runner's output ended while the session was still open.
+fn disconnected(driver: &Driver) -> bool {
+    driver.closed()
+        && !matches!(
+            driver.session().state(),
+            SessionState::Landed | SessionState::Failed
+        )
 }
 
 /// The turn a new prompt closes, unless it has nothing to show: the first prompt of a
@@ -201,7 +231,7 @@ impl SessionView {
             self.leftovers = Leftovers::scanning(launch::leftovers(&settings));
         }
         self.settings = settings;
-        self.message = None;
+        self.message = banner_after_settings(self.message.take(), &self.settings.problems());
         cx.notify();
     }
 
@@ -250,16 +280,11 @@ impl SessionView {
         cx.notify();
     }
 
-    /// The runner's output ended while the session was still open.
     fn disconnected(&self) -> bool {
         let Phase::Live(live) = &self.phase else {
             return false;
         };
-        live.driver.closed()
-            && !matches!(
-                live.driver.session().state(),
-                SessionState::Landed | SessionState::Failed
-            )
+        disconnected(&live.driver)
     }
 
     fn tick(&mut self, cx: &mut Context<Self>) {
@@ -267,16 +292,16 @@ impl SessionView {
             Phase::Launching { .. } => self.poll_launch(),
             Phase::Resuming { .. } => self.poll_resume(),
             Phase::Live(live) => {
-                let state = live.driver.session().state();
-                live.finished = live.finished.before(state, live.driver.stopping());
-                let before = follow::Shown::of(live.driver.session());
-                let pumped = live.driver.pump();
+                self.follow.hold(live.driver.reply());
+                let before = follow::Shown::of(&live.driver, live.hidden);
+                let (finished, pumped) = live.finished.read_frames(&mut live.driver);
+                live.finished = finished;
                 let caught_up = live.catch_up();
                 let capped = live
                     .driver
                     .enforce_cost_cap(self.settings.cost_cap_cents)
                     .map(crate::view_model::cap_stopped);
-                let after = follow::Shown::of(live.driver.session());
+                let after = follow::Shown::of(&live.driver, live.hidden);
                 self.follow.saw(before, after);
                 if caught_up.replaced {
                     self.follow.reset();
@@ -403,6 +428,7 @@ impl SessionView {
             self.launch(text)
         };
         if accepted {
+            self.follow.reset();
             self.prompt
                 .update(cx, |state, cx| state.set_value("", window, cx));
         }
@@ -415,7 +441,7 @@ impl SessionView {
         }
         let problems = self.settings.problems();
         if !problems.is_empty() {
-            self.message = Some(Err(format!("Finish Settings first. {}", list(&problems))));
+            self.message = Some(Err(finish_settings(&problems)));
             return false;
         }
         let session = session_id(driver::epoch_ms());
@@ -674,6 +700,33 @@ mod tests {
         assert!(!problems.is_empty(), "{problems:?}");
         let text = list(&problems);
         assert!(text.contains("repository"), "{text}");
+    }
+
+    #[test]
+    fn saving_settings_keeps_a_banner_about_the_session() {
+        let capped = Some(Err("Stopped at your cost cap of $0.29.".to_string()));
+        assert_eq!(banner_after_settings(capped.clone(), &[]), capped);
+        let saved = Some(Ok("Saved the transcript.".to_string()));
+        assert_eq!(banner_after_settings(saved.clone(), &[]), saved);
+        assert_eq!(banner_after_settings(None, &[]), None);
+    }
+
+    #[test]
+    fn the_settings_banner_follows_settings() {
+        let problems = Settings {
+            runner: String::new(),
+            ..Settings::default()
+        }
+        .problems();
+        assert!(problems.len() > 1, "{problems:?}");
+        let shown = Some(Err(finish_settings(&problems)));
+        assert_eq!(banner_after_settings(shown.clone(), &[]), None, "all fixed");
+        let left = &problems[..1];
+        assert_eq!(
+            banner_after_settings(shown, left),
+            Some(Err(finish_settings(left))),
+            "one left"
+        );
     }
 
     #[test]

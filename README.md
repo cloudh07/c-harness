@@ -233,7 +233,7 @@ Platform prerequisites:
 The pure crates build and test without any of that:
 
 ```sh
-cargo test -p ch-protocol -p ch-core -p ch-runner -p ch-runtime -p ch-vault -p ch-ui
+cargo test -p ch-protocol -p ch-core -p ch-proc -p ch-runner -p ch-runtime -p ch-vault -p ch-ui
 ```
 
 The CI workflow runs format, clippy, tests and a release build of `ch-app` and `ch-runner` on
@@ -251,6 +251,7 @@ unrelated work.
 | `ch-core` | Session state, approval parsing, risk hints, transcripts and secret redaction. No I/O. |
 | `ch-runtime` | Where a session runs: a local git worktree or a machine over SSH. |
 | `ch-runner` | The process next to the agent: starts omp, runs verify, builds the diff, lands the branch. |
+| `ch-proc` | Starts child processes in a group of their own and ends the whole tree on every OS. |
 | `ch-vault` | Keys and tokens in the OS keychain. |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) shows how they fit together.

@@ -3,7 +3,7 @@
 use ch_core::{SessionState, run_ended};
 use ch_protocol::runner::{ClientFrame, RunnerFrame};
 
-use super::{Driver, Request};
+use super::{Driver, OmpState, Request};
 
 /// How long a save may hold prompts. The runner saves beside other work, so a slow disk
 /// should not lock the session for good.
@@ -18,11 +18,13 @@ pub(super) struct Saves {
 impl Driver {
     /// Whether a restore can go out now. The runner refuses one while a check, diff or
     /// restore runs, and a save in flight would race it, so every open request blocks it.
-    /// omp must be idle too: a restore or a mark under way, or the earlier conversation
-    /// still loading, would race the move in its conversation.
+    /// omp must be running and idle too: a restore or a mark under way, or the earlier
+    /// conversation still loading, would race the move in its conversation, and a stopped omp
+    /// cannot move it at all.
     pub fn can_restore(&self) -> bool {
         self.can_review()
             && self.session.checkpoints_on()
+            && self.omp == OmpState::Running
             && self.open.is_empty()
             && !self.rewinding()
             && !self.marking()
