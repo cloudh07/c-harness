@@ -338,6 +338,11 @@ Notable changes to C-Harness. The format follows
 - `ch-runner`: stopping a step that runs too long also ends children that moved to a process
   group of their own on macOS and Linux. The code that does this now lives in `ch-proc`, which
   `ch-runtime` shares.
+- `ch-runner`: when omp exits but the processes it started could not be ended, the stop is
+  reported as failed, and land and restore stay refused, since those processes may still change
+  the working tree. Before, it read as a clean stop.
+- `ch-proc`: on macOS and Linux, the last kill no longer names the root's pid once the root has
+  exited, since another process may have taken that pid. Its process group is still ended.
 
 ### Security
 

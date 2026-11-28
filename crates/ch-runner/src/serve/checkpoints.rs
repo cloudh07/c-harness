@@ -6,7 +6,7 @@ use std::thread;
 
 use ch_protocol::runner::{Checkpoint, MAX_OUTPUT_TAIL_BYTES, MAX_PATCH_BYTES, RunnerFrame};
 
-use super::{CHECKPOINT, DIFF, OmpState, RESTORE, Session, error};
+use super::{CHECKPOINT, DIFF, OmpState, RESTORE, STILL_RUNNING, Session, error};
 use crate::checkpoint::Store;
 use crate::git::{Base, Diff, Git};
 
@@ -65,7 +65,7 @@ impl Session {
         let refusal = if self.base.is_none() {
             Some("send ch_start before ch_restore")
         } else if matches!(self.omp, OmpState::Lost) {
-            Some("omp could not be ended, so the working tree may still be changing")
+            Some(STILL_RUNNING)
         } else if !self.workers.is_empty() {
             Some("refused while a check, diff or restore is still running: wait for its result")
         } else if !self.side_workers.is_empty() {

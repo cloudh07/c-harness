@@ -58,6 +58,10 @@ const INPUT_QUEUE: usize = 64;
 const WORKER_JOIN: Duration = Duration::from_secs(5);
 const READ_BUFFER: usize = 8192;
 
+/// Why a land or restore is refused once omp could not be ended.
+const STILL_RUNNING: &str =
+    "omp or a process it started could not be ended, so the working tree may still be changing";
+
 pub struct Options {
     pub workdir: PathBuf,
     pub omp_program: OsString,
@@ -176,7 +180,7 @@ enum OmpState {
     Ended {
         exit_code: Option<i32>,
     },
-    /// omp could not be ended, so whether it still runs is unknown.
+    /// omp, or a process it started, could not be ended, so something may still be running.
     Lost,
 }
 
@@ -422,7 +426,7 @@ impl Session {
             OmpState::Lost => self.out.frame(&error(
                 Some(id),
                 STOP,
-                "omp could not be ended earlier, so whether it still runs is unknown",
+                "omp or a process it started could not be ended earlier and may still be running",
             )),
         }
     }
@@ -461,9 +465,7 @@ impl Session {
             OmpState::Running(_) => {
                 Some("refused while omp is running: send ch_stop and wait for ch_stopped first")
             }
-            OmpState::Lost => {
-                Some("omp could not be ended, so the working tree may still be changing")
-            }
+            OmpState::Lost => Some(STILL_RUNNING),
             OmpState::Ended { .. } => None,
         };
         self.workers.retain(|worker| !worker.is_finished());

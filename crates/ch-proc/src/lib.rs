@@ -113,18 +113,13 @@ fn signal_tree(child: &mut Child) -> io::Result<()> {
     // Children that started groups of their own sit outside the root's group, so they are
     // found by parent before anything is signalled; once the root dies the link is gone.
     let below = descendants(root, &process_table());
-    let targets: Vec<String> = std::iter::once(root)
-        .chain(below)
-        .flat_map(|pid| [format!("-{pid}"), pid.to_string()])
-        .collect();
     // A target that is already gone, or a pid that leads no group, makes `kill` fail for
     // that one target only; the rest are still signalled.
-    run_kill("-TERM", &targets)?;
+    run_kill("-TERM", &kill_targets(root, &below, false))?;
     let deadline = Instant::now() + TERM_GRACE;
     loop {
         // Reap the root first: a zombie still counts as a member of its group.
-        let root_gone = child.try_wait()?.is_some();
-        if root_gone && !any_alive(&targets)? {
+        if child.try_wait()?.is_some() && !any_alive(&kill_targets(root, &below, true))? {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -132,8 +127,26 @@ fn signal_tree(child: &mut Child) -> io::Result<()> {
         }
         thread::sleep(GROUP_POLL);
     }
-    run_kill("-KILL", &targets)?;
+    let reaped = child.try_wait()?.is_some();
+    run_kill("-KILL", &kill_targets(root, &below, reaped))?;
     Ok(())
+}
+
+/// The `kill` arguments for the root, its group, and everyone found below it.
+///
+/// Once the root is reaped its pid is free for another process to take, so only its group,
+/// which can outlive it, is still named.
+#[cfg(any(unix, test))]
+fn kill_targets(root: u32, below: &[u32], root_reaped: bool) -> Vec<String> {
+    let mut targets = vec![format!("-{root}")];
+    if !root_reaped {
+        targets.push(root.to_string());
+    }
+    for pid in below {
+        targets.push(format!("-{pid}"));
+        targets.push(pid.to_string());
+    }
+    targets
 }
 
 #[cfg(unix)]
@@ -223,23 +236,6 @@ fn signal_tree(child: &mut Child) -> io::Result<()> {
     Ok(())
 }
 
-/// A command that runs for about 30 seconds and starts a child of its own.
-#[cfg(test)]
-fn sleeper() -> Command {
-    #[cfg(unix)]
-    {
-        let mut command = command("sh");
-        command.args(["-c", "sleep 30 & sleep 30"]);
-        command
-    }
-    #[cfg(windows)]
-    {
-        let mut command = command("cmd");
-        command.args(["/D", "/C", "ping -n 30 127.0.0.1 >NUL"]);
-        command
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs::File;
@@ -255,10 +251,13 @@ mod tests {
     #[test]
     fn child_helper() {
         match std::env::var(CHILD_ROLE).as_deref() {
-            // Starts a child in a group of its own, as the runner does with omp and git.
-            Ok("parent") => {
+            // "parent" starts a child in a group of its own, as the runner does with omp and
+            // git; "group" starts one that stays in this helper's group.
+            Ok(role @ ("parent" | "group")) => {
                 let mut hold = helper("hold");
-                own_group(&mut hold);
+                if role == "parent" {
+                    own_group(&mut hold);
+                }
                 hold.stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -306,56 +305,71 @@ mod tests {
         true
     }
 
-    #[test]
-    fn ends_a_running_group() {
-        let mut command = sleeper();
+    /// Starts `role` in a group of its own and waits until the process holding `lock` runs.
+    fn spawn_holding(role: &str, lock: &Path) -> Child {
+        let mut command = helper(role);
+        command.env(LOCK_FILE, lock);
         own_group(&mut command);
-        let mut child = command
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .spawn()
             .unwrap();
-        let started = Instant::now();
+        assert!(
+            within_ten_seconds(|| started(lock).exists()),
+            "the {role} helper never took its lock"
+        );
+        child
+    }
+
+    #[test]
+    fn ends_a_running_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("held");
+        let mut child = spawn_holding("group", &lock);
+        let begun = Instant::now();
         let status = kill_tree(&mut child).unwrap();
         assert!(status.is_some(), "child was not reaped");
-        assert!(started.elapsed() < Duration::from_secs(15));
+        assert!(begun.elapsed() < Duration::from_secs(15));
+        assert!(
+            within_ten_seconds(|| lock_free(&lock)),
+            "the grandchild in the group outlived kill_tree"
+        );
     }
 
     #[test]
     fn kills_the_child_when_the_tree_cannot_be_signalled() {
-        let mut command = sleeper();
-        own_group(&mut command);
-        let mut child = command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
+        // The child starts nothing, so killing only the child leaves nothing behind.
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("held");
+        let mut child = spawn_holding("hold", &lock);
         let error = end_tree(&mut child, |_| Err(io::Error::other("no kill"))).unwrap_err();
         assert_eq!(error.to_string(), "no kill");
         assert!(child.try_wait().unwrap().is_some(), "the child outlived it");
+        assert!(
+            within_ten_seconds(|| lock_free(&lock)),
+            "the child still holds its lock"
+        );
     }
 
     #[test]
     fn ends_a_child_that_left_the_group() {
         let dir = tempfile::tempdir().unwrap();
         let lock = dir.path().join("held");
-        let mut command = helper("parent");
-        command.env(LOCK_FILE, &lock);
-        own_group(&mut command);
-        let mut child = command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
-        assert!(
-            within_ten_seconds(|| started(&lock).exists()),
-            "the grandchild never took its lock"
-        );
+        let mut child = spawn_holding("parent", &lock);
         assert!(kill_tree(&mut child).unwrap().is_some());
         assert!(
             within_ten_seconds(|| lock_free(&lock)),
             "the grandchild outlived kill_tree"
         );
+    }
+
+    #[test]
+    fn stops_naming_the_root_pid_once_it_is_reaped() {
+        let alive = kill_targets(20, &[21, 23], false);
+        assert_eq!(alive, ["-20", "20", "-21", "21", "-23", "23"]);
+        let reaped = kill_targets(20, &[21, 23], true);
+        assert_eq!(reaped, ["-20", "-21", "21", "-23", "23"]);
     }
 
     #[test]
