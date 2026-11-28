@@ -330,6 +330,8 @@ Notable changes to C-Harness. The format follows
 - What leaves this machine: the row for commands the agent runs no longer says your approval
   mode can let them run without asking, since both Approvals choices ask before each command.
   What can is approving a tool for the session, and the row now says so.
+- What leaves this machine: the note under the list no longer says the header test runs before
+  each release. Someone starts it by hand, and no automated build runs it.
 - `ch-runtime`: a setup check that runs out of time now ends the omp and git it started too,
   not only the runner. If those can't be signalled, the runner itself is still ended. On a
   machine reached over SSH it still ends only the local `ssh`.

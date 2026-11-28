@@ -251,7 +251,7 @@ unrelated work.
 | `ch-core` | Session state, approval parsing, risk hints, transcripts and secret redaction. No I/O. |
 | `ch-runtime` | Where a session runs: a local git worktree or a machine over SSH. |
 | `ch-runner` | The process next to the agent: starts omp, runs verify, builds the diff, lands the branch. |
-| `ch-proc` | Starts child processes in a group of their own and ends the whole tree on every OS. |
+| `ch-proc` | Starts child processes in a group of their own and ends each one with the processes it started. On Windows it can miss a process whose parent has already exited. |
 | `ch-vault` | Keys and tokens in the OS keychain. |
 
 [ARCHITECTURE.md](ARCHITECTURE.md) shows how they fit together.

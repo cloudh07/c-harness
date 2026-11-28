@@ -32,7 +32,8 @@ pub enum Evidence {
     /// Read in C-Harness code; `source` names the files.
     InCode,
     /// Seen in a test run of omp [`OMP_VERSION_SEEN`] with a fake key and a local listener. The
-    /// header audit in `crates/ch-runner/tests/omp_headers.rs` checks it again before each release.
+    /// header audit in `crates/ch-runner/tests/omp_headers.rs` checks it again when someone runs
+    /// it by hand before a release; it is ignored by default and no CI job runs it.
     Observed,
     /// Seen once in a run by hand. No test checks it again.
     SeenOnce,
@@ -54,8 +55,9 @@ impl Evidence {
 /// Closes the page and the markdown copy.
 pub fn evidence_note() -> String {
     format!(
-        "Rows seen in a test run were checked against omp {OMP_VERSION_SEEN} by a test that runs \
-         before each release. Rows seen once, by hand, were not checked again."
+        "Rows seen in a test run were checked against omp {OMP_VERSION_SEEN} by a test that is \
+         started by hand before a release. No automated build runs it. Rows seen once, by hand, \
+         were not checked again."
     )
 }
 
