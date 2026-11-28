@@ -134,7 +134,7 @@ C-Harness itself sends no telemetry, crash reports or update checks, and it has 
 - **Turning it off:** Turned off. Nothing to do.
 - **How we know:** Verified in code: crates/ch-protocol/src/probe.rs
 
-Rows seen in a test run were checked against omp 18.13.1 by a test that runs before each release. Rows seen once, by hand, were not checked again.
+Rows seen in a test run were checked against omp 18.13.1 by a test that is started by hand before a release. No automated build runs it. Rows seen once, by hand, were not checked again.
 <!-- outbound:end -->
 
 ## How this list is kept
@@ -146,9 +146,10 @@ it, and a test fails when they differ. After changing the list, refresh this fil
 
 Each row says how we know. "Verified in code" means we read it in C-Harness's own code. "Seen
 in a test run" means we ran omp against a local listener with a fake key and watched what it
-sent; that check is repeated before each release (see [CONTRIBUTING.md](CONTRIBUTING.md)), and
-it fails if omp contacts a host the row does not name. "Seen once, by hand" means someone
-watched it in one run outside that test; nothing checks it again, so it may have changed.
+sent. Someone repeats that check by hand before a release (see
+[CONTRIBUTING.md](CONTRIBUTING.md)); no automated build runs it. It fails if omp contacts a host
+the row does not name. "Seen once, by hand" means someone watched it in one run outside that
+test; nothing checks it again, so it may have changed.
 "Not verified" means the row comes from omp's settings and nobody has watched it on the wire.
 
 ## Something missing?

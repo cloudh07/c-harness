@@ -317,6 +317,8 @@ Notable changes to C-Harness. The format follows
   The runner refuses any later stop or land after that, so the land is dropped and the log
   says so. A stop the runner refuses before it reaches omp drops the land too, and omp can be
   stopped again.
+- `ch-app`: a land held for a diff that can no longer be sent, because the runner has gone, is
+  noted in the log instead of vanishing.
 - `ch-app`: a checkpoint that can't be marked in the conversation says why, including when omp
   does not answer or the run left nothing to mark. An omp that lacks the label command is told
   once, and later runs no longer read its conversation for a mark it can't make.
@@ -330,12 +332,19 @@ Notable changes to C-Harness. The format follows
 - What leaves this machine: the row for commands the agent runs no longer says your approval
   mode can let them run without asking, since both Approvals choices ask before each command.
   What can is approving a tool for the session, and the row now says so.
+- What leaves this machine: the note under the list no longer says the header test runs before
+  each release. Someone starts it by hand, and no automated build runs it.
 - `ch-runtime`: a setup check that runs out of time now ends the omp and git it started too,
   not only the runner. If those can't be signalled, the runner itself is still ended. On a
   machine reached over SSH it still ends only the local `ssh`.
 - `ch-runner`: stopping a step that runs too long also ends children that moved to a process
   group of their own on macOS and Linux. The code that does this now lives in `ch-proc`, which
   `ch-runtime` shares.
+- `ch-runner`: when omp exits but the processes it started could not be ended, the stop is
+  reported as failed, and land and restore stay refused, since those processes may still change
+  the working tree. Before, it read as a clean stop.
+- `ch-proc`: on macOS and Linux, the last kill no longer names the root's pid once the root has
+  exited, since another process may have taken that pid. Its process group is still ended.
 
 ### Security
 

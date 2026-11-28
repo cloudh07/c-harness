@@ -224,10 +224,11 @@ fn omp_stopping_during_the_move_leaves_both_halves_unchanged() {
         &rig,
         "omp stopped during the restore. Code and conversation were left unchanged."
     ));
+    assert!(!rig.driver.can_restore());
+    flush(&mut rig);
     let sent = rig.sent();
     assert!(of_type(&sent, "ch_restore").is_empty(), "{sent:?}");
     assert!(!sent_after(&rig, NAVIGATE, HISTORY_COMMAND), "{sent:?}");
-    assert!(!rig.driver.can_restore());
 }
 
 #[test]

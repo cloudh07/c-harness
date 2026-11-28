@@ -163,6 +163,42 @@ fn a_turn_diff_holds_a_land_too() {
 }
 
 #[test]
+fn a_held_land_the_runner_cannot_take_is_noted() {
+    let mut rig = Rig::new();
+    let diff = land_after_settle(&mut rig);
+    rig.driver.link.close_stdin();
+
+    rig.say(&diff_result(&diff["id"], "t1"));
+    rig.pump_until("the land to be given up", |d, _| !d.landing());
+    assert!(!land_sent(&rig), "a land went out to a closed runner");
+    assert!(
+        rig.driver
+            .log()
+            .any(|line| line.contains("The runner is gone, so the land was not sent.")),
+        "{:?}",
+        rig.driver.log().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_stop_that_fails_after_omp_exited_drops_the_held_land() {
+    let mut rig = Rig::new();
+    settle(&mut rig);
+    let diff = wait_sent(&mut rig, "ch_diff", 1).remove(0);
+    assert!(rig.driver.land(land_request()));
+    let stop = wait_sent(&mut rig, "ch_stop", 1).remove(0);
+    rig.say(&json!({"type":"ch_omp_exited","exit_code":1,"stderr_tail":[]}));
+    rig.pump_until("omp to end", |d, _| !d.stopping());
+    assert!(rig.driver.landing(), "the land was not held for the diff");
+
+    rig.say(&json!({"type":"ch_error","id":stop["id"],"stage":"stop","message":"omp hung"}));
+    rig.pump_until("the land to be dropped", |d, _| !d.landing());
+    rig.say(&diff_result(&diff["id"], "t1"));
+    rig.pump_until("the diff", |d, _| d.session().current_diff().is_some());
+    assert!(!land_sent(&rig), "the land went out after the stop failed");
+}
+
+#[test]
 fn a_diff_that_never_answers_holds_the_land_only_so_long() {
     static NOW: AtomicU64 = AtomicU64::new(1);
     fn now() -> u64 {
@@ -311,4 +347,26 @@ fn a_diff_with_no_answer_is_noted_once_and_still_shown_late() {
     rig.pump_until("the late diff", |d, _| d.session().current_diff().is_some());
     assert_eq!(open_diffs(&rig), Vec::<String>::new());
     assert_eq!(overdue_notes(&rig), 1);
+}
+
+#[test]
+fn a_turn_diff_with_no_answer_is_noted_once() {
+    static NOW: AtomicU64 = AtomicU64::new(1);
+    fn now() -> u64 {
+        NOW.load(Ordering::SeqCst)
+    }
+    let mut rig = Rig::with_clock(now);
+    first_run(&mut rig, true);
+    assert!(rig.driver.diff_range(0, None));
+    wait_sent(&mut rig, "ch_diff", 2);
+
+    NOW.fetch_add(DIFF_OVERDUE_MS, Ordering::SeqCst);
+    rig.driver.pump();
+    rig.driver.pump();
+    let notes = rig
+        .driver
+        .log()
+        .filter(|line| line.contains("no answer for two minutes"))
+        .count();
+    assert_eq!(notes, 1);
 }

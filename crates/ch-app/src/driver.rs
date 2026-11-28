@@ -40,6 +40,10 @@ const SHOWN_ID_CHARS: usize = 40;
 /// How long a land waits for a diff once omp has stopped. The runner refuses a land while a
 /// diff runs, so a diff that never answers ends in that refusal, not in a land that waits for
 /// good.
+///
+/// This and [`DIFF_OVERDUE_MS`] count wall-clock time, so a machine that sleeps past either
+/// sends the held land or notes the diff on its first pump after waking. A clock set back only
+/// makes the wait longer.
 const DIFF_WAIT_MS: u64 = 15_000;
 /// How long a diff may go unanswered before the log says so. The runner's git call has no
 /// time limit of its own, and an open diff keeps restore off.
@@ -356,6 +360,8 @@ impl Driver {
         self.send_request(id, Request::Diff, &frame, Some(asked))
     }
 
+    /// Asks the runner to stop omp. True when a stop went out, one is already on its way, or
+    /// omp has already ended; false only when the link would not take it.
     pub fn stop(&mut self) -> bool {
         if self.omp != OmpState::Running {
             return true;
@@ -648,8 +654,10 @@ impl Driver {
                 return;
             }
         }
-        if let Some(queued) = self.queued_land.take() {
-            self.send_land(queued.request);
+        if let Some(queued) = self.queued_land.take()
+            && !self.send_land(queued.request)
+        {
+            self.note("The runner is gone, so the land was not sent.");
         }
     }
 

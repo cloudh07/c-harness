@@ -340,7 +340,8 @@ pub struct Omp {
 pub struct Finished {
     pub exit_code: Option<i32>,
     pub stderr_tail: Vec<String>,
-    /// Set when omp could not be ended, so the working tree may still change.
+    /// Set when omp, or a process it started, could not be ended, so the working tree may
+    /// still change. `exit_code` can be set as well when omp itself was reaped.
     pub problem: Option<String>,
 }
 
@@ -416,20 +417,8 @@ impl Omp {
     pub fn finish(mut self, drain: Duration) -> Finished {
         drop(self.stdin.take());
         proc_tree::finished_within(&self.stdout, drain);
-        let (status, problem) = match proc_tree::kill_tree(&mut self.child) {
-            Ok(Some(status)) => (Some(status), None),
-            Ok(None) => (
-                None,
-                Some("omp did not exit after it was killed".to_owned()),
-            ),
-            Err(e) => {
-                let _ = self.child.kill();
-                match proc_tree::wait_for(&mut self.child, JOIN_WAIT) {
-                    Ok(Some(status)) => (Some(status), None),
-                    _ => (None, Some(format!("could not end omp: {e}"))),
-                }
-            }
-        };
+        let killed = proc_tree::kill_tree(&mut self.child);
+        let (status, problem) = kill_outcome(killed, || self.child.try_wait().ok().flatten());
         proc_tree::join_within(self.stdout, JOIN_WAIT);
         for handle in self.others {
             proc_tree::join_within(handle, JOIN_WAIT);
@@ -447,6 +436,33 @@ impl Omp {
             stderr_tail,
             problem,
         }
+    }
+}
+
+/// omp's exit status and what is left running after [`proc_tree::kill_tree`].
+///
+/// When the tree could not be signalled, `kill_tree` has already killed and waited for omp
+/// itself, so `reaped` only reads the result. A reaped omp still leaves a problem, because
+/// the processes it started may live on.
+fn kill_outcome(
+    killed: io::Result<Option<ExitStatus>>,
+    reaped: impl FnOnce() -> Option<ExitStatus>,
+) -> (Option<ExitStatus>, Option<String>) {
+    match killed {
+        Ok(Some(status)) => (Some(status), None),
+        Ok(None) => (
+            None,
+            Some("omp did not exit after it was killed".to_owned()),
+        ),
+        Err(e) => match reaped() {
+            Some(status) => (
+                Some(status),
+                Some(format!(
+                    "omp exited, but the processes it started may still be running: {e}"
+                )),
+            ),
+            None => (None, Some(format!("could not end omp: {e}"))),
+        },
     }
 }
 
@@ -695,5 +711,37 @@ mod tests {
         assert!(!is_runner_frame(r#"{"type":"agent_start"}"#));
         assert!(!is_runner_frame("ch_landed"));
         assert!(!is_runner_frame(r#"{"kind":"ch_landed"}"#));
+    }
+
+    #[test]
+    fn a_tree_that_could_not_be_signalled_stays_a_problem() {
+        let status = proc_tree::command("git")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        let no_kill = || io::Error::other("no kill");
+
+        let (reaped, problem) = kill_outcome(Err(no_kill()), || Some(status));
+        assert_eq!(reaped, Some(status));
+        let problem = problem.expect("a reaped omp may still leave its children running");
+        assert!(
+            problem.contains("may still be running: no kill"),
+            "{problem}"
+        );
+
+        let (reaped, problem) = kill_outcome(Err(no_kill()), || None);
+        assert_eq!(reaped, None);
+        assert_eq!(problem.as_deref(), Some("could not end omp: no kill"));
+
+        assert_eq!(
+            kill_outcome(Ok(Some(status)), || None),
+            (Some(status), None)
+        );
+        let (_, problem) = kill_outcome(Ok(None), || Some(status));
+        assert_eq!(
+            problem.as_deref(),
+            Some("omp did not exit after it was killed")
+        );
     }
 }
